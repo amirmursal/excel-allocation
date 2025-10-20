@@ -351,6 +351,35 @@ HTML_TEMPLATE = """
             box-shadow: 0 6px 20px rgba(255, 107, 107, 0.4);
         }
         
+        .priority-panel {
+            background: white;
+            border-radius: 10px;
+            padding: 20px;
+            margin: 10px 0;
+            border: 2px solid #e9ecef;
+        }
+        
+        .priority-panel.active {
+            border-color: #667eea;
+            box-shadow: 0 4px 15px rgba(102, 126, 234, 0.1);
+        }
+        
+        .tab-button {
+            transition: all 0.3s ease;
+            opacity: 0.7;
+        }
+        
+        .tab-button:hover {
+            opacity: 1;
+            transform: translateY(-2px);
+        }
+        
+        .tab-button.active {
+            opacity: 1;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+        }
+        
         @media (max-width: 768px) {
             .upload-grid {
                 grid-template-columns: 1fr;
@@ -455,26 +484,60 @@ HTML_TEMPLATE = """
                     
                     <!-- Priority Date Selection -->
                     <div class="section" style="background: #f8f9fa; margin-bottom: 20px;">
-                        <h4>📅 Select Priority Dates</h4>
-                        <p>Choose which dates should be assigned "First Priority":</p>
                         
-                        <!-- Quick Selection Button -->
-                        <div style="margin-bottom: 20px;">
-                            <button type="button" id="toggle-select-btn" onclick="toggleSelectAllDates()" class="process-btn" style="background: #27ae60; margin: 5px;">Select All Dates</button>
+                        <!-- Priority Tabs -->
+                        <div class="tab-container" style="margin-bottom: 20px;">
+                            <div class="tab-buttons" style="display: flex; border-bottom: 2px solid #ddd;">
+                                <div class="tab-button active" id="first-priority-tab" onclick="switchPriorityTab('first')" style="padding: 12px 24px; cursor: pointer; background: #27ae60; color: white; border-radius: 8px 8px 0 0; margin-right: 2px; font-weight: bold;">First Priority</div>
+                                <div class="tab-button" id="second-priority-tab" onclick="switchPriorityTab('second')" style="padding: 12px 24px; cursor: pointer; background: #f39c12; color: white; border-radius: 8px 8px 0 0; margin-right: 2px; font-weight: bold;">Second Priority</div>
+                                <div class="tab-button" id="third-priority-tab" onclick="switchPriorityTab('third')" style="padding: 12px 24px; cursor: pointer; background: #e74c3c; color: white; border-radius: 8px 8px 0 0; font-weight: bold;">Third Priority</div>
+                            </div>
                         </div>
                         
-                        <form action="/process_files" method="post" id="process-form">
-                            <!-- Calendar Input for Appointment Dates -->
+                        <!-- First Priority Panel -->
+                        <div id="first-priority-panel" class="priority-panel" style="display: block;">
+                            
+                            
+                            <!-- Calendar Input for First Priority Dates -->
                             <div class="form-group">
-                                <h5>📋 Select Appointment Dates (Checkbox List):</h5>
                                 <div id="calendar_container" style="border: 1px solid #ddd; padding: 15px; background: white; border-radius: 8px; margin: 10px 0;"></div>
                                 <div id="selected_dates_info" style="background: #f8f9fa; padding: 10px; border-radius: 5px; border: 1px solid #e9ecef;">
-                                    <strong>Selected Dates:</strong> <span id="selected_count">0</span> dates selected
+                                    <strong>Selected First Priority Dates:</strong> <span id="selected_count">0</span> <span id="selected_text">dates selected</span>
                                     <div id="selected_dates_list" style="margin-top: 5px; font-size: 12px; color: #666;"></div>
                                 </div>
                             </div>
+                        </div>
+                        
+                        <!-- Second Priority Panel -->
+                        <div id="second-priority-panel" class="priority-panel" style="display: none;">
                             
                             
+                            <!-- Calendar Input for Second Priority Dates -->
+                            <div class="form-group">
+                                <div id="calendar_container_second" style="border: 1px solid #ddd; padding: 15px; background: white; border-radius: 8px; margin: 10px 0;"></div>
+                                <div id="selected_dates_info_second" style="background: #f8f9fa; padding: 10px; border-radius: 5px; border: 1px solid #e9ecef;">
+                                    <strong>Selected Second Priority Dates:</strong> <span id="selected_count_second">0</span> <span id="selected_text_second">dates selected</span>
+                                    <div id="selected_dates_list_second" style="margin-top: 5px; font-size: 12px; color: #666;"></div>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <!-- Third Priority Panel -->
+                        <div id="third-priority-panel" class="priority-panel" style="display: none;">
+                            <p>All remaining dates will be automatically assigned "Third Priority":</p>
+                            
+                            <!-- Info about Third Priority -->
+                            
+                            <!-- Show remaining dates that will be Third Priority -->
+                            <div class="form-group">
+                                <div id="third_priority_dates_info" style="background: #f8f9fa; padding: 10px; border-radius: 5px; border: 1px solid #e9ecef;">
+                                    <strong>Remaining Dates:</strong> <span id="third_priority_count">0</span> dates will be Third Priority
+                                    <div id="third_priority_dates_list" style="margin-top: 5px; font-size: 12px; color: #666;"></div>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <form action="/process_files" method="post" id="process-form">
                             <button type="submit" class="process-btn" id="process-btn">
                                 <i class="fas fa-cogs"></i> Process Data File
                             </button>
@@ -557,6 +620,31 @@ HTML_TEMPLATE = """
             document.querySelectorAll('.panel').forEach(panel => panel.classList.remove('active'));
             document.getElementById(role + '-panel').classList.add('active');
         }
+        
+        function switchPriorityTab(priority) {
+            // Update tab button states
+            document.querySelectorAll('.tab-button').forEach(btn => btn.classList.remove('active'));
+            document.getElementById(priority + '-priority-tab').classList.add('active');
+            
+            // Show/hide panels
+            document.querySelectorAll('.priority-panel').forEach(panel => {
+                panel.style.display = 'none';
+            });
+            
+            const targetPanel = document.getElementById(priority + '-priority-panel');
+            if (targetPanel) {
+                targetPanel.style.display = 'block';
+            }
+            
+            // Load dates for the selected priority panel and refresh displays
+            if (priority === 'first') {
+                loadAppointmentDates(); // Refresh First Priority display
+            } else if (priority === 'second') {
+                loadAppointmentDatesSecond(); // Refresh Second Priority display
+            } else if (priority === 'third') {
+                updateThirdPriorityInfo();
+            }
+        }
 
         // Form submission with loading states - with null checks
         const allocationForm = document.getElementById('allocation-form');
@@ -604,6 +692,7 @@ HTML_TEMPLATE = """
         let currentDate = new Date();
         let appointmentDates = new Set();
         let selectedDates = new Set();
+        let selectedSecondDates = new Set();
         
         function loadAppointmentDates() {
             const calendarContainer = document.getElementById('calendar_container');
@@ -615,11 +704,9 @@ HTML_TEMPLATE = """
             // Fetch appointment dates from server
             fetch('/get_appointment_dates')
                 .then(response => {
-                    console.log('Response status:', response.status);
                     return response.json();
                 })
                 .then(data => {
-                    console.log('Appointment dates data:', data);
                     
                     if (data.error) {
                         calendarContainer.innerHTML = `<p style="color: #e74c3c; text-align: center; padding: 20px;">Error: ${data.error}</p>`;
@@ -634,7 +721,6 @@ HTML_TEMPLATE = """
                         return;
                     }
                     
-                    console.log('Found dates:', dates);
                     
                     // Store appointment dates
                     appointmentDates = new Set(dates);
@@ -643,18 +729,54 @@ HTML_TEMPLATE = """
                     updateSelectedDatesInfo();
                 })
                 .catch(error => {
-                    console.error('Error loading appointment dates:', error);
+                    calendarContainer.innerHTML = `<p style="color: #e74c3c; text-align: center; padding: 20px;">Error loading appointment dates: ${error.message}</p>`;
+                });
+        }
+        
+        function loadAppointmentDatesSecond() {
+            const calendarContainer = document.getElementById('calendar_container_second');
+            if (!calendarContainer) return;
+            
+            // Always try to load appointment dates (file might be uploaded via form submission)
+            calendarContainer.innerHTML = '<p style="color: #666; font-style: italic; text-align: center; padding: 20px;">Loading appointment dates...</p>';
+            
+            // Fetch appointment dates from server
+            fetch('/get_appointment_dates')
+                .then(response => {
+                    return response.json();
+                })
+                .then(data => {
+                    
+                    if (data.error) {
+                        calendarContainer.innerHTML = `<p style="color: #e74c3c; text-align: center; padding: 20px;">Error: ${data.error}</p>`;
+                        return;
+                    }
+                    
+                    const dates = data.appointment_dates;
+                    const columnName = data.column_name;
+                    
+                    if (!dates || dates.length === 0) {
+                        calendarContainer.innerHTML = '<p style="color: #666; font-style: italic; text-align: center; padding: 20px;">No appointment dates found in the file.</p>';
+                        return;
+                    }
+                    
+                    
+                    // Store appointment dates
+                    appointmentDates = new Set(dates);
+                    // Directly show checkbox list (no calendar view)
+                    showFallbackDateListSecond(dates, columnName);
+                    updateSelectedDatesInfoSecond();
+                })
+                .catch(error => {
                     calendarContainer.innerHTML = `<p style="color: #e74c3c; text-align: center; padding: 20px;">Error loading appointment dates: ${error.message}</p>`;
                 });
         }
         
         function initializeCalendar() {
-            console.log('Initializing calendar with dates:', appointmentDates);
             renderCalendar();
         }
         
         function renderCalendar() {
-            console.log('Rendering calendar...');
             const year = currentDate.getFullYear();
             const month = currentDate.getMonth();
             
@@ -692,6 +814,7 @@ HTML_TEMPLATE = """
                 const dateStr = `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
                 const isAppointmentDate = appointmentDates.has(dateStr);
                 const isSelected = selectedDates.has(dateStr);
+                const isSelectedSecond = selectedSecondDates.has(dateStr);
                 const isToday = isTodayDate(year, month, day);
                 
                 let cellClass = 'calendar-day';
@@ -707,6 +830,8 @@ HTML_TEMPLATE = """
                 
                 if (isSelected) {
                     cellStyle += ' background: #4caf50; color: white; font-weight: bold;';
+                } else if (isSelectedSecond) {
+                    cellStyle += ' background: #f39c12; color: white; font-weight: bold;';
                 }
                 
                 if (!isAppointmentDate) {
@@ -747,11 +872,18 @@ HTML_TEMPLATE = """
             if (selectedDates.has(dateStr)) {
                 selectedDates.delete(dateStr);
             } else {
+                // Remove from Second Priority if it was selected there
+                if (selectedSecondDates.has(dateStr)) {
+                    selectedSecondDates.delete(dateStr);
+                    updateSelectedDatesInfoSecond();
+                    syncFallbackCheckboxesSecond();
+                }
                 selectedDates.add(dateStr);
             }
             
             renderCalendar();
             syncFallbackCheckboxes();
+            updateThirdPriorityInfo(); // Update Third Priority info when First Priority changes
         }
         
         function previousMonth() {
@@ -766,10 +898,15 @@ HTML_TEMPLATE = """
         
         function updateSelectedDatesInfo() {
             const selectedCount = document.getElementById('selected_count');
+            const selectedText = document.getElementById('selected_text');
             const selectedDatesList = document.getElementById('selected_dates_list');
             
             if (selectedCount) {
                 selectedCount.textContent = selectedDates.size;
+            }
+            
+            if (selectedText) {
+                selectedText.textContent = selectedDates.size === 1 ? 'date selected' : 'dates selected';
             }
             
             if (selectedDatesList) {
@@ -807,7 +944,6 @@ HTML_TEMPLATE = """
             
             let html = `
                 <div style="text-align: center; margin-bottom: 20px;">
-                    <h4>📅 Appointment Dates from "${columnName}" Column</h4>
                     <p>Click on dates to select them for First Priority:</p>
                 </div>
                 <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 10px; max-height: 300px; overflow-y: auto;">
@@ -822,14 +958,32 @@ HTML_TEMPLATE = """
                     day: 'numeric' 
                 });
                 
+                const isSelectedInFirst = selectedDates.has(date);
+                const isSelectedInSecond = selectedSecondDates.has(date);
+                const isDisabled = isSelectedInSecond;
+                
+                let itemStyle = 'display: flex; align-items: center; padding: 10px; border: 2px solid #e0e0e0; border-radius: 8px; background: #f9f9f9; cursor: pointer; transition: all 0.3s;';
+                let textStyle = 'font-weight: bold; font-size: 16px;';
+                let dayStyle = 'color: #666; font-size: 14px;';
+                
+                if (isSelectedInFirst) {
+                    itemStyle = 'display: flex; align-items: center; padding: 10px; border: 2px solid #4caf50; border-radius: 8px; background: #4caf50; color: white; cursor: pointer; transition: all 0.3s;';
+                    textStyle = 'font-weight: bold; font-size: 16px; color: white;';
+                    dayStyle = 'color: rgba(255,255,255,0.8); font-size: 14px;';
+                } else if (isDisabled) {
+                    itemStyle = 'display: flex; align-items: center; padding: 10px; border: 2px solid #f39c12; border-radius: 8px; background: #f39c12; color: white; cursor: not-allowed; opacity: 0.7; transition: all 0.3s;';
+                    textStyle = 'font-weight: bold; font-size: 16px; color: white;';
+                    dayStyle = 'color: rgba(255,255,255,0.8); font-size: 14px;';
+                }
+                
                 html += `
-                    <div style="display: flex; align-items: center; padding: 10px; border: 2px solid #e0e0e0; border-radius: 8px; background: #f9f9f9; cursor: pointer; transition: all 0.3s;"
-                         onclick="toggleDate('${date}')" 
+                    <div style="${itemStyle}"
+                         onclick="${isDisabled ? '' : `toggleDate('${date}')`}" 
                          id="date_${index}">
-                        <input type="checkbox" id="checkbox_${index}" data-date="${date}" style="margin-right: 10px; transform: scale(1.2);">
+                        <input type="checkbox" id="checkbox_${index}" data-date="${date}" style="margin-right: 10px; transform: scale(1.2);" ${isDisabled ? 'disabled' : ''}>
                         <div>
-                            <div style="font-weight: bold; font-size: 16px;">${formattedDate}</div>
-                            <div style="color: #666; font-size: 14px;">${dayName}</div>
+                            <div style="${textStyle}">${formattedDate}${isDisabled ? ' (Second Priority)' : ''}</div>
+                            <div style="${dayStyle}">${dayName}</div>
                         </div>
                     </div>
                 `;
@@ -839,6 +993,63 @@ HTML_TEMPLATE = """
             calendarContainer.innerHTML = html;
             // Sync checkboxes to current selection
             syncFallbackCheckboxes();
+        }
+        
+        function showFallbackDateListSecond(dates, columnName) {
+            const calendarContainer = document.getElementById('calendar_container_second');
+            if (!calendarContainer) return;
+            
+            let html = `
+                <div style="text-align: center; margin-bottom: 20px;">
+                    <p>Click on dates to select them for Second Priority:</p>
+                </div>
+                <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 10px; max-height: 300px; overflow-y: auto;">
+            `;
+            
+            dates.forEach((date, index) => {
+                const dateObj = new Date(date);
+                const dayName = dateObj.toLocaleDateString('en-US', { weekday: 'long' });
+                const formattedDate = dateObj.toLocaleDateString('en-US', { 
+                    year: 'numeric', 
+                    month: 'short', 
+                    day: 'numeric' 
+                });
+                
+                const isSelectedInFirst = selectedDates.has(date);
+                const isSelectedInSecond = selectedSecondDates.has(date);
+                const isDisabled = isSelectedInFirst;
+                
+                let itemStyle = 'display: flex; align-items: center; padding: 10px; border: 2px solid #e0e0e0; border-radius: 8px; background: #f9f9f9; cursor: pointer; transition: all 0.3s;';
+                let textStyle = 'font-weight: bold; font-size: 16px;';
+                let dayStyle = 'color: #666; font-size: 14px;';
+                
+                if (isSelectedInSecond) {
+                    itemStyle = 'display: flex; align-items: center; padding: 10px; border: 2px solid #f39c12; border-radius: 8px; background: #f39c12; color: white; cursor: pointer; transition: all 0.3s;';
+                    textStyle = 'font-weight: bold; font-size: 16px; color: white;';
+                    dayStyle = 'color: rgba(255,255,255,0.8); font-size: 14px;';
+                } else if (isDisabled) {
+                    itemStyle = 'display: flex; align-items: center; padding: 10px; border: 2px solid #4caf50; border-radius: 8px; background: #4caf50; color: white; cursor: not-allowed; opacity: 0.7; transition: all 0.3s;';
+                    textStyle = 'font-weight: bold; font-size: 16px; color: white;';
+                    dayStyle = 'color: rgba(255,255,255,0.8); font-size: 14px;';
+                }
+                
+                html += `
+                    <div style="${itemStyle}"
+                         onclick="${isDisabled ? '' : `toggleDateSecond('${date}')`}" 
+                         id="date_second_${index}">
+                        <input type="checkbox" id="checkbox_second_${index}" data-date="${date}" style="margin-right: 10px; transform: scale(1.2);" ${isDisabled ? 'disabled' : ''}>
+                        <div>
+                            <div style="${textStyle}">${formattedDate}${isDisabled ? ' (First Priority)' : ''}</div>
+                            <div style="${dayStyle}">${dayName}</div>
+                        </div>
+                    </div>
+                `;
+            });
+            
+            html += '</div>';
+            calendarContainer.innerHTML = html;
+            // Sync checkboxes to current selection
+            syncFallbackCheckboxesSecond();
         }
         
         function toggleSelectAllDates() {
@@ -878,6 +1089,143 @@ HTML_TEMPLATE = """
             });
         }
         
+        function toggleSelectAllSecondDates() {
+            const btn = document.getElementById('toggle-select-second-btn');
+            const total = appointmentDates ? appointmentDates.size : 0;
+            const selected = selectedSecondDates ? selectedSecondDates.size : 0;
+            const shouldSelectAll = selected < total;
+            if (shouldSelectAll) {
+                // Select all
+                selectedSecondDates = new Set();
+                appointmentDates.forEach(d => selectedSecondDates.add(d));
+            } else {
+                // Deselect all
+                selectedSecondDates.clear();
+            }
+            updateSelectedDatesInfoSecond();
+            syncFallbackCheckboxesSecond();
+            // Update button label and style
+            if (btn) {
+                if (selectedSecondDates.size === total && total > 0) {
+                    btn.textContent = 'Deselect All Dates';
+                    btn.style.background = '#e74c3c';
+                } else {
+                    btn.textContent = 'Select All Dates';
+                    btn.style.background = '#f39c12';
+                }
+            }
+        }
+        
+        function toggleDateSecond(dateStr) {
+            if (!appointmentDates.has(dateStr)) return;
+            
+            if (selectedSecondDates.has(dateStr)) {
+                selectedSecondDates.delete(dateStr);
+            } else {
+                // Remove from First Priority if it was selected there
+                if (selectedDates.has(dateStr)) {
+                    selectedDates.delete(dateStr);
+                    renderCalendar();
+                    syncFallbackCheckboxes();
+                }
+                selectedSecondDates.add(dateStr);
+            }
+            
+            updateSelectedDatesInfoSecond();
+            syncFallbackCheckboxesSecond();
+            updateThirdPriorityInfo(); // Update Third Priority info when Second Priority changes
+        }
+        
+        function updateSelectedDatesInfoSecond() {
+            const selectedCount = document.getElementById('selected_count_second');
+            const selectedText = document.getElementById('selected_text_second');
+            const selectedDatesList = document.getElementById('selected_dates_list_second');
+            
+            if (selectedCount) {
+                selectedCount.textContent = selectedSecondDates.size;
+            }
+            
+            if (selectedText) {
+                selectedText.textContent = selectedSecondDates.size === 1 ? 'date selected' : 'dates selected';
+            }
+            
+            if (selectedDatesList) {
+                if (selectedSecondDates.size === 0) {
+                    selectedDatesList.textContent = 'No dates selected';
+                } else {
+                    const sortedDates = Array.from(selectedSecondDates).sort();
+                    const formattedDates = sortedDates.map(date => {
+                        const dateObj = new Date(date);
+                        return dateObj.toLocaleDateString('en-US', { 
+                            month: 'short', 
+                            day: 'numeric' 
+                        });
+                    });
+                    selectedDatesList.textContent = formattedDates.join(', ');
+                }
+            }
+            // Keep toggle button label in sync
+            const btn = document.getElementById('toggle-select-second-btn');
+            if (btn) {
+                const total = appointmentDates ? appointmentDates.size : 0;
+                if (selectedSecondDates.size === total && total > 0) {
+                    btn.textContent = 'Deselect All Dates';
+                    btn.style.background = '#e74c3c';
+                } else {
+                    btn.textContent = 'Select All Dates';
+                    btn.style.background = '#f39c12';
+                }
+            }
+        }
+        
+        function syncFallbackCheckboxesSecond() {
+            const checkboxes = document.querySelectorAll('#calendar_container_second input[type="checkbox"][data-date]');
+            if (!checkboxes || checkboxes.length === 0) return;
+            checkboxes.forEach(cb => {
+                const d = cb.getAttribute('data-date');
+                cb.checked = selectedSecondDates.has(d);
+            });
+        }
+        
+        function updateThirdPriorityInfo() {
+            // Calculate remaining dates that will be Third Priority
+            const allDates = new Set(appointmentDates);
+            const firstPriorityDates = new Set(selectedDates);
+            const secondPriorityDates = new Set(selectedSecondDates);
+            
+            // Find dates that are not in First or Second Priority
+            const thirdPriorityDates = new Set();
+            allDates.forEach(date => {
+                if (!firstPriorityDates.has(date) && !secondPriorityDates.has(date)) {
+                    thirdPriorityDates.add(date);
+                }
+            });
+            
+            // Update the display
+            const thirdPriorityCount = document.getElementById('third_priority_count');
+            const thirdPriorityDatesList = document.getElementById('third_priority_dates_list');
+            
+            if (thirdPriorityCount) {
+                thirdPriorityCount.textContent = thirdPriorityDates.size;
+            }
+            
+            if (thirdPriorityDatesList) {
+                if (thirdPriorityDates.size === 0) {
+                    thirdPriorityDatesList.textContent = 'No remaining dates (all dates are assigned to First or Second Priority)';
+                } else {
+                    const sortedDates = Array.from(thirdPriorityDates).sort();
+                    const formattedDates = sortedDates.map(date => {
+                        const dateObj = new Date(date);
+                        return dateObj.toLocaleDateString('en-US', { 
+                            month: 'short', 
+                            day: 'numeric' 
+                        });
+                    });
+                    thirdPriorityDatesList.textContent = formattedDates.join(', ');
+                }
+            }
+        }
+        
         function selectBusinessDays() {
             // Clear all first
             clearAllDates();
@@ -906,12 +1254,13 @@ HTML_TEMPLATE = """
             const form = document.getElementById('process-form');
             if (form) {
                 // Remove existing hidden inputs for appointment dates
-                const existingInputs = form.querySelectorAll('input[name="appointment_dates"]');
-                existingInputs.forEach(input => input.remove());
+                const existingFirstInputs = form.querySelectorAll('input[name="appointment_dates"]');
+                existingFirstInputs.forEach(input => input.remove());
                 
+                const existingSecondInputs = form.querySelectorAll('input[name="appointment_dates_second"]');
+                existingSecondInputs.forEach(input => input.remove());
                 
-                // Add selected dates as hidden inputs
-                console.log('Selected dates to send:', Array.from(selectedDates));
+                // Add First Priority selected dates as hidden inputs
                 selectedDates.forEach(date => {
                     const input = document.createElement('input');
                     input.type = 'hidden';
@@ -920,9 +1269,17 @@ HTML_TEMPLATE = """
                     form.appendChild(input);
                 });
                 
-                // If no dates selected, add all appointment dates as fallback
+                // Add Second Priority selected dates as hidden inputs
+                selectedSecondDates.forEach(date => {
+                    const input = document.createElement('input');
+                    input.type = 'hidden';
+                    input.name = 'appointment_dates_second';
+                    input.value = date;
+                    form.appendChild(input);
+                });
+                
+                // If no dates selected for First Priority, add all appointment dates as fallback
                 if (selectedDates.size === 0) {
-                    console.log('No dates selected, using all appointment dates as fallback');
                     appointmentDates.forEach(date => {
                         const input = document.createElement('input');
                         input.type = 'hidden';
@@ -932,12 +1289,18 @@ HTML_TEMPLATE = """
                     });
                 }
                 
-                // Also add a debug input to see what's being sent
-                const debugInput = document.createElement('input');
-                debugInput.type = 'hidden';
-                debugInput.name = 'debug_selected_count';
-                debugInput.value = selectedDates.size;
-                form.appendChild(debugInput);
+                // Add debug inputs to see what's being sent
+                const debugFirstInput = document.createElement('input');
+                debugFirstInput.type = 'hidden';
+                debugFirstInput.name = 'debug_selected_count';
+                debugFirstInput.value = selectedDates.size;
+                form.appendChild(debugFirstInput);
+                
+                const debugSecondInput = document.createElement('input');
+                debugSecondInput.type = 'hidden';
+                debugSecondInput.name = 'debug_selected_count_second';
+                debugSecondInput.value = selectedSecondDates.size;
+                form.appendChild(debugSecondInput);
             }
             
             const processingStatus = document.getElementById('processing-status');
@@ -1149,7 +1512,7 @@ def process_allocation_files(allocation_df, data_df):
     except Exception as e:
         return f"❌ Error during processing: {str(e)}", None
 
-def process_allocation_files_with_dates(allocation_df, data_df, selected_dates, custom_dates, appointment_dates):
+def process_allocation_files_with_dates(allocation_df, data_df, selected_dates, custom_dates, appointment_dates, appointment_dates_second=None):
     """Process data file with priority assignment based on selected dates"""
     try:
         from datetime import datetime, timedelta
@@ -1179,16 +1542,18 @@ def process_allocation_files_with_dates(allocation_df, data_df, selected_dates, 
         processed_df['Priority Status'] = processed_df['Priority Status'].astype('object')
         
         # Build list of priority dates from selection (as strings)
-        priority_dates = set(appointment_dates)
-        
-        print(f"Priority dates selected (count={len(priority_dates)}): {sorted(list(priority_dates))[:10]}{' ...' if len(priority_dates) > 10 else ''}")
-        print(f"Appointment date column: {appointment_date_col}")
-        print(f"Sample appointment dates: {processed_df[appointment_date_col].head().tolist()}")
+        first_priority_dates = set(appointment_dates) if appointment_dates else set()
+        second_priority_dates = set(appointment_dates_second) if appointment_dates_second else set()
         
         # Count statistics
         total_rows = len(processed_df)
         first_priority_count = 0
+        second_priority_count = 0
+        third_priority_count = 0
         invalid_dates = 0
+        
+        # Collect Third Priority dates
+        third_priority_dates_set = set()
         
         # Process each row
         for idx, row in processed_df.iterrows():
@@ -1220,36 +1585,58 @@ def process_allocation_files_with_dates(allocation_df, data_df, selected_dates, 
                     return calendar_date
             
             # Convert priority dates to YYYY-MM-DD format for comparison
-            priority_dates_yyyy_mm_dd = set()
-            for calendar_date in priority_dates:
+            first_priority_dates_yyyy_mm_dd = set()
+            for calendar_date in first_priority_dates:
                 converted_date = convert_calendar_to_original_format(calendar_date)
-                priority_dates_yyyy_mm_dd.add(converted_date)
+                first_priority_dates_yyyy_mm_dd.add(converted_date)
             
-            # Log original vs normalized, and selected set size
-            print(f"Row {idx}: original='{original_appointment_value}' normalized='{appointment_date_str}' | selected_count={len(priority_dates_yyyy_mm_dd)}")
+            second_priority_dates_yyyy_mm_dd = set()
+            for calendar_date in second_priority_dates:
+                converted_date = convert_calendar_to_original_format(calendar_date)
+                second_priority_dates_yyyy_mm_dd.add(converted_date)
             
-            # Check if appointment date is in priority dates (YYYY-MM-DD)
-            if appointment_date_str in priority_dates_yyyy_mm_dd:
+            # Check if appointment date is in First Priority dates
+            if appointment_date_str in first_priority_dates_yyyy_mm_dd:
                 processed_df.at[idx, 'Priority Status'] = 'First Priority'
                 first_priority_count += 1
-                print(f"✅ Set First Priority for {appointment_date_str}")
+            # Check if appointment date is in Second Priority dates
+            elif appointment_date_str in second_priority_dates_yyyy_mm_dd:
+                processed_df.at[idx, 'Priority Status'] = 'Second Priority'
+                second_priority_count += 1
             else:
-                # Keep blank for now
-                processed_df.at[idx, 'Priority Status'] = ''
+                # All remaining dates get Third Priority
+                processed_df.at[idx, 'Priority Status'] = 'Third Priority'
+                third_priority_count += 1
+                # Add to Third Priority dates set (convert back to calendar format for display)
+                try:
+                    from datetime import datetime
+                    dt = datetime.strptime(appointment_date_str, '%Y-%m-%d')
+                    calendar_date = dt.strftime('%Y-%m-%d')
+                    third_priority_dates_set.add(calendar_date)
+                except:
+                    # If conversion fails, use the original string
+                    third_priority_dates_set.add(appointment_date_str)
         
         # Generate result message
-        priority_dates_list = sorted(list(priority_dates))
-        priority_dates_str = ', '.join(priority_dates_list)
+        first_priority_dates_list = sorted(list(first_priority_dates))
+        second_priority_dates_list = sorted(list(second_priority_dates))
+        third_priority_dates_list = sorted(list(third_priority_dates_set))
+        first_priority_dates_str = ', '.join(first_priority_dates_list) if first_priority_dates_list else 'None'
+        second_priority_dates_str = ', '.join(second_priority_dates_list) if second_priority_dates_list else 'None'
+        third_priority_dates_str = ', '.join(third_priority_dates_list) if third_priority_dates_list else 'None'
         
         result_message = f"""✅ Priority processing completed successfully!
 
 📊 Processing Statistics:
 - Total rows processed: {total_rows}
 - First Priority: {first_priority_count} rows
-- Other rows: {total_rows - first_priority_count - invalid_dates} rows (kept blank)
+- Second Priority: {second_priority_count} rows
+- Third Priority: {third_priority_count} rows
 - Invalid dates: {invalid_dates} rows
 
-📅 Selected First Priority Dates: {priority_dates_str}
+📅 Selected First Priority Dates: {first_priority_dates_str}
+📅 Selected Second Priority Dates: {second_priority_dates_str}
+📅 Third Priority Dates: {third_priority_dates_str}
 
 📋 Updated column: 'Priority Status'
 📅 Based on column: '{appointment_date_col}'
@@ -1348,14 +1735,12 @@ def process_files():
         
         # Get selected appointment dates from calendar
         appointment_dates = request.form.getlist('appointment_dates')
+        appointment_dates_second = request.form.getlist('appointment_dates_second')
         debug_count = request.form.get('debug_selected_count', '0')
-        
-        print(f"🔍 DEBUG: Received {len(appointment_dates)} appointment dates: {appointment_dates}")
-        print(f"🔍 DEBUG: Debug count: {debug_count}")
-        print(f"🔍 DEBUG: All form data: {dict(request.form)}")
+        debug_count_second = request.form.get('debug_selected_count_second', '0')
         
         # Process the data file with selected dates
-        result_message, processed_df = process_allocation_files_with_dates(None, data_df, [], '', appointment_dates)
+        result_message, processed_df = process_allocation_files_with_dates(None, data_df, [], '', appointment_dates, appointment_dates_second)
         
         if processed_df is not None:
             # Store the result for download
@@ -1480,6 +1865,4 @@ if __name__ == '__main__':
     # Always enable debug + auto-reload for local dev unless explicitly disabled
     debug = True if os.environ.get('DISABLE_DEBUG') != '1' else False
     
-    print("🚀 Starting Excel Allocation System...")
-    print(f"📱 Open your browser and go to: http://localhost:{port}")
     app.run(debug=debug, host='0.0.0.0', port=port, use_reloader=debug)

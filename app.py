@@ -414,37 +414,22 @@ HTML_TEMPLATE = """
         <div class="content">
             <!-- Admin Panel -->
             <div id="admin-panel" class="panel active">
-                <div class="section">
-                    <h3><i class="fas fa-upload"></i> Admin File Upload</h3>
-                    <p>Upload allocation and data files for processing</p>
-                </div>
-
                 <div class="upload-grid">
                     <div class="upload-card">
-                        <div class="upload-header">
-                            <i class="fas fa-file-excel"></i>
-                            <h4>Allocation File</h4>
-                        </div>
                         <form action="/upload_allocation" method="post" enctype="multipart/form-data" id="allocation-form">
                             <div class="form-group">
-                                <label for="allocation_file">Select Allocation Excel File:</label>
                                 <input type="file" id="allocation_file" name="file" accept=".xlsx,.xls" required>
                             </div>
-                            <button type="submit" id="allocation-btn">📤 Upload Allocation File</button>
+                            <button type="submit" id="allocation-btn">📤 Upload Agent Allocation Details</button>
                         </form>
                     </div>
 
                     <div class="upload-card">
-                        <div class="upload-header">
-                            <i class="fas fa-database"></i>
-                            <h4>Data File</h4>
-                        </div>
                         <form action="/upload_data" method="post" enctype="multipart/form-data" id="data-form">
                             <div class="form-group">
-                                <label for="data_file">Select Data Excel File:</label>
                                 <input type="file" id="data_file" name="file" accept=".xlsx,.xls" required>
                             </div>
-                            <button type="submit" id="data-btn">📤 Upload Data File</button>
+                            <button type="submit" id="data-btn">📤 Upload Insurance Details</button>
                         </form>
                     </div>
                 </div>
@@ -460,7 +445,7 @@ HTML_TEMPLATE = """
                             </div>
                         {% else %}
                             <div class="status-info">
-                                ℹ️ No allocation file uploaded yet.
+                                ℹ️ No agent allocation details file uploaded yet.
                             </div>
                         {% endif %}
                         
@@ -471,7 +456,7 @@ HTML_TEMPLATE = """
                             </div>
                         {% else %}
                             <div class="status-info">
-                                ℹ️ No data file uploaded yet.
+                                ℹ️ No insurance details file uploaded yet.
                             </div>
                         {% endif %}
                     </div>
@@ -597,10 +582,6 @@ HTML_TEMPLATE = """
 
             <!-- Agent Panel -->
             <div id="agent-panel" class="panel">
-                <div class="section">
-                    <h3><i class="fas fa-upload"></i> Agent File Upload</h3>
-                    <p>Upload status files (Coming Soon)</p>
-                </div>
                 <div class="coming-soon">
                     <i class="fas fa-tools"></i>
                     <h3>Under Development</h3>

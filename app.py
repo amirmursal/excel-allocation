@@ -502,7 +502,7 @@ HTML_TEMPLATE = """
                                 <div id="calendar_container_second" style="border: 1px solid #ddd; padding: 15px; background: white; border-radius: 8px; margin: 10px 0;"></div>
                                 <div id="selected_dates_info_second" style="background: #f8f9fa; padding: 10px; border-radius: 5px; border: 1px solid #e9ecef;">
                                     <strong>Selected Second Priority Dates:</strong> <span id="selected_count_second">0</span> <span id="selected_text_second">dates selected</span>
-                                    <div id="selected_dates_list_second" style="margin-top: 5px; font-size: 12px; color: #666;"></div>
+                                    <div id="selected_dates_list_second" style="margin-top: 5px; font-size: 12px; color: #666;">No dates selected</div>
                                 </div>
                             </div>
                         </div>
@@ -518,6 +518,16 @@ HTML_TEMPLATE = """
                                 <div id="third_priority_dates_info" style="background: #f8f9fa; padding: 10px; border-radius: 5px; border: 1px solid #e9ecef;">
                                     <strong>Remaining Dates:</strong> <span id="third_priority_count">0</span> dates will be Third Priority
                                     <div id="third_priority_dates_list" style="margin-top: 5px; font-size: 12px; color: #666;"></div>
+                                </div>
+                            </div>
+                            
+                            <!-- Receive Date Column Checkboxes -->
+                            <div class="form-group">
+                                <div id="receive_date_checkboxes" style="margin-top: 15px; padding: 15px; background: #f8f9fa; border-radius: 8px; border: 1px solid #e9ecef;">
+                                    <h4 style="margin-bottom: 15px; color: #333; font-size: 1.1em;">📅 Receive Date Column Dates</h4>
+                                    <div id="receive_date_list" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 8px; max-height: 200px; overflow-y: auto;">
+                                        <p style="color: #666; font-style: italic; text-align: center; padding: 20px;">Loading receive dates...</p>
+                                    </div>
                                 </div>
                             </div>
                         </div>
@@ -624,6 +634,7 @@ HTML_TEMPLATE = """
                 loadAppointmentDatesSecond(); // Refresh Second Priority display
             } else if (priority === 'third') {
                 updateThirdPriorityInfo();
+                loadReceiveDateCheckboxes(); // Load receive date checkboxes
             }
         }
 
@@ -751,6 +762,74 @@ HTML_TEMPLATE = """
                 .catch(error => {
                     calendarContainer.innerHTML = `<p style="color: #e74c3c; text-align: center; padding: 20px;">Error loading appointment dates: ${error.message}</p>`;
                 });
+        }
+        
+        function loadReceiveDateCheckboxes() {
+            const receiveDateList = document.getElementById('receive_date_list');
+            if (!receiveDateList) return;
+            
+            // Fetch receive dates from server
+            fetch('/get_receive_dates')
+                .then(response => response.json())
+                .then(data => {
+                    if (data.error) {
+                        receiveDateList.innerHTML = `<p style="color: #e74c3c; text-align: center; padding: 20px;">Error: ${data.error}</p>`;
+                        return;
+                    }
+                    
+                    const dates = data.receive_dates;
+                    const columnName = data.column_name;
+                    
+                    if (!dates || dates.length === 0) {
+                        receiveDateList.innerHTML = '<p style="color: #666; font-style: italic; text-align: center; padding: 20px;">No receive dates found in the file.</p>';
+                        return;
+                    }
+                    
+                    // Display receive dates as checkboxes
+                    let html = '';
+                    dates.forEach((date, index) => {
+                        const dateObj = new Date(date);
+                        const dayName = dateObj.toLocaleDateString('en-US', { weekday: 'short' });
+                        const formattedDate = dateObj.toLocaleDateString('en-US', { 
+                            year: 'numeric', 
+                            month: 'short', 
+                            day: 'numeric' 
+                        });
+                        
+                        html += `
+                            <div style="display: flex; align-items: center; padding: 8px; border: 1px solid #ddd; border-radius: 6px; background: white; cursor: pointer; transition: all 0.3s;" 
+                                 onclick="toggleReceiveDate('${date}', ${index})">
+                                <input type="checkbox" id="receive_checkbox_${index}" data-date="${date}" style="margin-right: 8px; transform: scale(1.1);">
+                                <div>
+                                    <div style="font-weight: bold; font-size: 14px;">${formattedDate}</div>
+                                    <div style="color: #666; font-size: 12px;">${dayName}</div>
+                                </div>
+                            </div>
+                        `;
+                    });
+                    
+                    receiveDateList.innerHTML = html;
+                })
+                .catch(error => {
+                    receiveDateList.innerHTML = `<p style="color: #e74c3c; text-align: center; padding: 20px;">Error loading receive dates: ${error.message}</p>`;
+                });
+        }
+        
+        function toggleReceiveDate(dateStr, index) {
+            const checkbox = document.getElementById(`receive_checkbox_${index}`);
+            if (!checkbox) return;
+            
+            checkbox.checked = !checkbox.checked;
+            
+            // Update the visual state
+            const container = checkbox.closest('div');
+            if (checkbox.checked) {
+                container.style.background = '#e3f2fd';
+                container.style.borderColor = '#2196f3';
+            } else {
+                container.style.background = 'white';
+                container.style.borderColor = '#ddd';
+            }
         }
         
         function initializeCalendar() {
@@ -1817,6 +1896,49 @@ def get_appointment_dates():
         return jsonify({
             'appointment_dates': date_strings,
             'column_name': appointment_date_col
+        })
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/get_receive_dates')
+def get_receive_dates():
+    global data_file_data
+    
+    if not data_file_data:
+        return jsonify({'error': 'No data file uploaded'}), 400
+    
+    try:
+        # Get the first sheet from data file
+        data_df = list(data_file_data.values())[0]
+        
+        # Find the receive date column (case-insensitive search)
+        receive_date_col = None
+        for col in data_df.columns:
+            if 'receive' in col.lower() and 'date' in col.lower():
+                receive_date_col = col
+                break
+        
+        if receive_date_col is None:
+            return jsonify({'error': 'Receive Date column not found'}), 400
+        
+        # Get unique receive dates
+        receive_dates = data_df[receive_date_col].dropna().unique()
+        
+        # Convert to string format and sort
+        date_strings = []
+        for date in receive_dates:
+            if hasattr(date, 'date'):
+                date_str = date.date().strftime('%Y-%m-%d')
+            else:
+                date_str = str(date)
+            date_strings.append(date_str)
+        
+        date_strings.sort()
+        
+        return jsonify({
+            'receive_dates': date_strings,
+            'column_name': receive_date_col
         })
         
     except Exception as e:

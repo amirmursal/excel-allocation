@@ -396,6 +396,61 @@ HTML_TEMPLATE = """
                 font-size: 2rem;
             }
         }
+        
+        /* Table styling */
+        .agent-table tbody tr:hover {
+            background-color: #f8f9fa;
+        }
+        
+        .agent-table .process-btn:hover {
+            transform: scale(1.05);
+        }
+        
+        /* Modal styling */
+        .modal {
+            animation: fadeIn 0.3s ease;
+        }
+        
+        .modal-content {
+            animation: slideIn 0.3s ease;
+        }
+        
+        .close:hover {
+            opacity: 0.7;
+        }
+        
+        @keyframes fadeIn {
+            from { opacity: 0; }
+            to { opacity: 1; }
+        }
+        
+        @keyframes slideIn {
+            from { transform: translateY(-50px); opacity: 0; }
+            to { transform: translateY(0); opacity: 1; }
+        }
+        
+        .modal-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 15px;
+        }
+        
+        .modal-table th,
+        .modal-table td {
+            padding: 8px 12px;
+            text-align: left;
+            border-bottom: 1px solid #e9ecef;
+        }
+        
+        .modal-table th {
+            background-color: #f8f9fa;
+            font-weight: 600;
+            color: #333;
+        }
+        
+        .modal-table tr:hover {
+            background-color: #f8f9fa;
+        }
     </style>
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
 </head>
@@ -585,30 +640,69 @@ HTML_TEMPLATE = """
                 <div class="section">
                     <h3>👥 Download Individual Agent Files</h3>
                     <p>Download separate Excel files for each agent with their allocated data.</p>
-                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 15px; margin-top: 15px;">
-                        {% for agent in agent_allocations_data %}
-                        <div style="background: #f8f9fa; padding: 15px; border-radius: 8px; border: 1px solid #e9ecef;">
-                            <h4 style="margin-bottom: 10px; color: #333;">{{ agent.name }}</h4>
-                            <p style="margin: 5px 0; color: #666;">
-                                <strong>Allocated:</strong> {{ agent.allocated }} rows<br>
-                                <strong>Capacity:</strong> {{ agent.capacity }} rows
-                            </p>
-                            <div style="display: flex; gap: 8px; margin-top: 10px;">
-                                <form action="/download_agent_file" method="post" style="flex: 1;">
-                                    <input type="hidden" name="agent_name" value="{{ agent.name }}">
-                                    <button type="submit" class="process-btn" style="background: linear-gradient(135deg, #27ae60, #2ecc71); font-size: 14px; padding: 8px 16px; width: 100%;">
-                                        <i class="fas fa-download"></i> Download
-                                    </button>
-                                </form>
-                                <button type="button" class="process-btn approve-btn" style="background: linear-gradient(135deg, #3498db, #2980b9); font-size: 14px; padding: 8px 16px; flex: 1;" onclick="approveAllocation('{{ agent.name }}')">
-                                    <i class="fas fa-check"></i> Approve
-                                </button>
-                            </div>
-                        </div>
-                        {% endfor %}
+                    
+                    <div style="overflow-x: auto; margin-top: 15px;">
+                        <table class="agent-table" style="width: 100%; border-collapse: collapse; background: white; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 10px rgba(0,0,0,0.1);">
+                            <thead>
+                                <tr style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white;">
+                                    <th style="padding: 15px; text-align: left; font-weight: 600; border: none;">Agent Name</th>
+                                    <th style="padding: 15px; text-align: center; font-weight: 600; border: none;">Allocated</th>
+                                    <th style="padding: 15px; text-align: center; font-weight: 600; border: none;">Capacity</th>
+                                    <th style="padding: 15px; text-align: center; font-weight: 600; border: none;">Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for agent in agent_allocations_data %}
+                                <tr style="border-bottom: 1px solid #e9ecef; transition: background-color 0.2s;">
+                                    <td style="padding: 15px; font-weight: 500; color: #333;">{{ agent.name }}</td>
+                                    <td style="padding: 15px; text-align: center; color: #27ae60; font-weight: 600;">{{ agent.allocated }}</td>
+                                    <td style="padding: 15px; text-align: center; color: #666;">{{ agent.capacity }}</td>
+                                    <td style="padding: 15px; text-align: center;">
+                                        <div style="display: flex; gap: 8px; justify-content: center;">
+                                            <button type="button" class="process-btn view-btn" style="background: linear-gradient(135deg, #f39c12, #e67e22); font-size: 12px; padding: 6px 12px; border: none; border-radius: 4px; color: white; cursor: pointer; transition: transform 0.2s;" onclick="viewAgentAllocation('{{ agent.name }}')">
+                                                <i class="fas fa-eye"></i> View
+                                            </button>
+                                            <button type="button" class="process-btn approve-btn" style="background: linear-gradient(135deg, #3498db, #2980b9); font-size: 12px; padding: 6px 12px; border: none; border-radius: 4px; color: white; cursor: pointer; transition: transform 0.2s;" onclick="approveAllocation('{{ agent.name }}')">
+                                                <i class="fas fa-check"></i> Approve
+                                            </button>
+                                        </div>
+                                    </td>
+                                </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
                     </div>
                 </div>
                 {% endif %}
+                
+                <!-- Agent Allocation Modal -->
+                <div id="agentModal" class="modal" style="display: none; position: fixed; z-index: 1000; left: 0; top: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.5);">
+                    <div class="modal-content" style="background-color: #fefefe; margin: 5% auto; padding: 0; border: none; border-radius: 10px; width: 90%; max-width: 1200px; max-height: 80vh; overflow: hidden; box-shadow: 0 10px 30px rgba(0,0,0,0.3);">
+                        <div class="modal-header" style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 20px; display: flex; justify-content: space-between; align-items: center;">
+                            <h2 style="margin: 0; font-size: 1.5em;" id="modalAgentName">Agent Allocation</h2>
+                            <span class="close" style="color: white; font-size: 28px; font-weight: bold; cursor: pointer; transition: opacity 0.3s;">&times;</span>
+                        </div>
+                        <div class="modal-body" style="padding: 20px; max-height: 60vh; overflow-y: auto;">
+                            <div id="modalContent">
+                                <div style="text-align: center; padding: 40px;">
+                                    <i class="fas fa-spinner fa-spin" style="font-size: 2em; color: #667eea;"></i>
+                                    <p style="margin-top: 15px; color: #666;">Loading agent allocation data...</p>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="modal-footer" style="background: #f8f9fa; padding: 15px 20px; border-top: 1px solid #e9ecef; display: flex; justify-content: space-between; align-items: center;">
+                            <div id="modalStats" style="color: #666; font-size: 14px;"></div>
+                            <div style="display: flex; gap: 10px;">
+                                <button id="downloadBtn" class="process-btn" style="background: linear-gradient(135deg, #27ae60, #2ecc71); padding: 8px 16px; border: none; border-radius: 5px; color: white; cursor: pointer; font-size: 14px;">
+                                    <i class="fas fa-download"></i> Download Excel
+                                </button>
+                                <button class="close-btn process-btn" style="background: linear-gradient(135deg, #95a5a6, #7f8c8d); padding: 8px 16px; border: none; border-radius: 5px; color: white; cursor: pointer; font-size: 14px;">
+                                    Close
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
 
                 <!-- Reset Section -->
                 <div class="section">
@@ -1481,6 +1575,110 @@ HTML_TEMPLATE = """
                 }, 1000);
             }
         }
+        
+        function viewAgentAllocation(agentName) {
+            const modal = document.getElementById('agentModal');
+            const modalAgentName = document.getElementById('modalAgentName');
+            const modalContent = document.getElementById('modalContent');
+            const modalStats = document.getElementById('modalStats');
+            const downloadBtn = document.getElementById('downloadBtn');
+            
+            // Show modal and set agent name
+            modal.style.display = 'block';
+            modalAgentName.textContent = `${agentName} - Allocation Details`;
+            
+            // Show loading state
+            modalContent.innerHTML = `
+                <div style="text-align: center; padding: 40px;">
+                    <i class="fas fa-spinner fa-spin" style="font-size: 2em; color: #667eea;"></i>
+                    <p style="margin-top: 15px; color: #666;">Loading allocation data for ${agentName}...</p>
+                </div>
+            `;
+            
+            // Fetch agent allocation data
+            fetch('/get_agent_allocation', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ agent_name: agentName })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    // Display the data table
+                    modalContent.innerHTML = data.html_table;
+                    
+                    // Update statistics
+                    const stats = data.stats;
+                    modalStats.innerHTML = `
+                        <strong>Allocation Summary:</strong> 
+                        ${stats.total_rows} rows allocated | 
+                        Capacity: ${stats.capacity} | 
+                        First Priority: ${stats.first_priority} | 
+                        Second Priority: ${stats.second_priority} | 
+                        Third Priority: ${stats.third_priority}
+                    `;
+                    
+                    // Set up download button
+                    downloadBtn.onclick = function() {
+                        // Create a form and submit it to download the file
+                        const form = document.createElement('form');
+                        form.method = 'POST';
+                        form.action = '/download_agent_file';
+                        
+                        const input = document.createElement('input');
+                        input.type = 'hidden';
+                        input.name = 'agent_name';
+                        input.value = agentName;
+                        
+                        form.appendChild(input);
+                        document.body.appendChild(form);
+                        form.submit();
+                        document.body.removeChild(form);
+                    };
+                } else {
+                    modalContent.innerHTML = `
+                        <div style="text-align: center; padding: 40px; color: #e74c3c;">
+                            <i class="fas fa-exclamation-triangle" style="font-size: 2em;"></i>
+                            <p style="margin-top: 15px;">Error loading allocation data: ${data.error}</p>
+                        </div>
+                    `;
+                }
+            })
+            .catch(error => {
+                modalContent.innerHTML = `
+                    <div style="text-align: center; padding: 40px; color: #e74c3c;">
+                        <i class="fas fa-exclamation-triangle" style="font-size: 2em;"></i>
+                        <p style="margin-top: 15px;">Error loading allocation data: ${error.message}</p>
+                    </div>
+                `;
+            });
+        }
+        
+        // Modal close functionality
+        document.addEventListener('DOMContentLoaded', function() {
+            const modal = document.getElementById('agentModal');
+            const closeBtn = document.querySelector('.close');
+            const closeBtnFooter = document.querySelector('.close-btn');
+            
+            // Close modal when clicking X
+            closeBtn.onclick = function() {
+                modal.style.display = 'none';
+            }
+            
+            // Close modal when clicking close button in footer
+            closeBtnFooter.onclick = function() {
+                modal.style.display = 'none';
+            }
+            
+            // Close modal when clicking outside of it
+            window.onclick = function(event) {
+                if (event.target == modal) {
+                    modal.style.display = 'none';
+                }
+            }
+        });
     </script>
 </body>
 </html>
@@ -1806,6 +2004,17 @@ def process_allocation_files_with_dates(allocation_df, data_df, selected_dates, 
                     # Sort agents by name for display
                     agent_allocations.sort(key=lambda x: x['name'])
                     
+                    # Assign specific rows to each agent to avoid duplicates
+                    row_index = 0
+                    for agent in agent_allocations:
+                        if agent['allocated'] > 0:
+                            agent['row_indices'] = list(range(row_index, row_index + agent['allocated']))
+                            row_index += agent['allocated']
+                        else:
+                            agent['row_indices'] = []
+                    
+                    print(f"DEBUG: Total rows allocated: {row_index}, Total rows available: {total_rows}")
+                    
                     # Store agent allocations data globally for individual downloads
                     agent_allocations_data = agent_allocations
                     print(f"DEBUG: Set agent_allocations_data with {len(agent_allocations)} agents")
@@ -2122,7 +2331,70 @@ def get_receive_dates():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
-
+@app.route('/get_agent_allocation', methods=['POST'])
+def get_agent_allocation():
+    global data_file_data, agent_allocations_data
+    
+    if not data_file_data or not agent_allocations_data:
+        return jsonify({'error': 'No data available'}), 400
+    
+    agent_name = request.json.get('agent_name')
+    
+    if not agent_name:
+        return jsonify({'error': 'No agent specified'}), 400
+    
+    try:
+        # Find the agent in allocations data
+        agent_info = None
+        for agent in agent_allocations_data:
+            if agent['name'] == agent_name:
+                agent_info = agent
+                break
+        
+        if not agent_info:
+            return jsonify({'error': 'Agent not found'}), 404
+        
+        # Get the processed data
+        processed_df = list(data_file_data.values())[0]
+        
+        # Get the specific rows allocated to this agent
+        agent_rows = agent_info['allocated']
+        row_indices = agent_info.get('row_indices', [])
+        
+        # Create a subset of data for this agent using specific row indices
+        if row_indices and len(row_indices) > 0 and len(processed_df) > max(row_indices):
+            agent_df = processed_df.iloc[row_indices].copy()
+        else:
+            # Fallback: if row_indices not available, use first N rows
+            if len(processed_df) >= agent_rows:
+                agent_df = processed_df.head(agent_rows).copy()
+            else:
+                agent_df = processed_df.copy()
+        
+        # Convert dataframe to HTML table
+        html_table = agent_df.to_html(classes='modal-table', table_id='agentDataTable', escape=False, index=False)
+        
+        # Calculate statistics
+        total_rows = len(agent_df)
+        first_priority = len(agent_df[agent_df['Priority Status'] == 'First Priority']) if 'Priority Status' in agent_df.columns else 0
+        second_priority = len(agent_df[agent_df['Priority Status'] == 'Second Priority']) if 'Priority Status' in agent_df.columns else 0
+        third_priority = len(agent_df[agent_df['Priority Status'] == 'Third Priority']) if 'Priority Status' in agent_df.columns else 0
+        
+        return jsonify({
+            'success': True,
+            'agent_name': agent_name,
+            'html_table': html_table,
+            'stats': {
+                'total_rows': total_rows,
+                'capacity': agent_info['capacity'],
+                'first_priority': first_priority,
+                'second_priority': second_priority,
+                'third_priority': third_priority
+            }
+        })
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 @app.route('/download_agent_file', methods=['POST'])
 def download_agent_file():
@@ -2155,15 +2427,22 @@ def download_agent_file():
         # Get the processed data
         processed_df = list(data_file_data.values())[0]
         
-        # For now, we'll create a sample allocation for the agent
-        # In a real implementation, you would filter the data based on the agent's allocation
+        # Get the specific rows allocated to this agent
         agent_rows = agent_info['allocated']
+        row_indices = agent_info.get('row_indices', [])
         
-        # Create a subset of data for this agent (sample implementation)
-        if len(processed_df) >= agent_rows:
-            agent_df = processed_df.head(agent_rows).copy()
+        # Create a subset of data for this agent using specific row indices
+        if row_indices and len(row_indices) > 0 and len(processed_df) > max(row_indices):
+            agent_df = processed_df.iloc[row_indices].copy()
+            print(f"DEBUG: Agent {agent_name} got {len(agent_df)} rows with indices: {row_indices[:5]}...")
         else:
-            agent_df = processed_df.copy()
+            # Fallback: if row_indices not available, use first N rows
+            if len(processed_df) >= agent_rows:
+                agent_df = processed_df.head(agent_rows).copy()
+                print(f"DEBUG: Agent {agent_name} got {len(agent_df)} rows using fallback method")
+            else:
+                agent_df = processed_df.copy()
+                print(f"DEBUG: Agent {agent_name} got all {len(agent_df)} available rows")
         
         # Add agent information to the dataframe
         agent_df['Agent Name'] = agent_name

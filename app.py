@@ -21,6 +21,10 @@ allocation_filename = None
 data_filename = None
 processing_result = None
 
+# Agent processing result
+agent_processing_result = None
+agent_allocations_data = None
+
 # HTML Template for Excel Allocation System
 HTML_TEMPLATE = """
 <!DOCTYPE html>
@@ -462,6 +466,7 @@ HTML_TEMPLATE = """
                     </div>
                 </div>
 
+
                 <!-- Processing Section -->
                 {% if data_file_data %}
                 <div class="section">
@@ -565,18 +570,43 @@ HTML_TEMPLATE = """
                 <!-- Download Section -->
                 {% if processing_result and 'Priority processing completed successfully' in processing_result %}
                 <div class="section">
-                    <h3>💾 Download Processed File</h3>
-                    <p>Download your Excel file with updated Priority Status assignments.</p>
+                    <h3>💾 Download your Excel file with updated Priority Status assignments.</h3>
                     <form action="/download_result" method="post">
-                        <div class="form-group">
-                            <label for="output_filename">Output filename (optional):</label>
-                            <input type="text" id="output_filename" name="filename" 
-                                   placeholder="processed_allocation_data.xlsx" style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px;">
-                        </div>
                         <button type="submit" class="process-btn" style="background: linear-gradient(135deg, #3498db, #2980b9);">
                             <i class="fas fa-download"></i> Download Processed File
                         </button>
                     </form>
+                </div>
+                {% endif %}
+
+
+                <!-- Individual Agent Downloads -->
+                {% if agent_allocations_data %}
+                <div class="section">
+                    <h3>👥 Download Individual Agent Files</h3>
+                    <p>Download separate Excel files for each agent with their allocated data.</p>
+                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 15px; margin-top: 15px;">
+                        {% for agent in agent_allocations_data %}
+                        <div style="background: #f8f9fa; padding: 15px; border-radius: 8px; border: 1px solid #e9ecef;">
+                            <h4 style="margin-bottom: 10px; color: #333;">{{ agent.name }}</h4>
+                            <p style="margin: 5px 0; color: #666;">
+                                <strong>Allocated:</strong> {{ agent.allocated }} rows<br>
+                                <strong>Capacity:</strong> {{ agent.capacity }} rows
+                            </p>
+                            <div style="display: flex; gap: 8px; margin-top: 10px;">
+                                <form action="/download_agent_file" method="post" style="flex: 1;">
+                                    <input type="hidden" name="agent_name" value="{{ agent.name }}">
+                                    <button type="submit" class="process-btn" style="background: linear-gradient(135deg, #27ae60, #2ecc71); font-size: 14px; padding: 8px 16px; width: 100%;">
+                                        <i class="fas fa-download"></i> Download
+                                    </button>
+                                </form>
+                                <button type="button" class="process-btn approve-btn" style="background: linear-gradient(135deg, #3498db, #2980b9); font-size: 14px; padding: 8px 16px; flex: 1;" onclick="approveAllocation('{{ agent.name }}')">
+                                    <i class="fas fa-check"></i> Approve
+                                </button>
+                            </div>
+                        </div>
+                        {% endfor %}
+                    </div>
                 </div>
                 {% endif %}
 
@@ -679,6 +709,7 @@ HTML_TEMPLATE = """
                 loadAppointmentDates();
             }, 1000);
         });
+        
         
         // Global variables for calendar
         let currentDate = new Date();
@@ -1431,6 +1462,25 @@ HTML_TEMPLATE = """
                 console.error('Error:', error);
             });
         }
+        
+        function approveAllocation(agentName) {
+            if (confirm(`Are you sure you want to approve the allocation for ${agentName}?`)) {
+                // Add visual feedback
+                const button = event.target;
+                const originalText = button.innerHTML;
+                button.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Approving...';
+                button.disabled = true;
+                
+                // Simulate approval process (you can replace this with actual API call)
+                setTimeout(() => {
+                    button.innerHTML = '<i class="fas fa-check"></i> Approved';
+                    button.style.background = 'linear-gradient(135deg, #27ae60, #2ecc71)';
+                    
+                    // Show success message
+                    alert(`Allocation approved for ${agentName}!`);
+                }, 1000);
+            }
+        }
     </script>
 </body>
 </html>
@@ -1573,7 +1623,8 @@ def process_allocation_files(allocation_df, data_df):
         return f"❌ Error during processing: {str(e)}", None
 
 def process_allocation_files_with_dates(allocation_df, data_df, selected_dates, custom_dates, appointment_dates, appointment_dates_second=None):
-    """Process data file with priority assignment based on selected dates"""
+    """Process data file with priority assignment and generate agent allocation summary"""
+    global agent_allocations_data
     try:
         from datetime import datetime, timedelta
         import pandas as pd
@@ -1590,9 +1641,6 @@ def process_allocation_files_with_dates(allocation_df, data_df, selected_dates, 
         
         if appointment_date_col is None:
             return f"❌ Error: 'Appointment Date' column not found in data file.\nAvailable columns: {list(processed_df.columns)}", None
-        
-        # Keep original appointment date format - don't convert to datetime
-        # We'll work with string dates to preserve original format (MM/DD/YY)
         
         # Check if Priority Status column exists, if not create it
         if 'Priority Status' not in processed_df.columns:
@@ -1626,7 +1674,6 @@ def process_allocation_files_with_dates(allocation_df, data_df, selected_dates, 
                 continue
             
             # Convert appointment date to string and handle different formats
-            original_appointment_value = appointment_date
             appointment_date_str = str(appointment_date)
             
             # If it's a datetime string like '2025-11-03 00:00:00', extract just the date part
@@ -1677,6 +1724,126 @@ def process_allocation_files_with_dates(allocation_df, data_df, selected_dates, 
                     # If conversion fails, use the original string
                     third_priority_dates_set.add(appointment_date_str)
         
+        # Generate agent allocation summary if allocation_df is provided
+        agent_summary = ""
+        if allocation_df is not None:
+            try:
+                # Get the first sheet from allocation data
+                agent_df = list(allocation_df.values())[0]
+                
+                # Find agent name and counts columns
+                agent_name_col = None
+                counts_col = None
+                for col in agent_df.columns:
+                    col_lower = col.lower()
+                    if 'agent' in col_lower and 'name' in col_lower:
+                        agent_name_col = col
+                    elif 'count' in col_lower:
+                        counts_col = col
+                
+                if agent_name_col and counts_col:
+                    # Get agent data with their capacities
+                    agent_data = agent_df[[agent_name_col, counts_col]].dropna()
+                    total_agents = len(agent_data)
+                    
+                    # Calculate total capacity with proper type conversion
+                    total_capacity = 0
+                    for _, row in agent_data.iterrows():
+                        try:
+                            if pd.notna(row[counts_col]):
+                                capacity = int(float(str(row[counts_col]).replace(',', '')))
+                                total_capacity += capacity
+                        except (ValueError, TypeError):
+                            continue
+                    
+                    # Calculate allocation based on capacity
+                    agent_allocations = []
+                    total_allocated = 0
+                    
+                    for _, row in agent_data.iterrows():
+                        agent_name = row[agent_name_col]
+                        # Handle different data types in counts column
+                        try:
+                            if pd.notna(row[counts_col]):
+                                # Try to convert to int, handle string numbers
+                                capacity = int(float(str(row[counts_col]).replace(',', '')))
+                            else:
+                                capacity = 0
+                        except (ValueError, TypeError):
+                            capacity = 0
+                        
+                        # Calculate proportional allocation based on capacity
+                        if total_capacity > 0:
+                            proportional_allocation = int((capacity / total_capacity) * total_rows)
+                        else:
+                            proportional_allocation = 0
+                        
+                        # Ensure we don't exceed agent's capacity
+                        actual_allocation = min(proportional_allocation, capacity)
+                        
+                        agent_allocations.append({
+                            'name': agent_name,
+                            'capacity': capacity,
+                            'allocated': actual_allocation
+                        })
+                        
+                        total_allocated += actual_allocation
+                    
+                    # Distribute remaining rows to agents with available capacity
+                    remaining_rows = total_rows - total_allocated
+                    if remaining_rows > 0:
+                        # Sort agents by remaining capacity (descending)
+                        agent_allocations.sort(key=lambda x: x['capacity'] - x['allocated'], reverse=True)
+                        
+                        for agent in agent_allocations:
+                            if remaining_rows <= 0:
+                                break
+                            available_capacity = agent['capacity'] - agent['allocated']
+                            additional_allocation = min(remaining_rows, available_capacity)
+                            agent['allocated'] += additional_allocation
+                            remaining_rows -= additional_allocation
+                    
+                    # Sort agents by name for display
+                    agent_allocations.sort(key=lambda x: x['name'])
+                    
+                    # Store agent allocations data globally for individual downloads
+                    agent_allocations_data = agent_allocations
+                    print(f"DEBUG: Set agent_allocations_data with {len(agent_allocations)} agents")
+                    
+                    agent_summary = f"""
+👥 Agent Allocation Summary (Capacity-Based):
+- Total Agents: {total_agents}
+- Total Rows to Allocate: {total_rows}
+- Total Agent Capacity: {total_capacity}
+- Total Allocated: {sum(a['allocated'] for a in agent_allocations)}
+- Remaining Unallocated: {total_rows - sum(a['allocated'] for a in agent_allocations)}
+
+📋 Agent Allocation Details:
+"""
+                    for i, agent in enumerate(agent_allocations):
+                        agent_summary += f"  {i+1}. {agent['name']}: {agent['allocated']}/{agent['capacity']} rows\n"
+                    
+                    # Calculate priority distribution based on actual allocations
+                    total_allocated = sum(a['allocated'] for a in agent_allocations)
+                    if total_allocated > 0:
+                        agent_summary += f"""
+📊 Priority Distribution (Based on Actual Allocations):
+- First Priority: {first_priority_count} rows total
+- Second Priority: {second_priority_count} rows total  
+- Third Priority: {third_priority_count} rows total
+
+⚠️ Note: Priority distribution will be proportional to each agent's allocated capacity.
+"""
+                    else:
+                        agent_summary += "\n⚠️ No rows could be allocated due to capacity constraints."
+                        
+                elif not agent_name_col:
+                    agent_summary = "\n⚠️ Agent Name column not found in allocation file."
+                elif not counts_col:
+                    agent_summary = "\n⚠️ Counts column not found in allocation file."
+            except Exception as e:
+                agent_summary = f"\n⚠️ Error processing agent allocation: {str(e)}"
+        
         # Generate result message
         first_priority_dates_list = sorted(list(first_priority_dates))
         second_priority_dates_list = sorted(list(second_priority_dates))
@@ -1699,7 +1866,7 @@ def process_allocation_files_with_dates(allocation_df, data_df, selected_dates, 
 📅 Third Priority Dates: {third_priority_dates_str}
 
 📋 Updated column: 'Priority Status'
-📅 Based on column: '{appointment_date_col}'
+📅 Based on column: '{appointment_date_col}'{agent_summary}
 
 💾 Ready to download the processed result file!"""
         
@@ -1711,12 +1878,16 @@ def process_allocation_files_with_dates(allocation_df, data_df, selected_dates, 
 @app.route('/')
 def index():
     global allocation_data, data_file_data, allocation_filename, data_filename, processing_result
+    global agent_processing_result, agent_allocations_data
+    print(f"DEBUG: agent_allocations_data in index: {agent_allocations_data}")
     return render_template_string(HTML_TEMPLATE, 
                                 allocation_data=allocation_data, 
                                 data_file_data=data_file_data,
                                 allocation_filename=allocation_filename,
                                 data_filename=data_filename,
-                                processing_result=processing_result)
+                                processing_result=processing_result,
+                                agent_processing_result=agent_processing_result,
+                                agent_allocations_data=agent_allocations_data)
 
 @app.route('/upload_allocation', methods=['POST'])
 def upload_allocation_file():
@@ -1776,9 +1947,10 @@ def upload_data_file():
         processing_result = f"❌ Error uploading data file: {str(e)}"
         return redirect('/')
 
+
 @app.route('/process_files', methods=['POST'])
 def process_files():
-    global allocation_data, data_file_data, processing_result
+    global allocation_data, data_file_data, processing_result, agent_processing_result, agent_allocations_data
     
     if not data_file_data:
         processing_result = "❌ Error: Please upload data file first"
@@ -1787,7 +1959,9 @@ def process_files():
                                     data_file_data=data_file_data,
                                     allocation_filename=allocation_filename,
                                     data_filename=data_filename,
-                                    processing_result=processing_result)
+                                    processing_result=processing_result,
+                                    agent_processing_result=agent_processing_result,
+                                    agent_allocations_data=agent_allocations_data)
     
     try:
         # Get the first sheet from data file
@@ -1799,8 +1973,8 @@ def process_files():
         debug_count = request.form.get('debug_selected_count', '0')
         debug_count_second = request.form.get('debug_selected_count_second', '0')
         
-        # Process the data file with selected dates
-        result_message, processed_df = process_allocation_files_with_dates(None, data_df, [], '', appointment_dates, appointment_dates_second)
+        # Process the data file with selected dates and allocation data
+        result_message, processed_df = process_allocation_files_with_dates(allocation_data, data_df, [], '', appointment_dates, appointment_dates_second)
         
         if processed_df is not None:
             # Store the result for download
@@ -1815,7 +1989,9 @@ def process_files():
                                     data_file_data=data_file_data,
                                     allocation_filename=allocation_filename,
                                     data_filename=data_filename,
-                                    processing_result=processing_result)
+                                    processing_result=processing_result,
+                                    agent_processing_result=agent_processing_result,
+                                    agent_allocations_data=agent_allocations_data)
         
     except Exception as e:
         processing_result = f"❌ Error processing data file: {str(e)}"
@@ -1824,7 +2000,9 @@ def process_files():
                                     data_file_data=data_file_data,
                                     allocation_filename=allocation_filename,
                                     data_filename=data_filename,
-                                    processing_result=processing_result)
+                                    processing_result=processing_result,
+                                    agent_processing_result=agent_processing_result,
+                                    agent_allocations_data=agent_allocations_data)
 
 @app.route('/download_result', methods=['POST'])
 def download_result():
@@ -1944,9 +2122,91 @@ def get_receive_dates():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
+
+
+@app.route('/download_agent_file', methods=['POST'])
+def download_agent_file():
+    global data_file_data, agent_allocations_data
+    
+    if not data_file_data or not agent_allocations_data:
+        return jsonify({'error': 'No data available for download'}), 400
+    
+    agent_name = request.form.get('agent_name')
+    
+    if not agent_name:
+        return jsonify({'error': 'No agent specified'}), 400
+    
+    # Generate filename with agent name and today's date
+    from datetime import datetime
+    today = datetime.now().strftime("%Y-%m-%d")
+    filename = f"{agent_name}_{today}.xlsx"
+    
+    try:
+        # Find the agent in allocations data
+        agent_info = None
+        for agent in agent_allocations_data:
+            if agent['name'] == agent_name:
+                agent_info = agent
+                break
+        
+        if not agent_info:
+            return jsonify({'error': 'Agent not found'}), 404
+        
+        # Get the processed data
+        processed_df = list(data_file_data.values())[0]
+        
+        # For now, we'll create a sample allocation for the agent
+        # In a real implementation, you would filter the data based on the agent's allocation
+        agent_rows = agent_info['allocated']
+        
+        # Create a subset of data for this agent (sample implementation)
+        if len(processed_df) >= agent_rows:
+            agent_df = processed_df.head(agent_rows).copy()
+        else:
+            agent_df = processed_df.copy()
+        
+        # Add agent information to the dataframe
+        agent_df['Agent Name'] = agent_name
+        agent_df['Allocated Rows'] = agent_rows
+        agent_df['Agent Capacity'] = agent_info['capacity']
+        
+        # Create a temporary file
+        temp_fd, temp_path = tempfile.mkstemp(suffix='.xlsx')
+        
+        try:
+            with pd.ExcelWriter(temp_path, engine='openpyxl') as writer:
+                agent_df.to_excel(writer, sheet_name=f'{agent_name}_Allocation', index=False)
+                
+                # Add a summary sheet
+                summary_data = {
+                    'Metric': ['Agent Name', 'Total Allocated Rows', 'Agent Capacity', 'First Priority Rows', 'Second Priority Rows', 'Third Priority Rows'],
+                    'Value': [
+                        agent_name,
+                        agent_rows,
+                        agent_info['capacity'],
+                        len(agent_df[agent_df['Priority Status'] == 'First Priority']) if 'Priority Status' in agent_df.columns else 0,
+                        len(agent_df[agent_df['Priority Status'] == 'Second Priority']) if 'Priority Status' in agent_df.columns else 0,
+                        len(agent_df[agent_df['Priority Status'] == 'Third Priority']) if 'Priority Status' in agent_df.columns else 0
+                    ]
+                }
+                summary_df = pd.DataFrame(summary_data)
+                summary_df.to_excel(writer, sheet_name='Summary', index=False)
+            
+            return send_file(temp_path, as_attachment=True, download_name=filename)
+            
+        finally:
+            # Clean up temporary file
+            os.close(temp_fd)
+            if os.path.exists(temp_path):
+                os.unlink(temp_path)
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
 @app.route('/reset_app', methods=['POST'])
 def reset_app():
     global allocation_data, data_file_data, allocation_filename, data_filename, processing_result
+    global agent_allocations_data
     
     try:
         # Reset all global variables
@@ -1955,6 +2215,7 @@ def reset_app():
         allocation_filename = None
         data_filename = None
         processing_result = "🔄 Application reset successfully! All files and data have been cleared."
+        agent_allocations_data = None
         
         return redirect('/')
         

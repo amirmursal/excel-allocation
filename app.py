@@ -5,14 +5,27 @@ Admin can upload allocation and data files, Agent can upload status files
 """
 
 from flask import Flask, render_template_string, request, jsonify, send_file, redirect
+from flask_mail import Mail, Message
 import pandas as pd
 import os
 from datetime import datetime
 from werkzeug.utils import secure_filename
 import tempfile
+import io
 
 app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max file size
+
+# Email configuration
+app.config['MAIL_SERVER'] = 'smtp.gmail.com'
+app.config['MAIL_PORT'] = 587
+app.config['MAIL_USE_TLS'] = True
+app.config['MAIL_USERNAME'] = 'amirmursal@gmail.com'
+app.config['MAIL_PASSWORD'] = 'wgps wdsn ycly rnqt'    
+app.config['MAIL_DEFAULT_SENDER'] = 'amirmursal@gmail.com'
+
+# Initialize Flask-Mail
+mail = Mail(app)
 
 # Global variables to store session data
 allocation_data = None
@@ -451,6 +464,29 @@ HTML_TEMPLATE = """
         .modal-table tr:hover {
             background-color: #f8f9fa;
         }
+        
+        /* Style for serial number column */
+        .modal-table th:first-child,
+        .modal-table td:first-child {
+            text-align: center;
+            width: 60px;
+            font-weight: 600;
+            color: #667eea;
+            background-color: #f0f2ff;
+        }
+        
+        .modal-table th:first-child {
+            background-color: #e8ecff;
+        }
+        
+        /* Hide all agent rows by default, show only first 10 */
+        .agent-row {
+            display: none;
+        }
+        
+        .agent-row:nth-child(-n+10) {
+            display: table-row;
+        }
     </style>
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
 </head>
@@ -641,19 +677,22 @@ HTML_TEMPLATE = """
                     <h3>👥 Download Individual Agent Files</h3>
                     <p>Download separate Excel files for each agent with their allocated data.</p>
                     
+                    
                     <div style="overflow-x: auto; margin-top: 15px;">
                         <table class="agent-table" style="width: 100%; border-collapse: collapse; background: white; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 10px rgba(0,0,0,0.1);">
                             <thead>
                                 <tr style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white;">
+                                    <th style="padding: 15px; text-align: center; font-weight: 600; border: none; width: 60px;">Sr No</th>
                                     <th style="padding: 15px; text-align: left; font-weight: 600; border: none;">Agent Name</th>
                                     <th style="padding: 15px; text-align: center; font-weight: 600; border: none;">Allocated</th>
                                     <th style="padding: 15px; text-align: center; font-weight: 600; border: none;">Capacity</th>
                                     <th style="padding: 15px; text-align: center; font-weight: 600; border: none;">Actions</th>
                                 </tr>
                             </thead>
-                            <tbody>
+                            <tbody id="agentTableBody">
                                 {% for agent in agent_allocations_data %}
-                                <tr style="border-bottom: 1px solid #e9ecef; transition: background-color 0.2s;">
+                                <tr class="agent-row" style="border-bottom: 1px solid #e9ecef; transition: background-color 0.2s;" data-index="{{ loop.index0 }}">
+                                    <td style="padding: 15px; text-align: center; font-weight: 600; color: #667eea;">{{ loop.index }}</td>
                                     <td style="padding: 15px; font-weight: 500; color: #333;">{{ agent.name }}</td>
                                     <td style="padding: 15px; text-align: center; color: #27ae60; font-weight: 600;">{{ agent.allocated }}</td>
                                     <td style="padding: 15px; text-align: center; color: #666;">{{ agent.capacity }}</td>
@@ -672,7 +711,10 @@ HTML_TEMPLATE = """
                             </tbody>
                         </table>
                     </div>
+                    
+                    
                 </div>
+                
                 {% endif %}
                 
                 <!-- Agent Allocation Modal -->
@@ -1557,22 +1599,256 @@ HTML_TEMPLATE = """
             });
         }
         
+        // Pagination variables
+        let currentPage = 1;
+        let itemsPerPage = 10;
+        let totalItems = 0;
+        
+        // Initialize pagination when page loads
+        document.addEventListener('DOMContentLoaded', function() {
+            // Try to initialize pagination immediately and also with a delay
+            initializePagination();
+            setTimeout(initializePagination, 500);
+            setTimeout(initializePagination, 1000);
+            setTimeout(initializePagination, 2000);
+            
+            // Watch for changes in the agent table body
+            const agentTableBody = document.getElementById('agentTableBody');
+            if (agentTableBody) {
+                const observer = new MutationObserver(function(mutations) {
+                    mutations.forEach(function(mutation) {
+                        if (mutation.type === 'childList' && mutation.addedNodes.length > 0) {
+                            console.log('Agent rows detected, initializing pagination...');
+                            setTimeout(initializePagination, 100);
+                        }
+                    });
+                });
+                
+                observer.observe(agentTableBody, {
+                    childList: true,
+                    subtree: true
+                });
+            }
+        });
+        
+        function initializePagination() {
+            const agentRows = document.querySelectorAll('.agent-row');
+            totalItems = agentRows.length;
+            
+            console.log('Initializing pagination with', totalItems, 'items');
+            
+            if (totalItems > 0) {
+                // Hide all rows initially
+                agentRows.forEach((row, index) => {
+                    if (index >= itemsPerPage) {
+                        row.style.display = 'none';
+                    } else {
+                        row.style.display = '';
+                        // Update serial number
+                        const srNoCell = row.querySelector('td:first-child');
+                        if (srNoCell) {
+                            srNoCell.textContent = index + 1;
+                        }
+                    }
+                });
+                
+                updatePagination();
+                showPage(1);
+            } else {
+                console.log('No agent rows found, retrying...');
+            }
+        }
+        
+        
+        function changePage(direction) {
+            const totalPages = Math.ceil(totalItems / itemsPerPage);
+            const newPage = currentPage + direction;
+            
+            // Prevent navigation if buttons are disabled
+            if (direction === -1 && currentPage === 1) {
+                return; // Can't go to previous page if on first page
+            }
+            if (direction === 1 && (currentPage === totalPages || totalPages === 0)) {
+                return; // Can't go to next page if on last page or no pages
+            }
+            
+            if (newPage >= 1 && newPage <= totalPages) {
+                currentPage = newPage;
+                showPage(currentPage);
+                updatePagination();
+            }
+        }
+        
+        function goToPage(pageNumber) {
+            const totalPages = Math.ceil(totalItems / itemsPerPage);
+            if (pageNumber >= 1 && pageNumber <= totalPages) {
+                currentPage = pageNumber;
+                showPage(currentPage);
+                updatePagination();
+            }
+        }
+        
+        function showPage(page) {
+            const agentRows = document.querySelectorAll('.agent-row');
+            const startIndex = (page - 1) * itemsPerPage;
+            const endIndex = Math.min(startIndex + itemsPerPage, totalItems);
+            
+            // Hide all rows
+            agentRows.forEach((row, index) => {
+                if (index >= startIndex && index < endIndex) {
+                    row.style.display = '';
+                    // Update serial number
+                    const srNoCell = row.querySelector('td:first-child');
+                    if (srNoCell) {
+                        srNoCell.textContent = index + 1;
+                    }
+                } else {
+                    row.style.display = 'none';
+                }
+            });
+            
+            // Update pagination info
+            const paginationInfo = document.getElementById('paginationInfo');
+            if (paginationInfo) {
+                paginationInfo.textContent = `Showing ${startIndex + 1}-${endIndex} of ${totalItems} agents`;
+            }
+        }
+        
+        function updatePagination() {
+            const totalPages = Math.ceil(totalItems / itemsPerPage);
+            const pageNumbers = document.getElementById('pageNumbers');
+            const prevBtn = document.getElementById('prevBtn');
+            const nextBtn = document.getElementById('nextBtn');
+            
+            // Update Previous/Next buttons with proper styling
+            if (currentPage === 1) {
+                prevBtn.disabled = true;
+                prevBtn.style.opacity = '0.5';
+                prevBtn.style.cursor = 'not-allowed';
+            } else {
+                prevBtn.disabled = false;
+                prevBtn.style.opacity = '1';
+                prevBtn.style.cursor = 'pointer';
+            }
+            
+            if (currentPage === totalPages || totalPages === 0) {
+                nextBtn.disabled = true;
+                nextBtn.style.opacity = '0.5';
+                nextBtn.style.cursor = 'not-allowed';
+            } else {
+                nextBtn.disabled = false;
+                nextBtn.style.opacity = '1';
+                nextBtn.style.cursor = 'pointer';
+            }
+            
+            // Generate page numbers
+            pageNumbers.innerHTML = '';
+            
+            // Show up to 5 page numbers
+            let startPage = Math.max(1, currentPage - 2);
+            let endPage = Math.min(totalPages, startPage + 4);
+            
+            // Adjust start page if we're near the end
+            if (endPage - startPage < 4) {
+                startPage = Math.max(1, endPage - 4);
+            }
+            
+            // Add first page and ellipsis if needed
+            if (startPage > 1) {
+                addPageButton(1);
+                if (startPage > 2) {
+                    addEllipsis();
+                }
+            }
+            
+            // Add page numbers
+            for (let i = startPage; i <= endPage; i++) {
+                addPageButton(i);
+            }
+            
+            // Add last page and ellipsis if needed
+            if (endPage < totalPages) {
+                if (endPage < totalPages - 1) {
+                    addEllipsis();
+                }
+                addPageButton(totalPages);
+            }
+        }
+        
+        function addPageButton(pageNumber) {
+            const pageNumbers = document.getElementById('pageNumbers');
+            const button = document.createElement('button');
+            button.textContent = pageNumber;
+            button.onclick = () => goToPage(pageNumber);
+            
+            if (pageNumber === currentPage) {
+                button.style.background = 'linear-gradient(135deg, #667eea, #764ba2)';
+                button.style.color = 'white';
+                button.style.border = 'none';
+            } else {
+                button.style.background = 'white';
+                button.style.color = '#333';
+                button.style.border = '1px solid #ddd';
+            }
+            
+            button.style.padding = '8px 12px';
+            button.style.borderRadius = '4px';
+            button.style.cursor = 'pointer';
+            button.style.transition = 'background-color 0.2s';
+            
+            pageNumbers.appendChild(button);
+        }
+        
+        function addEllipsis() {
+            const pageNumbers = document.getElementById('pageNumbers');
+            const ellipsis = document.createElement('span');
+            ellipsis.textContent = '...';
+            ellipsis.style.padding = '8px 4px';
+            ellipsis.style.color = '#666';
+            pageNumbers.appendChild(ellipsis);
+        }
+        
+        // Global function to initialize pagination after data is loaded
+        window.initializeAgentPagination = function() {
+            console.log('Manually initializing pagination...');
+            initializePagination();
+        }
+        
         function approveAllocation(agentName) {
-            if (confirm(`Are you sure you want to approve the allocation for ${agentName}?`)) {
+            if (confirm(`Are you sure you want to approve the allocation for ${agentName}? This will send an email with the allocated data.`)) {
                 // Add visual feedback
                 const button = event.target;
                 const originalText = button.innerHTML;
-                button.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Approving...';
+                button.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Sending Email...';
                 button.disabled = true;
                 
-                // Simulate approval process (you can replace this with actual API call)
-                setTimeout(() => {
-                    button.innerHTML = '<i class="fas fa-check"></i> Approved';
-                    button.style.background = 'linear-gradient(135deg, #27ae60, #2ecc71)';
-                    
-                    // Show success message
-                    alert(`Allocation approved for ${agentName}!`);
-                }, 1000);
+                // Send approval email
+                fetch('/send_approval_email', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        agent_name: agentName
+                    })
+                })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        button.innerHTML = '<i class="fas fa-check"></i> Email Sent';
+                        button.style.background = 'linear-gradient(135deg, #27ae60, #2ecc71)';
+                        showToast(`✅ ${data.message}`, 'success');
+                    } else {
+                        button.innerHTML = originalText;
+                        button.disabled = false;
+                        showToast(`❌ Error: ${data.message}`, 'error');
+                    }
+                })
+                .catch(error => {
+                    button.innerHTML = originalText;
+                    button.disabled = false;
+                    showToast(`❌ Error sending email: ${error.message}`, 'error');
+                });
             }
         }
         
@@ -1657,28 +1933,121 @@ HTML_TEMPLATE = """
         }
         
         // Modal close functionality
-        document.addEventListener('DOMContentLoaded', function() {
+        function closeModal() {
             const modal = document.getElementById('agentModal');
-            const closeBtn = document.querySelector('.close');
-            const closeBtnFooter = document.querySelector('.close-btn');
-            
-            // Close modal when clicking X
-            closeBtn.onclick = function() {
+            if (modal) {
                 modal.style.display = 'none';
             }
+        }
+        
+        // Set up modal close event listeners
+        document.addEventListener('DOMContentLoaded', function() {
+            // Close modal when clicking outside of it
+            document.addEventListener('click', function(event) {
+                const modal = document.getElementById('agentModal');
+                if (modal && event.target === modal) {
+                    closeModal();
+                }
+            });
+            
+            // Close modal when clicking X button
+            document.addEventListener('click', function(event) {
+                if (event.target.classList.contains('close')) {
+                    closeModal();
+                }
+            });
             
             // Close modal when clicking close button in footer
-            closeBtnFooter.onclick = function() {
-                modal.style.display = 'none';
-            }
-            
-            // Close modal when clicking outside of it
-            window.onclick = function(event) {
-                if (event.target == modal) {
-                    modal.style.display = 'none';
+            document.addEventListener('click', function(event) {
+                if (event.target.classList.contains('close-btn')) {
+                    closeModal();
                 }
-            }
+            });
+            
+            // Close modal when pressing Escape key
+            document.addEventListener('keydown', function(event) {
+                if (event.key === 'Escape') {
+                    closeModal();
+                }
+            });
         });
+    </script>
+    
+    <!-- Toast Notification Container -->
+    <div id="toastContainer" style="position: fixed; top: 20px; right: 20px; z-index: 10000; display: flex; flex-direction: column; gap: 10px;"></div>
+    
+    <script>
+    // Toast notification system
+    function showToast(message, type = 'info') {
+        const container = document.getElementById('toastContainer');
+        
+        // Create toast element
+        const toast = document.createElement('div');
+        toast.style.cssText = `
+            background: ${type === 'success' ? 'linear-gradient(135deg, #27ae60, #2ecc71)' : 
+                        type === 'error' ? 'linear-gradient(135deg, #e74c3c, #c0392b)' : 
+                        'linear-gradient(135deg, #3498db, #2980b9)'};
+            color: white;
+            padding: 15px 20px;
+            border-radius: 8px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.2);
+            margin-bottom: 10px;
+            min-width: 300px;
+            max-width: 400px;
+            position: relative;
+            transform: translateX(100%);
+            transition: all 0.3s ease;
+            font-weight: 500;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        `;
+        
+        // Add icon based on type
+        const icon = type === 'success' ? '✅' : 
+                    type === 'error' ? '❌' : 'ℹ️';
+        
+        toast.innerHTML = `
+            <span style="font-size: 18px;">${icon}</span>
+            <span style="flex: 1;">${message}</span>
+            <button onclick="removeToast(this.parentElement)" style="
+                background: none; 
+                border: none; 
+                color: white; 
+                font-size: 18px; 
+                cursor: pointer; 
+                padding: 0; 
+                margin-left: 10px;
+                opacity: 0.7;
+                transition: opacity 0.2s;
+            " onmouseover="this.style.opacity='1'" onmouseout="this.style.opacity='0.7'">×</button>
+        `;
+        
+        // Add to container
+        container.appendChild(toast);
+        
+        // Animate in
+        setTimeout(() => {
+            toast.style.transform = 'translateX(0)';
+        }, 100);
+        
+        // Auto remove after 5 seconds
+        setTimeout(() => {
+            removeToast(toast);
+        }, 5000);
+    }
+    
+    function removeToast(toast) {
+        if (toast && toast.parentElement) {
+            toast.style.transform = 'translateX(100%)';
+            toast.style.opacity = '0';
+            setTimeout(() => {
+                if (toast.parentElement) {
+                    toast.parentElement.removeChild(toast);
+                }
+            }, 300);
+        }
+    }
     </script>
 </body>
 </html>
@@ -1830,12 +2199,14 @@ def process_allocation_files_with_dates(allocation_df, data_df, selected_dates, 
         # Use data_df as the main file to process
         processed_df = data_df.copy()
         
-        # Find the appointment date column
+        # Find the appointment date column and insurance carrier column
         appointment_date_col = None
+        insurance_carrier_col = None
         for col in processed_df.columns:
             if 'appointment' in col.lower() and 'date' in col.lower():
                 appointment_date_col = col
-                break
+            elif 'dental' in col.lower() and 'primary' in col.lower() and 'ins' in col.lower() and 'carr' in col.lower():
+                insurance_carrier_col = col
         
         if appointment_date_col is None:
             return f"❌ Error: 'Appointment Date' column not found in data file.\nAvailable columns: {list(processed_df.columns)}", None
@@ -1929,19 +2300,45 @@ def process_allocation_files_with_dates(allocation_df, data_df, selected_dates, 
                 # Get the first sheet from allocation data
                 agent_df = list(allocation_df.values())[0]
                 
-                # Find agent name and counts columns
+                # Find agent name, counts, insurance working, insurance needs training, and email columns
                 agent_name_col = None
                 counts_col = None
+                insurance_working_col = None
+                insurance_needs_training_col = None
+                email_col = None
                 for col in agent_df.columns:
                     col_lower = col.lower()
                     if 'agent' in col_lower and 'name' in col_lower:
                         agent_name_col = col
                     elif 'count' in col_lower:
                         counts_col = col
+                    elif 'insurance' in col_lower and 'working' in col_lower:
+                        insurance_working_col = col
+                    elif 'insurance' in col_lower and 'needs' in col_lower and 'training' in col_lower:
+                        insurance_needs_training_col = col
+                    elif 'email' in col_lower and 'address' in col_lower:
+                        email_col = col
                 
                 if agent_name_col and counts_col:
-                    # Get agent data with their capacities
-                    agent_data = agent_df[[agent_name_col, counts_col]].dropna()
+                    # Get agent data with their capacities and insurance capabilities
+                    columns_to_select = [agent_name_col, counts_col]
+                    if insurance_working_col:
+                        columns_to_select.append(insurance_working_col)
+                    if insurance_needs_training_col:
+                        columns_to_select.append(insurance_needs_training_col)
+                    if email_col:
+                        columns_to_select.append(email_col)
+                    
+                    agent_data = agent_df[columns_to_select].dropna(subset=[agent_name_col, counts_col])
+                    
+                    # Add empty columns if not found
+                    if not insurance_working_col:
+                        agent_data['Insurance Working'] = ''
+                        insurance_working_col = 'Insurance Working'
+                    if not insurance_needs_training_col:
+                        agent_data['Insurance Needs Training'] = ''
+                        insurance_needs_training_col = 'Insurance Needs Training'
+                    
                     total_agents = len(agent_data)
                     
                     # Calculate total capacity with proper type conversion
@@ -1954,83 +2351,196 @@ def process_allocation_files_with_dates(allocation_df, data_df, selected_dates, 
                         except (ValueError, TypeError):
                             continue
                     
-                    # Calculate allocation based on capacity
+                    # Create capability-based allocation
                     agent_allocations = []
-                    total_allocated = 0
                     
+                    # First, prepare agent data with their capabilities
                     for _, row in agent_data.iterrows():
                         agent_name = row[agent_name_col]
                         # Handle different data types in counts column
                         try:
                             if pd.notna(row[counts_col]):
-                                # Try to convert to int, handle string numbers
                                 capacity = int(float(str(row[counts_col]).replace(',', '')))
                             else:
                                 capacity = 0
                         except (ValueError, TypeError):
                             capacity = 0
                         
-                        # Calculate proportional allocation based on capacity
-                        if total_capacity > 0:
-                            proportional_allocation = int((capacity / total_capacity) * total_rows)
-                        else:
-                            proportional_allocation = 0
+                        # Get insurance companies this agent can work with and check if senior
+                        insurance_companies = []
+                        is_senior = False
+                        if insurance_working_col and pd.notna(row[insurance_working_col]):
+                            # Split by common delimiters and clean up
+                            companies_str = str(row[insurance_working_col])
+                            companies = [comp.strip() for comp in companies_str.replace(',', ';').replace('|', ';').split(';') if comp.strip()]
+                            
+                            # Check if agent is senior
+                            if any('senior' in comp.lower() for comp in companies):
+                                is_senior = True
+                                # For senior agents, they can work with any insurance company
+                                insurance_companies = ['ALL_COMPANIES']
+                            else:
+                                insurance_companies = companies
                         
-                        # Ensure we don't exceed agent's capacity
-                        actual_allocation = min(proportional_allocation, capacity)
+                        # Get insurance companies this agent needs training for
+                        insurance_needs_training = []
+                        if insurance_needs_training_col and pd.notna(row[insurance_needs_training_col]):
+                            # Split by common delimiters and clean up
+                            training_str = str(row[insurance_needs_training_col])
+                            training_companies = [comp.strip() for comp in training_str.replace(',', ';').replace('|', ';').split(';') if comp.strip()]
+                            insurance_needs_training = training_companies
+                        
+                        # Get agent email
+                        agent_email = ''
+                        if email_col and pd.notna(row[email_col]):
+                            agent_email = str(row[email_col]).strip()
                         
                         agent_allocations.append({
                             'name': agent_name,
                             'capacity': capacity,
-                            'allocated': actual_allocation
+                            'allocated': 0,
+                            'email': agent_email,
+                            'insurance_companies': insurance_companies,
+                            'insurance_needs_training': insurance_needs_training,
+                            'is_senior': is_senior,
+                            'row_indices': []
                         })
-                        
-                        total_allocated += actual_allocation
                     
-                    # Distribute remaining rows to agents with available capacity
-                    remaining_rows = total_rows - total_allocated
-                    if remaining_rows > 0:
-                        # Sort agents by remaining capacity (descending)
-                        agent_allocations.sort(key=lambda x: x['capacity'] - x['allocated'], reverse=True)
+                    # Now allocate rows based on insurance company matching and priority
+                    if insurance_carrier_col:
+                        # Group data by insurance carrier and priority
+                        data_by_insurance_priority = {}
+                        for idx, row in processed_df.iterrows():
+                            insurance_carrier = str(row[insurance_carrier_col]) if pd.notna(row[insurance_carrier_col]) else 'Unknown'
+                            priority = row.get('Priority Status', 'Unknown')
+                            
+                            if insurance_carrier not in data_by_insurance_priority:
+                                data_by_insurance_priority[insurance_carrier] = {}
+                            if priority not in data_by_insurance_priority[insurance_carrier]:
+                                data_by_insurance_priority[insurance_carrier][priority] = []
+                            data_by_insurance_priority[insurance_carrier][priority].append(idx)
                         
+                        # Allocate rows to agents based on their insurance capabilities and priority
+                        for insurance_carrier, priority_data in data_by_insurance_priority.items():
+                            # Process First Priority first (senior agents get priority)
+                            for priority in ['First Priority', 'Second Priority', 'Third Priority']:
+                                if priority in priority_data:
+                                    row_indices = priority_data[priority]
+                                    
+                                    # Find agents who can work with this insurance company
+                                    capable_agents = []
+                                    for agent in agent_allocations:
+                                        # Check if agent can work with this insurance company
+                                        can_work = False
+                                        
+                                        # Senior agents can work with any insurance company
+                                        if agent['is_senior']:
+                                            can_work = True
+                                        elif not agent['insurance_companies']:  # If no specific companies listed, can work with any
+                                            can_work = True
+                                        else:
+                                            # Check if insurance carrier matches any of the agent's working companies
+                                            for comp in agent['insurance_companies']:
+                                                if (insurance_carrier.lower() in comp.lower() or 
+                                                    comp.lower() in insurance_carrier.lower() or
+                                                    insurance_carrier == comp):
+                                                    can_work = True
+                                                    break
+                                        
+                                        # Check if agent needs training for this insurance company
+                                        needs_training = False
+                                        if agent['insurance_needs_training']:
+                                            for training_comp in agent['insurance_needs_training']:
+                                                if (insurance_carrier.lower() in training_comp.lower() or 
+                                                    training_comp.lower() in insurance_carrier.lower() or
+                                                    insurance_carrier == training_comp):
+                                                    needs_training = True
+                                                    break
+                                        
+                                        # Agent is capable only if they can work AND don't need training
+                                        if can_work and not needs_training:
+                                            capable_agents.append(agent)
+                                    
+                                    if capable_agents:
+                                        # For First Priority, prioritize senior agents
+                                        if priority == 'First Priority':
+                                            senior_agents = [a for a in capable_agents if a['is_senior']]
+                                            if senior_agents:
+                                                capable_agents = senior_agents
+                                        
+                                        # Distribute rows among capable agents
+                                        rows_per_agent = len(row_indices) // len(capable_agents)
+                                        remaining_rows = len(row_indices) % len(capable_agents)
+                                        
+                                        row_idx = 0
+                                        for i, agent in enumerate(capable_agents):
+                                            # Calculate how many rows this agent should get
+                                            agent_rows = rows_per_agent
+                                            if i < remaining_rows:
+                                                agent_rows += 1
+                                            
+                                            # Ensure we don't exceed agent's capacity
+                                            available_capacity = agent['capacity'] - agent['allocated']
+                                            actual_rows = min(agent_rows, available_capacity, len(row_indices) - row_idx)
+                                            
+                                            if actual_rows > 0:
+                                                # Assign specific row indices to this agent
+                                                agent['row_indices'].extend(row_indices[row_idx:row_idx + actual_rows])
+                                                agent['allocated'] += actual_rows
+                                                row_idx += actual_rows
+                    else:
+                        # Fallback: if no insurance carrier column, use simple capacity-based allocation
+                        row_index = 0
                         for agent in agent_allocations:
-                            if remaining_rows <= 0:
+                            if row_index >= total_rows:
                                 break
-                            available_capacity = agent['capacity'] - agent['allocated']
-                            additional_allocation = min(remaining_rows, available_capacity)
-                            agent['allocated'] += additional_allocation
-                            remaining_rows -= additional_allocation
+                            available_capacity = agent['capacity']
+                            actual_allocation = min(available_capacity, total_rows - row_index)
+                            if actual_allocation > 0:
+                                agent['row_indices'] = list(range(row_index, row_index + actual_allocation))
+                                agent['allocated'] = actual_allocation
+                                row_index += actual_allocation
                     
                     # Sort agents by name for display
                     agent_allocations.sort(key=lambda x: x['name'])
                     
-                    # Assign specific rows to each agent to avoid duplicates
-                    row_index = 0
-                    for agent in agent_allocations:
-                        if agent['allocated'] > 0:
-                            agent['row_indices'] = list(range(row_index, row_index + agent['allocated']))
-                            row_index += agent['allocated']
-                        else:
-                            agent['row_indices'] = []
-                    
-                    print(f"DEBUG: Total rows allocated: {row_index}, Total rows available: {total_rows}")
+                    # Calculate total allocated rows
+                    total_allocated = sum(agent['allocated'] for agent in agent_allocations)
+                    print(f"DEBUG: Total rows allocated: {total_allocated}, Total rows available: {total_rows}")
                     
                     # Store agent allocations data globally for individual downloads
                     agent_allocations_data = agent_allocations
                     print(f"DEBUG: Set agent_allocations_data with {len(agent_allocations)} agents")
                     
+                    # Calculate allocation statistics
+                    total_allocated = sum(a['allocated'] for a in agent_allocations)
+                    agents_with_work = len([a for a in agent_allocations if a['allocated'] > 0])
+                    
                     agent_summary = f"""
-👥 Agent Allocation Summary (Capacity-Based):
+👥 Agent Allocation Summary (Capability-Based):
 - Total Agents: {total_agents}
+- Agents with Work: {agents_with_work}
 - Total Rows to Allocate: {total_rows}
-- Total Agent Capacity: {total_capacity}
-- Total Allocated: {sum(a['allocated'] for a in agent_allocations)}
-- Remaining Unallocated: {total_rows - sum(a['allocated'] for a in agent_allocations)}
+- Total Allocated: {total_allocated}
+- Remaining Unallocated: {total_rows - total_allocated}
+- Insurance Matching: {'Enabled' if insurance_carrier_col else 'Disabled'}
 
 📋 Agent Allocation Details:
 """
                     for i, agent in enumerate(agent_allocations):
-                        agent_summary += f"  {i+1}. {agent['name']}: {agent['allocated']}/{agent['capacity']} rows\n"
+                        insurance_info = ""
+                        senior_info = " (Senior Agent)" if agent['is_senior'] else ""
+                        
+                        if agent['is_senior']:
+                            insurance_info = " (Can work: Any insurance company)"
+                        elif agent['insurance_companies']:
+                            insurance_info = f" (Can work: {', '.join(agent['insurance_companies'][:2])}{'...' if len(agent['insurance_companies']) > 2 else ''})"
+                        
+                        if agent['insurance_needs_training']:
+                            training_info = f" (Needs training: {', '.join(agent['insurance_needs_training'][:2])}{'...' if len(agent['insurance_needs_training']) > 2 else ''})"
+                            insurance_info += training_info
+                        
+                        agent_summary += f"  {i+1}. {agent['name']}: {agent['allocated']}/{agent['capacity']} rows{senior_info}{insurance_info}\n"
                     
                     # Calculate priority distribution based on actual allocations
                     total_allocated = sum(a['allocated'] for a in agent_allocations)
@@ -2050,6 +2560,26 @@ def process_allocation_files_with_dates(allocation_df, data_df, selected_dates, 
                     agent_summary = "\n⚠️ Agent Name column not found in allocation file."
                 elif not counts_col:
                     agent_summary = "\n⚠️ Counts column not found in allocation file."
+                
+                # Add information about insurance matching
+                if insurance_carrier_col and insurance_working_col:
+                    training_info = f" and '{insurance_needs_training_col}'" if insurance_needs_training_col else ""
+                    agent_summary += f"\n✅ Insurance capability matching enabled using '{insurance_working_col}'{training_info} and '{insurance_carrier_col}' columns."
+                elif insurance_carrier_col and not insurance_working_col:
+                    agent_summary += f"\n⚠️ Insurance carrier column '{insurance_carrier_col}' found, but 'Insurance Working' column not found in allocation file."
+                elif not insurance_carrier_col and insurance_working_col:
+                    agent_summary += f"\n⚠️ 'Insurance Working' column found, but 'Dental Primary Ins Carr' column not found in data file."
+                else:
+                    agent_summary += f"\nℹ️ Insurance capability matching disabled - using simple capacity-based allocation."
+                
+                # Add information about training filtering
+                if insurance_needs_training_col:
+                    agent_summary += f"\n🎓 Training-based filtering enabled - agents will not be assigned work for insurance companies they need training for."
+                
+                # Add information about senior agents
+                senior_count = sum(1 for agent in agent_allocations if agent['is_senior'])
+                if senior_count > 0:
+                    agent_summary += f"\n👑 Senior agents detected: {senior_count} - Senior agents can work with any insurance company and get priority for First Priority cases."
             except Exception as e:
                 agent_summary = f"\n⚠️ Error processing agent allocation: {str(e)}"
         
@@ -2371,8 +2901,12 @@ def get_agent_allocation():
             else:
                 agent_df = processed_df.copy()
         
+        # Add serial number column
+        agent_df_with_sr = agent_df.copy()
+        agent_df_with_sr.insert(0, 'Sr No', range(1, len(agent_df_with_sr) + 1))
+        
         # Convert dataframe to HTML table
-        html_table = agent_df.to_html(classes='modal-table', table_id='agentDataTable', escape=False, index=False)
+        html_table = agent_df_with_sr.to_html(classes='modal-table', table_id='agentDataTable', escape=False, index=False)
         
         # Calculate statistics
         total_rows = len(agent_df)
@@ -2481,6 +3015,137 @@ def download_agent_file():
         
     except Exception as e:
         return jsonify({'error': str(e)}), 500
+
+@app.route('/send_approval_email', methods=['POST'])
+def send_approval_email():
+    try:
+        data = request.get_json()
+        agent_name = data.get('agent_name')
+        
+        if not agent_name or not agent_allocations_data:
+            return jsonify({'success': False, 'message': 'Agent name or allocation data not found'})
+        
+        # Find the agent in the allocation data
+        agent_info = None
+        for agent in agent_allocations_data:
+            if agent['name'] == agent_name:
+                agent_info = agent
+                break
+        
+        if not agent_info:
+            return jsonify({'success': False, 'message': 'Agent not found'})
+        
+        # Get agent's email from allocation data
+        agent_email = agent_info.get('email')
+        if not agent_email:
+            return jsonify({'success': False, 'message': 'Agent email not found'})
+        
+        # Create Excel file with agent's allocated data
+        excel_buffer = create_agent_excel_file(agent_name, agent_info)
+        
+        # Send email
+        msg = Message(
+            subject=f'Your Work Allocation - {agent_name}',
+            recipients=[agent_email],
+            body=f'''
+Dear {agent_name},
+
+Your work allocation has been approved and is attached to this email.
+
+Allocation Details:
+- Total Allocated: {agent_info['allocated']} rows
+- Your Capacity: {agent_info['capacity']} rows
+- Allocation Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+
+Please find your allocated data in the attached Excel file.
+
+Best regards,
+Allocation Management System
+            ''',
+            html=f'''
+            <h2>Work Allocation Approved</h2>
+            <p>Dear <strong>{agent_name}</strong>,</p>
+            <p>Your work allocation has been approved and is attached to this email.</p>
+            
+            <h3>Allocation Details:</h3>
+            <ul>
+                <li><strong>Total Allocated:</strong> {agent_info['allocated']} rows</li>
+                <li><strong>Your Capacity:</strong> {agent_info['capacity']} rows</li>
+                <li><strong>Allocation Date:</strong> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</li>
+            </ul>
+            
+            <p>Please find your allocated data in the attached Excel file.</p>
+            
+            <p>Best regards,<br>
+            Allocation Management System</p>
+            '''
+        )
+        
+        # Attach Excel file
+        msg.attach(
+            filename=f'{agent_name}_allocation_{datetime.now().strftime("%Y%m%d")}.xlsx',
+            content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            data=excel_buffer.getvalue()
+        )
+        
+        mail.send(msg)
+        
+        return jsonify({'success': True, 'message': f'Approval email sent to {agent_email}'})
+        
+    except Exception as e:
+        return jsonify({'success': False, 'message': f'Error sending email: {str(e)}'})
+
+def create_agent_excel_file(agent_name, agent_info):
+    """Create Excel file with agent's allocated data"""
+    try:
+        # Get the agent's allocated row indices
+        row_indices = agent_info.get('row_indices', [])
+        
+        if not row_indices or data_file_data is None:
+            # If no specific rows or no data, create empty DataFrame
+            allocated_df = pd.DataFrame({'Message': ['No data allocated to this agent']})
+        else:
+            # data_file_data is a dictionary, get the first sheet (main data)
+            if isinstance(data_file_data, dict):
+                # Get the first sheet from the dictionary
+                first_sheet_name = list(data_file_data.keys())[0]
+                main_df = data_file_data[first_sheet_name]
+            else:
+                # If it's already a DataFrame
+                main_df = data_file_data
+            
+            # Get the actual allocated rows from the processed data using row indices
+            allocated_df = main_df.iloc[row_indices].copy()
+        
+        # Create Excel buffer
+        excel_buffer = io.BytesIO()
+        
+        with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
+            # Write main data
+            allocated_df.to_excel(writer, sheet_name='Allocated Data', index=False)
+            
+            # Create summary sheet
+            summary_data = {
+                'Agent Name': [agent_name],
+                'Total Allocated': [agent_info['allocated']],
+                'Capacity': [agent_info['capacity']],
+                'Allocation Date': [datetime.now().strftime('%Y-%m-%d %H:%M:%S')],
+                'Status': ['Approved']
+            }
+            summary_df = pd.DataFrame(summary_data)
+            summary_df.to_excel(writer, sheet_name='Summary', index=False)
+        
+        excel_buffer.seek(0)
+        return excel_buffer
+        
+    except Exception as e:
+        print(f"Error creating Excel file: {e}")
+        # Return empty Excel file as fallback
+        excel_buffer = io.BytesIO()
+        empty_df = pd.DataFrame({'Message': ['No data available']})
+        empty_df.to_excel(excel_buffer, index=False)
+        excel_buffer.seek(0)
+        return excel_buffer
 
 @app.route('/reset_app', methods=['POST'])
 def reset_app():

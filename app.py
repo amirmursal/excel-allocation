@@ -6,17 +6,43 @@ Admin can upload allocation and data files, Agent can upload status files
 
 from flask import Flask, render_template_string, request, jsonify, send_file, redirect, session, url_for, flash
 from flask_mail import Mail, Message
+from flask_sqlalchemy import SQLAlchemy
+from flask_migrate import Migrate
 import pandas as pd
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 from werkzeug.utils import secure_filename
+from werkzeug.security import generate_password_hash, check_password_hash
 import tempfile
 import io
+import uuid
+import json
 from functools import wraps
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
 
 app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max file size
-app.config['SECRET_KEY'] = 'your-secret-key-change-in-production'  # Change this in production
+app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'your-secret-key-change-in-production')
+
+# Database configuration
+DATABASE_URL = os.environ.get('DATABASE_URL')
+if DATABASE_URL:
+    # For Railway/Heroku deployment
+    if DATABASE_URL.startswith('postgres://'):
+        DATABASE_URL = DATABASE_URL.replace('postgres://', 'postgresql://', 1)
+    app.config['SQLALCHEMY_DATABASE_URI'] = DATABASE_URL
+else:
+    # For local development
+    app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///excel_allocation.db'
+
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+
+# Initialize database
+db = SQLAlchemy(app)
+migrate = Migrate(app, db)
 
 # Email configuration
 app.config['MAIL_SERVER'] = 'smtp.gmail.com'
@@ -29,7 +55,318 @@ app.config['MAIL_DEFAULT_SENDER'] = 'amirmursal@gmail.com'
 # Initialize Flask-Mail
 mail = Mail(app)
 
-# Global variables to store session data
+# Database Models
+class User(db.Model):
+    """User model for authentication and employee management"""
+    __tablename__ = 'users'
+    
+    id = db.Column(db.Integer, primary_key=True)
+    username = db.Column(db.String(80), unique=True, nullable=False)
+    email = db.Column(db.String(120), unique=True, nullable=False)
+    password_hash = db.Column(db.String(255), nullable=False)
+    role = db.Column(db.String(20), nullable=False, default='agent')  # admin, agent
+    name = db.Column(db.String(100), nullable=False)
+    is_active = db.Column(db.Boolean, default=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    last_login = db.Column(db.DateTime)
+    
+    # Relationships
+    sessions = db.relationship('UserSession', backref='user', lazy=True, cascade='all, delete-orphan')
+    allocations = db.relationship('Allocation', backref='user', lazy=True)
+    
+    def set_password(self, password):
+        """Hash and set password"""
+        self.password_hash = generate_password_hash(password)
+    
+    def check_password(self, password):
+        """Check if provided password matches hash"""
+        return check_password_hash(self.password_hash, password)
+    
+    def to_dict(self):
+        """Convert user to dictionary"""
+        return {
+            'id': self.id,
+            'username': self.username,
+            'email': self.email,
+            'role': self.role,
+            'name': self.name,
+            'is_active': self.is_active,
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+            'last_login': self.last_login.isoformat() if self.last_login else None
+        }
+
+class UserSession(db.Model):
+    """User session model for database-based session management"""
+    __tablename__ = 'user_sessions'
+    
+    id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
+    session_data = db.Column(db.Text)  # JSON string
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    expires_at = db.Column(db.DateTime, nullable=False)
+    is_active = db.Column(db.Boolean, default=True)
+    
+    def set_data(self, data):
+        """Set session data as JSON string"""
+        self.session_data = json.dumps(data)
+    
+    def get_data(self):
+        """Get session data from JSON string"""
+        if self.session_data:
+            return json.loads(self.session_data)
+        return {}
+    
+    def is_expired(self):
+        """Check if session is expired"""
+        return datetime.utcnow() > self.expires_at
+
+class Allocation(db.Model):
+    """Allocation model for storing file processing data"""
+    __tablename__ = 'allocations'
+    
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
+    allocation_filename = db.Column(db.String(255))
+    data_filename = db.Column(db.String(255))
+    allocation_data = db.Column(db.Text)  # JSON string
+    data_file_data = db.Column(db.Text)  # JSON string
+    processing_result = db.Column(db.Text)
+    agent_allocations_data = db.Column(db.Text)  # JSON string
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    def set_allocation_data(self, data):
+        """Set allocation data as JSON string"""
+        if data is not None:
+            # Convert pandas DataFrames to JSON-serializable format
+            if isinstance(data, dict):
+                serializable_data = {}
+                for key, value in data.items():
+                    if isinstance(value, pd.DataFrame):
+                        # Convert DataFrame to records and handle Timestamps
+                        df_records = value.to_dict('records')
+                        # Convert any Timestamp objects to strings
+                        for record in df_records:
+                            for k, v in record.items():
+                                if hasattr(v, 'isoformat'):  # Check if it's a Timestamp
+                                    record[k] = v.isoformat()
+                        serializable_data[key] = df_records
+                    else:
+                        serializable_data[key] = value
+                self.allocation_data = json.dumps(serializable_data)
+            elif isinstance(data, pd.DataFrame):
+                # Convert DataFrame to records and handle Timestamps
+                df_records = data.to_dict('records')
+                # Convert any Timestamp objects to strings
+                for record in df_records:
+                    for k, v in record.items():
+                        if hasattr(v, 'isoformat'):  # Check if it's a Timestamp
+                            record[k] = v.isoformat()
+                self.allocation_data = json.dumps(df_records)
+            else:
+                self.allocation_data = json.dumps(data)
+        else:
+            self.allocation_data = None
+    
+    def get_allocation_data(self):
+        """Get allocation data from JSON string"""
+        if self.allocation_data:
+            data = json.loads(self.allocation_data)
+            # Convert back to pandas DataFrames if needed
+            if isinstance(data, dict):
+                converted_data = {}
+                for key, value in data.items():
+                    if isinstance(value, list) and len(value) > 0 and isinstance(value[0], dict):
+                        # This looks like a DataFrame converted to records
+                        converted_data[key] = pd.DataFrame(value)
+                    else:
+                        converted_data[key] = value
+                return converted_data
+            elif isinstance(data, list) and len(data) > 0 and isinstance(data[0], dict):
+                # This looks like a single DataFrame converted to records
+                return pd.DataFrame(data)
+            else:
+                return data
+        return None
+    
+    def set_data_file_data(self, data):
+        """Set data file data as JSON string"""
+        if data is not None:
+            # Convert pandas DataFrames to JSON-serializable format
+            if isinstance(data, dict):
+                serializable_data = {}
+                for key, value in data.items():
+                    if isinstance(value, pd.DataFrame):
+                        # Convert DataFrame to records and handle Timestamps
+                        df_records = value.to_dict('records')
+                        # Convert any Timestamp objects to strings
+                        for record in df_records:
+                            for k, v in record.items():
+                                if hasattr(v, 'isoformat'):  # Check if it's a Timestamp
+                                    record[k] = v.isoformat()
+                        serializable_data[key] = df_records
+                    else:
+                        serializable_data[key] = value
+                self.data_file_data = json.dumps(serializable_data)
+            elif isinstance(data, pd.DataFrame):
+                # Convert DataFrame to records and handle Timestamps
+                df_records = data.to_dict('records')
+                # Convert any Timestamp objects to strings
+                for record in df_records:
+                    for k, v in record.items():
+                        if hasattr(v, 'isoformat'):  # Check if it's a Timestamp
+                            record[k] = v.isoformat()
+                self.data_file_data = json.dumps(df_records)
+            else:
+                self.data_file_data = json.dumps(data)
+        else:
+            self.data_file_data = None
+    
+    def get_data_file_data(self):
+        """Get data file data from JSON string"""
+        if self.data_file_data:
+            data = json.loads(self.data_file_data)
+            # Convert back to pandas DataFrames if needed
+            if isinstance(data, dict):
+                converted_data = {}
+                for key, value in data.items():
+                    if isinstance(value, list) and len(value) > 0 and isinstance(value[0], dict):
+                        # This looks like a DataFrame converted to records
+                        converted_data[key] = pd.DataFrame(value)
+                    else:
+                        converted_data[key] = value
+                return converted_data
+            elif isinstance(data, list) and len(data) > 0 and isinstance(data[0], dict):
+                # This looks like a single DataFrame converted to records
+                return pd.DataFrame(data)
+            else:
+                return data
+        return None
+    
+    def set_agent_allocations_data(self, data):
+        """Set agent allocations data as JSON string"""
+        if data is not None:
+            # Convert pandas DataFrames to JSON-serializable format
+            if isinstance(data, dict):
+                serializable_data = {}
+                for key, value in data.items():
+                    if isinstance(value, pd.DataFrame):
+                        # Convert DataFrame to records and handle Timestamps
+                        df_records = value.to_dict('records')
+                        # Convert any Timestamp objects to strings
+                        for record in df_records:
+                            for k, v in record.items():
+                                if hasattr(v, 'isoformat'):  # Check if it's a Timestamp
+                                    record[k] = v.isoformat()
+                        serializable_data[key] = df_records
+                    else:
+                        serializable_data[key] = value
+                self.agent_allocations_data = json.dumps(serializable_data)
+            elif isinstance(data, pd.DataFrame):
+                # Convert DataFrame to records and handle Timestamps
+                df_records = data.to_dict('records')
+                # Convert any Timestamp objects to strings
+                for record in df_records:
+                    for k, v in record.items():
+                        if hasattr(v, 'isoformat'):  # Check if it's a Timestamp
+                            record[k] = v.isoformat()
+                self.agent_allocations_data = json.dumps(df_records)
+            else:
+                self.agent_allocations_data = json.dumps(data)
+        else:
+            self.agent_allocations_data = None
+    
+    def get_agent_allocations_data(self):
+        """Get agent allocations data from JSON string"""
+        if self.agent_allocations_data:
+            data = json.loads(self.agent_allocations_data)
+            # Convert back to pandas DataFrames if needed
+            if isinstance(data, dict):
+                converted_data = {}
+                for key, value in data.items():
+                    if isinstance(value, list) and len(value) > 0 and isinstance(value[0], dict):
+                        # This looks like a DataFrame converted to records
+                        converted_data[key] = pd.DataFrame(value)
+                    else:
+                        converted_data[key] = value
+                return converted_data
+            elif isinstance(data, list) and len(data) > 0 and isinstance(data[0], dict):
+                # This looks like a single DataFrame converted to records
+                return pd.DataFrame(data)
+            else:
+                return data
+        return None
+
+class AgentWorkFile(db.Model):
+    """Agent work file model for storing agent uploads"""
+    __tablename__ = 'agent_work_files'
+    
+    id = db.Column(db.Integer, primary_key=True)
+    agent_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
+    filename = db.Column(db.String(255), nullable=False)
+    file_data = db.Column(db.Text)  # JSON string of processed data
+    upload_date = db.Column(db.DateTime, default=datetime.utcnow)
+    status = db.Column(db.String(50), default='uploaded')  # uploaded, processed, consolidated
+    notes = db.Column(db.Text)  # Optional notes from agent
+    
+    # Relationships
+    agent = db.relationship('User', backref='work_files')
+    
+    def set_file_data(self, data):
+        """Set file data as JSON string"""
+        if data is not None:
+            # Convert pandas DataFrames to JSON-serializable format
+            if isinstance(data, dict):
+                serializable_data = {}
+                for key, value in data.items():
+                    if isinstance(value, pd.DataFrame):
+                        # Convert DataFrame to records and handle Timestamps
+                        df_records = value.to_dict('records')
+                        # Convert any Timestamp objects to strings
+                        for record in df_records:
+                            for k, v in record.items():
+                                if hasattr(v, 'isoformat'):  # Check if it's a Timestamp
+                                    record[k] = v.isoformat()
+                        serializable_data[key] = df_records
+                    else:
+                        serializable_data[key] = value
+                self.file_data = json.dumps(serializable_data)
+            elif isinstance(data, pd.DataFrame):
+                # Convert DataFrame to records and handle Timestamps
+                df_records = data.to_dict('records')
+                # Convert any Timestamp objects to strings
+                for record in df_records:
+                    for k, v in record.items():
+                        if hasattr(v, 'isoformat'):  # Check if it's a Timestamp
+                            record[k] = v.isoformat()
+                self.file_data = json.dumps(df_records)
+            else:
+                self.file_data = json.dumps(data)
+        else:
+            self.file_data = None
+    
+    def get_file_data(self):
+        """Get file data from JSON string"""
+        if self.file_data:
+            data = json.loads(self.file_data)
+            # Convert back to pandas DataFrames if needed
+            if isinstance(data, dict):
+                converted_data = {}
+                for key, value in data.items():
+                    if isinstance(value, list) and len(value) > 0 and isinstance(value[0], dict):
+                        # This looks like a DataFrame converted to records
+                        converted_data[key] = pd.DataFrame(value)
+                    else:
+                        converted_data[key] = value
+                return converted_data
+            elif isinstance(data, list) and len(data) > 0 and isinstance(data[0], dict):
+                # This looks like a single DataFrame converted to records
+                return pd.DataFrame(data)
+            else:
+                return data
+        return None
+
+# Global variables to store session data (fallback for backward compatibility)
 allocation_data = None
 data_file_data = None
 allocation_filename = None
@@ -40,17 +377,175 @@ processing_result = None
 agent_processing_result = None
 agent_allocations_data = None
 
-# Dummy user credentials (in production, use a proper database)
-USERS = {
-    'admin': {'password': 'admin123', 'role': 'admin', 'name': 'Administrator'},
-    'agent1': {'password': 'agent123', 'role': 'agent', 'name': 'Agent One'},
-    'agent2': {'password': 'agent456', 'role': 'agent', 'name': 'Agent Two'}
-}
+# Database helper functions
+def init_database():
+    """Initialize database and create default users"""
+    with app.app_context():
+        db.create_all()
+        
+        # Create default admin user if it doesn't exist
+        admin_user = User.query.filter_by(username='admin').first()
+        if not admin_user:
+            admin_user = User(
+                username='admin',
+                email='admin@example.com',
+                role='admin',
+                name='Administrator'
+            )
+            admin_user.set_password('admin123')
+            db.session.add(admin_user)
+        
+        # Create default agent users if they don't exist
+        agent1 = User.query.filter_by(username='agent1').first()
+        if not agent1:
+            agent1 = User(
+                username='agent1',
+                email='agent1@example.com',
+                role='agent',
+                name='Agent One'
+            )
+            agent1.set_password('agent123')
+            db.session.add(agent1)
+        
+        agent2 = User.query.filter_by(username='agent2').first()
+        if not agent2:
+            agent2 = User(
+                username='agent2',
+                email='agent2@example.com',
+                role='agent',
+                name='Agent Two'
+            )
+            agent2.set_password('agent456')
+            db.session.add(agent2)
+        
+        db.session.commit()
+        print("Database initialized with default users")
+
+def get_user_by_username(username):
+    """Get user by username"""
+    return User.query.filter_by(username=username, is_active=True).first()
+
+def create_user_session(user_id, session_data=None, expires_hours=24):
+    """Create a new user session"""
+    expires_at = datetime.utcnow() + timedelta(hours=expires_hours)
+    session = UserSession(
+        user_id=user_id,
+        expires_at=expires_at
+    )
+    if session_data:
+        session.set_data(session_data)
+    db.session.add(session)
+    db.session.commit()
+    return session
+
+def get_user_session(session_id):
+    """Get user session by ID"""
+    return UserSession.query.filter_by(id=session_id, is_active=True).first()
+
+def delete_user_session(session_id):
+    """Delete user session"""
+    session = UserSession.query.filter_by(id=session_id).first()
+    if session:
+        session.is_active = False
+        db.session.commit()
+
+def cleanup_expired_sessions():
+    """Clean up expired sessions"""
+    expired_sessions = UserSession.query.filter(
+        UserSession.expires_at < datetime.utcnow()
+    ).all()
+    for session in expired_sessions:
+        session.is_active = False
+    db.session.commit()
+
+def get_or_create_allocation(user_id):
+    """Get or create allocation record for user"""
+    allocation = Allocation.query.filter_by(user_id=user_id).first()
+    if not allocation:
+        allocation = Allocation(user_id=user_id)
+        db.session.add(allocation)
+        db.session.commit()
+    return allocation
+
+def save_allocation_data(user_id, allocation_data=None, allocation_filename=None, 
+                        data_file_data=None, data_filename=None, 
+                        processing_result=None, agent_allocations_data=None):
+    """Save allocation data to database"""
+    allocation = get_or_create_allocation(user_id)
+    
+    if allocation_data is not None:
+        allocation.set_allocation_data(allocation_data)
+    if allocation_filename is not None:
+        allocation.allocation_filename = allocation_filename
+    if data_file_data is not None:
+        allocation.set_data_file_data(data_file_data)
+    if data_filename is not None:
+        allocation.data_filename = data_filename
+    if processing_result is not None:
+        allocation.processing_result = processing_result
+    if agent_allocations_data is not None:
+        allocation.set_agent_allocations_data(agent_allocations_data)
+    
+    allocation.updated_at = datetime.utcnow()
+    db.session.commit()
+    return allocation
+
+def get_allocation_data(user_id):
+    """Get allocation data from database"""
+    allocation = Allocation.query.filter_by(user_id=user_id).first()
+    if allocation:
+        return {
+            'allocation_data': allocation.get_allocation_data(),
+            'allocation_filename': allocation.allocation_filename,
+            'data_file_data': allocation.get_data_file_data(),
+            'data_filename': allocation.data_filename,
+            'processing_result': allocation.processing_result,
+            'agent_allocations_data': allocation.get_agent_allocations_data()
+        }
+    return None
+
+def save_agent_work_file(agent_id, filename, file_data, notes=None):
+    """Save agent work file to database"""
+    work_file = AgentWorkFile(
+        agent_id=agent_id,
+        filename=filename,
+        notes=notes
+    )
+    work_file.set_file_data(file_data)
+    db.session.add(work_file)
+    db.session.commit()
+    return work_file
+
+def get_agent_work_files(agent_id=None):
+    """Get agent work files, optionally filtered by agent"""
+    if agent_id:
+        return AgentWorkFile.query.filter_by(agent_id=agent_id).order_by(AgentWorkFile.upload_date.desc()).all()
+    return AgentWorkFile.query.order_by(AgentWorkFile.upload_date.desc()).all()
+
+def get_all_agent_work_files():
+    """Get all agent work files for consolidation"""
+    return AgentWorkFile.query.filter_by(status='uploaded').order_by(AgentWorkFile.upload_date.desc()).all()
 
 # Authentication decorators
 def login_required(f):
     @wraps(f)
     def decorated_function(*args, **kwargs):
+        # Check for database session first
+        db_session_id = session.get('db_session_id')
+        if db_session_id:
+            db_session = get_user_session(db_session_id)
+            if db_session and not db_session.is_expired():
+                # Update session data in Flask session
+                session_data = db_session.get_data()
+                session.update(session_data)
+                return f(*args, **kwargs)
+            else:
+                # Session expired, clean up
+                if db_session:
+                    delete_user_session(db_session_id)
+                session.clear()
+        
+        # Fallback to Flask session
         if 'user_id' not in session:
             return redirect(url_for('login'))
         return f(*args, **kwargs)
@@ -59,6 +554,23 @@ def login_required(f):
 def admin_required(f):
     @wraps(f)
     def decorated_function(*args, **kwargs):
+        # Check for database session first
+        db_session_id = session.get('db_session_id')
+        if db_session_id:
+            db_session = get_user_session(db_session_id)
+            if db_session and not db_session.is_expired():
+                session_data = db_session.get_data()
+                if session_data.get('user_role') != 'admin':
+                    flash('Access denied. Admin privileges required.', 'error')
+                    return redirect(url_for('dashboard'))
+                session.update(session_data)
+                return f(*args, **kwargs)
+            else:
+                if db_session:
+                    delete_user_session(db_session_id)
+                session.clear()
+        
+        # Fallback to Flask session
         if 'user_id' not in session:
             return redirect(url_for('login'))
         if session.get('user_role') != 'admin':
@@ -70,6 +582,23 @@ def admin_required(f):
 def agent_required(f):
     @wraps(f)
     def decorated_function(*args, **kwargs):
+        # Check for database session first
+        db_session_id = session.get('db_session_id')
+        if db_session_id:
+            db_session = get_user_session(db_session_id)
+            if db_session and not db_session.is_expired():
+                session_data = db_session.get_data()
+                if session_data.get('user_role') != 'agent':
+                    flash('Access denied. Agent privileges required.', 'error')
+                    return redirect(url_for('dashboard'))
+                session.update(session_data)
+                return f(*args, **kwargs)
+            else:
+                if db_session:
+                    delete_user_session(db_session_id)
+                session.clear()
+        
+        # Fallback to Flask session
         if 'user_id' not in session:
             return redirect(url_for('login'))
         if session.get('user_role') != 'agent':
@@ -691,8 +1220,8 @@ HTML_TEMPLATE = """
         <div class="header">
             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
                 <div>
-                    <h1><i class="fas fa-file-excel"></i> Excel Allocation System</h1>
-                    <p>Upload and process Excel files for allocation management</p>
+            <h1><i class="fas fa-file-excel"></i> Excel Allocation System</h1>
+            <p>Upload and process Excel files for allocation management</p>
                 </div>
                 <div style="display: flex; align-items: center; gap: 15px;">
                     <div style="color: white; text-align: right;">
@@ -892,6 +1421,42 @@ HTML_TEMPLATE = """
                 </div>
                 {% endif %}
 
+                <!-- Agent Files Consolidation -->
+                {% if all_agent_work_files %}
+                <div class="section">
+                    <h3>📋 Agent Work Files Consolidation</h3>
+                    <div style="background: #f8f9fa; padding: 20px; border-radius: 10px; margin-bottom: 20px;">
+                        <h4>Available Agent Files:</h4>
+                        {% for work_file in all_agent_work_files %}
+                        <div style="border-bottom: 1px solid #dee2e6; padding: 10px 0; {% if loop.last %}border-bottom: none;{% endif %}">
+                            <strong>{{ work_file.agent.name }}</strong> - {{ work_file.filename }}
+                            <br>
+                            <small style="color: #666;">
+                                Uploaded: {{ work_file.upload_date.strftime('%Y-%m-%d %H:%M') }}
+                                | Status: <span style="color: {% if work_file.status == 'uploaded' %}#28a745{% elif work_file.status == 'consolidated' %}#007bff{% else %}#6c757d{% endif %}">{{ work_file.status.title() }}</span>
+                            </small>
+                            {% if work_file.notes %}
+                            <br>
+                            <small style="color: #666;"><em>{{ work_file.notes }}</em></small>
+                            {% endif %}
+                        </div>
+                        {% endfor %}
+                    </div>
+                    <form action="/consolidate_agent_files" method="post">
+                        <button type="submit" class="process-btn" style="background: linear-gradient(135deg, #e74c3c, #c0392b);">
+                            <i class="fas fa-compress-arrows-alt"></i> Consolidate All Agent Files
+                        </button>
+                    </form>
+                </div>
+                {% else %}
+                <div class="section">
+                    <h3>📋 Agent Work Files</h3>
+                    <div style="background: #f8f9fa; padding: 20px; border-radius: 10px;">
+                        <p style="color: #666;">No agent work files uploaded yet.</p>
+                    </div>
+                </div>
+                {% endif %}
+
 
                 <!-- Individual Agent Downloads -->
                 {% if agent_allocations_data %}
@@ -994,18 +1559,49 @@ HTML_TEMPLATE = """
                 </div>
                 
                 <div class="section">
-                    <h3><i class="fas fa-upload"></i> Upload Status Files</h3>
+                    <h3><i class="fas fa-upload"></i> Upload Work File</h3>
                     <div class="upload-card">
-                        <form action="/upload_status" method="post" enctype="multipart/form-data">
+                        <form id="agentUploadForm" enctype="multipart/form-data">
                             <div class="form-group">
-                                <input type="file" name="file" accept=".xlsx,.xls" required>
+                                <label for="file">Select Excel file with your work changes:</label>
+                                <input type="file" name="file" id="agentFile" accept=".xlsx,.xls" required>
                             </div>
-                            <button type="submit" class="process-btn">
-                                <i class="fas fa-upload"></i> Upload Status File
+                            <div class="form-group">
+                                <label for="notes">Notes (optional):</label>
+                                <textarea name="notes" id="agentNotes" rows="3" placeholder="Add any notes about your changes..."></textarea>
+                            </div>
+                            <button type="submit" class="process-btn" id="agentUploadBtn">
+                                <i class="fas fa-upload"></i> Upload Work File
                             </button>
                         </form>
                     </div>
                 </div>
+                
+                {% if agent_work_files %}
+                <div class="section">
+                    <h3><i class="fas fa-history"></i> My Uploaded Files</h3>
+                    <div style="background: #f8f9fa; padding: 20px; border-radius: 10px;">
+                        {% for work_file in agent_work_files %}
+                        <div style="border-bottom: 1px solid #dee2e6; padding: 10px 0; {% if loop.last %}border-bottom: none;{% endif %}">
+                            <div style="display: flex; justify-content: space-between; align-items: center;">
+                                <div>
+                                    <strong>{{ work_file.filename }}</strong>
+                                    <br>
+                                    <small style="color: #666;">
+                                        Uploaded: {{ work_file.upload_date.strftime('%Y-%m-%d %H:%M') }}
+                                        | Status: <span style="color: {% if work_file.status == 'uploaded' %}#28a745{% elif work_file.status == 'consolidated' %}#007bff{% else %}#6c757d{% endif %}">{{ work_file.status.title() }}</span>
+                                    </small>
+                                    {% if work_file.notes %}
+                                    <br>
+                                    <small style="color: #666;"><em>{{ work_file.notes }}</em></small>
+                                    {% endif %}
+                                </div>
+                            </div>
+                        </div>
+                        {% endfor %}
+                    </div>
+                </div>
+                {% endif %}
                 
                 <div class="section">
                     <h3><i class="fas fa-chart-bar"></i> Performance Metrics</h3>
@@ -1107,6 +1703,15 @@ HTML_TEMPLATE = """
             processForm.addEventListener('submit', function(e) {
                 e.preventDefault();
                 processFiles();
+            });
+        }
+        
+        // Agent upload form handler
+        const agentUploadForm = document.getElementById('agentUploadForm');
+        if (agentUploadForm) {
+            agentUploadForm.addEventListener('submit', function(e) {
+                e.preventDefault();
+                uploadAgentWorkFile();
             });
         }
         
@@ -1874,6 +2479,58 @@ HTML_TEMPLATE = """
             });
         }
         
+        function uploadAgentWorkFile() {
+            const form = document.getElementById('agentUploadForm');
+            const fileInput = document.getElementById('agentFile');
+            const notesInput = document.getElementById('agentNotes');
+            const uploadBtn = document.getElementById('agentUploadBtn');
+            
+            if (!fileInput.files[0]) {
+                showToast('Please select a file to upload', 'error');
+                return;
+            }
+            
+            // Show loading state
+            if (uploadBtn) {
+                uploadBtn.disabled = true;
+                uploadBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Uploading...';
+            }
+            
+            const formData = new FormData();
+            formData.append('file', fileInput.files[0]);
+            formData.append('notes', notesInput.value || '');
+            
+            fetch('/upload_work_file', {
+                method: 'POST',
+                body: formData
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    showToast(data.message, 'success');
+                    // Reset form
+                    form.reset();
+                    // Reload page to show updated file list
+                    setTimeout(() => {
+                        window.location.reload();
+                    }, 1500);
+                } else {
+                    showToast(data.message, 'error');
+                }
+            })
+            .catch(error => {
+                console.error('Upload error:', error);
+                showToast('Error uploading file. Please try again.', 'error');
+            })
+            .finally(() => {
+                // Reset button state
+                if (uploadBtn) {
+                    uploadBtn.disabled = false;
+                    uploadBtn.innerHTML = '<i class="fas fa-upload"></i> Upload Work File';
+                }
+            });
+        }
+        
         // Pagination variables
         let currentPage = 1;
         let itemsPerPage = 10;
@@ -1927,7 +2584,16 @@ HTML_TEMPLATE = """
                     }
                 });
                 
+                // Only call updatePagination if pagination elements exist
+                const pageNumbers = document.getElementById('pageNumbers');
+                const prevBtn = document.getElementById('prevBtn');
+                const nextBtn = document.getElementById('nextBtn');
+                
+                if (pageNumbers && prevBtn && nextBtn) {
                 updatePagination();
+                } else {
+                    console.log('Pagination elements not found, skipping pagination initialization');
+                }
                 showPage(1);
             } else {
                 console.log('No agent rows found, retrying...');
@@ -1994,6 +2660,12 @@ HTML_TEMPLATE = """
             const pageNumbers = document.getElementById('pageNumbers');
             const prevBtn = document.getElementById('prevBtn');
             const nextBtn = document.getElementById('nextBtn');
+            
+            // Check if elements exist before trying to access them
+            if (!prevBtn || !nextBtn || !pageNumbers) {
+                console.log('Pagination elements not found, skipping pagination update');
+                return;
+            }
             
             // Update Previous/Next buttons with proper styling
             if (currentPage === 1) {
@@ -2894,8 +3566,23 @@ def process_allocation_files_with_dates(allocation_df, data_df, selected_dates, 
 def index():
     global allocation_data, data_file_data, allocation_filename, data_filename, processing_result
     global agent_processing_result, agent_allocations_data
+    
+    # Get current user
+    user = get_user_by_username(session.get('user_id'))
+    
+    # Load agent work files if user is an agent
+    agent_work_files = None
+    if user and user.role == 'agent':
+        agent_work_files = get_agent_work_files(user.id)
+    
     print(f"DEBUG: agent_allocations_data in index: {agent_allocations_data}")
     current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    
+    # Load all agent work files for admin view
+    all_agent_work_files = None
+    if user and user.role == 'admin':
+        all_agent_work_files = get_all_agent_work_files()
+    
     return render_template_string(HTML_TEMPLATE, 
                                 allocation_data=allocation_data, 
                                 data_file_data=data_file_data,
@@ -2904,6 +3591,8 @@ def index():
                                 processing_result=processing_result,
                                 agent_processing_result=agent_processing_result,
                                 agent_allocations_data=agent_allocations_data,
+                                agent_work_files=agent_work_files,
+                                all_agent_work_files=all_agent_work_files,
                                 current_time=current_time)
 
 @app.route('/login', methods=['GET', 'POST'])
@@ -2912,11 +3601,27 @@ def login():
         username = request.form.get('username')
         password = request.form.get('password')
         
-        if username in USERS and USERS[username]['password'] == password:
-            session['user_id'] = username
-            session['user_role'] = USERS[username]['role']
-            session['user_name'] = USERS[username]['name']
-            flash(f'Welcome back, {USERS[username]["name"]}!', 'success')
+        # Try database authentication first
+        user = get_user_by_username(username)
+        if user and user.check_password(password):
+            # Update last login
+            user.last_login = datetime.utcnow()
+            db.session.commit()
+            
+            # Create database session
+            session_data = {
+                'user_id': user.username,
+                'user_role': user.role,
+                'user_name': user.name,
+                'user_email': user.email
+            }
+            db_session = create_user_session(user.id, session_data)
+            
+            # Set Flask session
+            session['db_session_id'] = db_session.id
+            session.update(session_data)
+            
+            flash(f'Welcome back, {user.name}!', 'success')
             return redirect(url_for('dashboard'))
         else:
             flash('Invalid username or password. Please try again.', 'error')
@@ -2925,6 +3630,12 @@ def login():
 
 @app.route('/logout')
 def logout():
+    # Clean up database session
+    db_session_id = session.get('db_session_id')
+    if db_session_id:
+        delete_user_session(db_session_id)
+    
+    # Clear Flask session
     session.clear()
     flash('You have been logged out successfully.', 'success')
     return redirect(url_for('login'))
@@ -2950,7 +3661,7 @@ def upload_allocation_file():
         return redirect('/')
     
     try:
-        # Save uploaded file
+        # Save uploaded file temporarily
         filename = secure_filename(file.filename)
         file.save(filename)
         
@@ -2959,10 +3670,18 @@ def upload_allocation_file():
         allocation_filename = filename
         
         processing_result = f"✅ Allocation file uploaded successfully! Loaded {len(allocation_data)} sheets: {', '.join(list(allocation_data.keys()))}"
+        
+        # Clean up uploaded file
+        if os.path.exists(filename):
+            os.remove(filename)
+        
         return redirect('/')
         
     except Exception as e:
         processing_result = f"❌ Error uploading allocation file: {str(e)}"
+        # Clean up uploaded file on error
+        if 'filename' in locals() and os.path.exists(filename):
+            os.remove(filename)
         return redirect('/')
 
 @app.route('/upload_data', methods=['POST'])
@@ -2980,7 +3699,7 @@ def upload_data_file():
         return redirect('/')
     
     try:
-        # Save uploaded file
+        # Save uploaded file temporarily
         filename = secure_filename(file.filename)
         file.save(filename)
         
@@ -2989,10 +3708,18 @@ def upload_data_file():
         data_filename = filename
         
         processing_result = f"✅ Data file uploaded successfully! Loaded {len(data_file_data)} sheets: {', '.join(list(data_file_data.keys()))}"
+        
+        # Clean up uploaded file
+        if os.path.exists(filename):
+            os.remove(filename)
+        
         return redirect('/')
         
     except Exception as e:
         processing_result = f"❌ Error uploading data file: {str(e)}"
+        # Clean up uploaded file on error
+        if 'filename' in locals() and os.path.exists(filename):
+            os.remove(filename)
         return redirect('/')
 
 
@@ -3086,28 +3813,149 @@ def download_result():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
-@app.route('/upload_status', methods=['POST'])
+@app.route('/upload_work_file', methods=['POST'])
 @agent_required
-def upload_status_file():
+def upload_work_file():
+    """Upload agent work file with data changes"""
     if 'file' not in request.files:
-        flash('No file provided', 'error')
-        return redirect('/')
+        return jsonify({'success': False, 'message': 'No file provided'}), 400
     
     file = request.files['file']
     if file.filename == '':
-        flash('No file selected', 'error')
-        return redirect('/')
+        return jsonify({'success': False, 'message': 'No file selected'}), 400
+    
+    notes = request.form.get('notes', '')
     
     try:
+        # Get current agent
+        user = get_user_by_username(session.get('user_id'))
+        if not user:
+            return jsonify({'success': False, 'message': 'User not found'}), 400
+        
         # Save uploaded file
         filename = secure_filename(file.filename)
         file.save(filename)
         
-        flash(f'Status file uploaded successfully: {filename}', 'success')
-        return redirect('/')
+        # Load and process Excel file
+        try:
+            file_data = pd.read_excel(filename, sheet_name=None)
+            
+            # Clear all existing agent work files before saving new one
+            existing_files = AgentWorkFile.query.filter_by(agent_id=user.id).all()
+            for existing_file in existing_files:
+                db.session.delete(existing_file)
+            db.session.commit()
+            
+            # Save new file to database
+            work_file = save_agent_work_file(
+                agent_id=user.id,
+                filename=filename,
+                file_data=file_data,
+                notes=notes
+            )
+            
+            # Clean up uploaded file
+            if os.path.exists(filename):
+                os.remove(filename)
+            
+            return jsonify({'success': True, 'message': f'Work file uploaded successfully: {filename} (Previous files cleared)'})
+            
+        except Exception as e:
+            # Clean up uploaded file on error
+            if os.path.exists(filename):
+                os.remove(filename)
+            return jsonify({'success': False, 'message': f'Error processing Excel file: {str(e)}'}), 500
         
     except Exception as e:
-        flash(f'Error uploading status file: {str(e)}', 'error')
+        return jsonify({'success': False, 'message': f'Error uploading work file: {str(e)}'}), 500
+
+@app.route('/upload_status', methods=['POST'])
+@agent_required
+def upload_status_file():
+    """Legacy route - redirect to new work file upload"""
+    return redirect(url_for('upload_work_file'))
+
+@app.route('/consolidate_agent_files', methods=['POST'])
+@admin_required
+def consolidate_agent_files():
+    """Consolidate all agent work files into one Excel file"""
+    try:
+        # Get all agent work files
+        work_files = get_all_agent_work_files()
+        
+        if not work_files:
+            flash('No agent work files found to consolidate', 'warning')
+            return redirect('/')
+        
+        # Create Excel buffer
+        excel_buffer = io.BytesIO()
+        
+        with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
+            # Create summary sheet
+            summary_data = []
+            for work_file in work_files:
+                summary_data.append({
+                    'Agent': work_file.agent.name,
+                    'Filename': work_file.filename,
+                    'Upload Date': work_file.upload_date.strftime('%Y-%m-%d %H:%M:%S'),
+                    'Status': work_file.status,
+                    'Notes': work_file.notes or 'No notes'
+                })
+            
+            summary_df = pd.DataFrame(summary_data)
+            summary_df.to_excel(writer, sheet_name='Summary', index=False)
+            
+            # Create individual sheets for each agent's work
+            for work_file in work_files:
+                file_data = work_file.get_file_data()
+                if file_data:
+                    # Use the first sheet or create a combined sheet
+                    if isinstance(file_data, dict):
+                        # Multiple sheets - combine them
+                        combined_data = []
+                        for sheet_name, sheet_data in file_data.items():
+                            if isinstance(sheet_data, pd.DataFrame):
+                                sheet_data_copy = sheet_data.copy()
+                                sheet_data_copy['Source_Sheet'] = sheet_name
+                                combined_data.append(sheet_data_copy)
+                        
+                        if combined_data:
+                            combined_df = pd.concat(combined_data, ignore_index=True)
+                            sheet_name = f"{work_file.agent.name}_{work_file.id}"
+                            combined_df.to_excel(writer, sheet_name=sheet_name, index=False)
+                        else:
+                            # If no DataFrames found, create a simple sheet with available data
+                            sheet_name = f"{work_file.agent.name}_{work_file.id}"
+                            simple_df = pd.DataFrame([{'Message': 'No data available', 'Agent': work_file.agent.name}])
+                            simple_df.to_excel(writer, sheet_name=sheet_name, index=False)
+                    elif isinstance(file_data, pd.DataFrame):
+                        # Single DataFrame
+                        sheet_name = f"{work_file.agent.name}_{work_file.id}"
+                        file_data.to_excel(writer, sheet_name=sheet_name, index=False)
+                    else:
+                        # Fallback for unexpected data format
+                        sheet_name = f"{work_file.agent.name}_{work_file.id}"
+                        simple_df = pd.DataFrame([{'Message': 'Data format not supported', 'Agent': work_file.agent.name}])
+                        simple_df.to_excel(writer, sheet_name=sheet_name, index=False)
+        
+        excel_buffer.seek(0)
+        
+        # Mark files as consolidated
+        for work_file in work_files:
+            work_file.status = 'consolidated'
+        db.session.commit()
+        
+        # Return file for download
+        filename = f"consolidated_agent_files_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+        return send_file(
+            excel_buffer,
+            as_attachment=True,
+            download_name=filename,
+            mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+        )
+        
+    except Exception as e:
+        flash(f'Error consolidating agent files: {str(e)}', 'error')
         return redirect('/')
 
 @app.route('/get_appointment_dates')
@@ -3510,6 +4358,26 @@ def reset_app():
 
 if __name__ == '__main__':
     import os
+    import threading
+    import time
+    
+    # Initialize database
+    init_database()
+    
+    # Start session cleanup thread
+    def cleanup_sessions_periodically():
+        while True:
+            try:
+                with app.app_context():
+                    cleanup_expired_sessions()
+                time.sleep(3600)  # Clean up every hour
+            except Exception as e:
+                print(f"Error in session cleanup: {e}")
+                time.sleep(3600)
+    
+    cleanup_thread = threading.Thread(target=cleanup_sessions_periodically, daemon=True)
+    cleanup_thread.start()
+    
     port = int(os.environ.get('PORT', 5003))
     # Always enable debug + auto-reload for local dev unless explicitly disabled
     debug = True if os.environ.get('DISABLE_DEBUG') != '1' else False

@@ -4,7 +4,7 @@ Excel Allocation System - Web Application
 Admin can upload allocation and data files, Agent can upload status files
 """
 
-from flask import Flask, render_template_string, request, jsonify, send_file, redirect
+from flask import Flask, render_template_string, request, jsonify, send_file, redirect, session, url_for, flash
 from flask_mail import Mail, Message
 import pandas as pd
 import os
@@ -12,9 +12,11 @@ from datetime import datetime
 from werkzeug.utils import secure_filename
 import tempfile
 import io
+from functools import wraps
 
 app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max file size
+app.config['SECRET_KEY'] = 'your-secret-key-change-in-production'  # Change this in production
 
 # Email configuration
 app.config['MAIL_SERVER'] = 'smtp.gmail.com'
@@ -37,6 +39,200 @@ processing_result = None
 # Agent processing result
 agent_processing_result = None
 agent_allocations_data = None
+
+# Dummy user credentials (in production, use a proper database)
+USERS = {
+    'admin': {'password': 'admin123', 'role': 'admin', 'name': 'Administrator'},
+    'agent1': {'password': 'agent123', 'role': 'agent', 'name': 'Agent One'},
+    'agent2': {'password': 'agent456', 'role': 'agent', 'name': 'Agent Two'}
+}
+
+# Authentication decorators
+def login_required(f):
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if 'user_id' not in session:
+            return redirect(url_for('login'))
+        return f(*args, **kwargs)
+    return decorated_function
+
+def admin_required(f):
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if 'user_id' not in session:
+            return redirect(url_for('login'))
+        if session.get('user_role') != 'admin':
+            flash('Access denied. Admin privileges required.', 'error')
+            return redirect(url_for('dashboard'))
+        return f(*args, **kwargs)
+    return decorated_function
+
+def agent_required(f):
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if 'user_id' not in session:
+            return redirect(url_for('login'))
+        if session.get('user_role') != 'agent':
+            flash('Access denied. Agent privileges required.', 'error')
+            return redirect(url_for('dashboard'))
+        return f(*args, **kwargs)
+    return decorated_function
+
+# Login Template
+LOGIN_TEMPLATE = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Login - Excel Allocation System</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { 
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+        .login-container { 
+            background: white; 
+            border-radius: 15px; 
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+            padding: 40px;
+            width: 100%;
+            max-width: 400px;
+        }
+        .login-header {
+            text-align: center;
+            margin-bottom: 30px;
+        }
+        .login-header h1 {
+            color: #333;
+            font-size: 2em;
+            margin-bottom: 10px;
+        }
+        .login-header p {
+            color: #666;
+            font-size: 1.1em;
+        }
+        .form-group {
+            margin-bottom: 20px;
+        }
+        .form-group label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: 600;
+            color: #555;
+        }
+        .form-group input {
+            width: 100%;
+            padding: 12px;
+            border: 2px solid #ddd;
+            border-radius: 8px;
+            font-size: 16px;
+            transition: border-color 0.3s;
+        }
+        .form-group input:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+        .login-btn {
+            width: 100%;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 12px;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 16px;
+            font-weight: 600;
+            transition: transform 0.2s;
+        }
+        .login-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(0,0,0,0.2);
+        }
+        .alert {
+            padding: 12px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            font-weight: 500;
+        }
+        .alert-error {
+            background: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+        .alert-success {
+            background: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+        .demo-credentials {
+            background: #f8f9fa;
+            padding: 15px;
+            border-radius: 8px;
+            margin-top: 20px;
+            font-size: 14px;
+        }
+        .demo-credentials h4 {
+            color: #333;
+            margin-bottom: 10px;
+        }
+        .demo-credentials p {
+            color: #666;
+            margin: 5px 0;
+        }
+        .demo-credentials strong {
+            color: #333;
+        }
+    </style>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+</head>
+<body>
+    <div class="login-container">
+        <div class="login-header">
+            <h1><i class="fas fa-file-excel"></i> Excel Allocation System</h1>
+            <p>Please login to continue</p>
+        </div>
+        
+        {% with messages = get_flashed_messages(with_categories=true) %}
+            {% if messages %}
+                {% for category, message in messages %}
+                    <div class="alert alert-{{ category }}">{{ message }}</div>
+                {% endfor %}
+            {% endif %}
+        {% endwith %}
+        
+        <form method="POST" action="{{ url_for('login') }}">
+            <div class="form-group">
+                <label for="username"><i class="fas fa-user"></i> Username</label>
+                <input type="text" id="username" name="username" required>
+            </div>
+            
+            <div class="form-group">
+                <label for="password"><i class="fas fa-lock"></i> Password</label>
+                <input type="password" id="password" name="password" required>
+            </div>
+            
+            <button type="submit" class="login-btn">
+                <i class="fas fa-sign-in-alt"></i> Login
+            </button>
+        </form>
+        
+        <div class="demo-credentials">
+            <h4><i class="fas fa-info-circle"></i> Demo Credentials</h4>
+            <p><strong>Admin:</strong> admin / admin123</p>
+            <p><strong>Agent 1:</strong> agent1 / agent123</p>
+            <p><strong>Agent 2:</strong> agent2 / agent456</p>
+        </div>
+    </div>
+</body>
+</html>
+"""
 
 # HTML Template for Excel Allocation System
 HTML_TEMPLATE = """
@@ -493,17 +689,43 @@ HTML_TEMPLATE = """
 <body>
     <div class="container">
         <div class="header">
-            <h1><i class="fas fa-file-excel"></i> Excel Allocation System</h1>
-            <p>Upload and process Excel files for allocation management</p>
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+                <div>
+                    <h1><i class="fas fa-file-excel"></i> Excel Allocation System</h1>
+                    <p>Upload and process Excel files for allocation management</p>
+                </div>
+                <div style="display: flex; align-items: center; gap: 15px;">
+                    <div style="color: white; text-align: right;">
+                        <div style="font-size: 1.1em; font-weight: 600;">Welcome, {{ session.user_name }}</div>
+                        <div style="font-size: 0.9em; opacity: 0.8;">{{ session.user_role.title() }} User</div>
+                    </div>
+                    <a href="{{ url_for('logout') }}" style="
+                        background: rgba(255, 255, 255, 0.2);
+                        color: white;
+                        padding: 8px 16px;
+                        border-radius: 20px;
+                        text-decoration: none;
+                        font-weight: 600;
+                        transition: all 0.3s ease;
+                        display: flex;
+                        align-items: center;
+                        gap: 8px;
+                    " onmouseover="this.style.background='rgba(255, 255, 255, 0.3)'" onmouseout="this.style.background='rgba(255, 255, 255, 0.2)'">
+                        <i class="fas fa-sign-out-alt"></i> Logout
+                    </a>
+                </div>
+            </div>
             
-            <div class="role-selector">
+            {% if session.user_role == 'admin' %}
+              <!--<<div class="role-selector">
                 <button class="role-btn active" onclick="switchRole('admin')">
                     <i class="fas fa-user-shield"></i> Admin
                 </button>
-                <button class="role-btn" onclick="switchRole('agent')">
+              button class="role-btn" onclick="switchRole('agent')">
                     <i class="fas fa-user"></i> Agent
                 </button>
-            </div>
+            </div>-->
+            {% endif %}
         </div>
 
         <div class="content">
@@ -758,10 +980,49 @@ HTML_TEMPLATE = """
 
             <!-- Agent Panel -->
             <div id="agent-panel" class="panel">
-                <div class="coming-soon">
-                    <i class="fas fa-tools"></i>
-                    <h3>Under Development</h3>
-                    <p>Agent functionality will be available soon</p>
+                <div class="section">
+                    <h3><i class="fas fa-user"></i> Agent Dashboard</h3>
+                    <p>Welcome to your agent dashboard. Here you can manage your tasks and view your allocated work.</p>
+                </div>
+                
+                <div class="section">
+                    <h3><i class="fas fa-tasks"></i> My Tasks</h3>
+                    <div style="background: #f8f9fa; padding: 20px; border-radius: 10px; border-left: 4px solid #667eea;">
+                        <p><strong>Status:</strong> No tasks assigned yet</p>
+                        <p><strong>Last Updated:</strong> {{ current_time }}</p>
+                    </div>
+                </div>
+                
+                <div class="section">
+                    <h3><i class="fas fa-upload"></i> Upload Status Files</h3>
+                    <div class="upload-card">
+                        <form action="/upload_status" method="post" enctype="multipart/form-data">
+                            <div class="form-group">
+                                <input type="file" name="file" accept=".xlsx,.xls" required>
+                            </div>
+                            <button type="submit" class="process-btn">
+                                <i class="fas fa-upload"></i> Upload Status File
+                            </button>
+                        </form>
+                    </div>
+                </div>
+                
+                <div class="section">
+                    <h3><i class="fas fa-chart-bar"></i> Performance Metrics</h3>
+                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px;">
+                        <div style="background: #e3f2fd; padding: 20px; border-radius: 10px; text-align: center;">
+                            <h4 style="color: #1976d2; font-size: 2em; margin-bottom: 10px;">0</h4>
+                            <p style="color: #666;">Tasks Completed</p>
+                        </div>
+                        <div style="background: #e8f5e8; padding: 20px; border-radius: 10px; text-align: center;">
+                            <h4 style="color: #4caf50; font-size: 2em; margin-bottom: 10px;">0</h4>
+                            <p style="color: #666;">Files Processed</p>
+                        </div>
+                        <div style="background: #fff3e0; padding: 20px; border-radius: 10px; text-align: center;">
+                            <h4 style="color: #ff9800; font-size: 2em; margin-bottom: 10px;">0</h4>
+                            <p style="color: #666;">Pending Tasks</p>
+                        </div>
+                    </div>
                 </div>
             </div>
         </div>
@@ -777,6 +1038,20 @@ HTML_TEMPLATE = """
             document.querySelectorAll('.panel').forEach(panel => panel.classList.remove('active'));
             document.getElementById(role + '-panel').classList.add('active');
         }
+        
+        // Auto-switch to appropriate panel based on user role
+        document.addEventListener('DOMContentLoaded', function() {
+            const userRole = '{{ session.user_role }}';
+            if (userRole === 'agent') {
+                // For agents, show agent panel and hide role selector
+                document.querySelectorAll('.panel').forEach(panel => panel.classList.remove('active'));
+                document.getElementById('agent-panel').classList.add('active');
+                const roleSelector = document.querySelector('.role-selector');
+                if (roleSelector) {
+                    roleSelector.style.display = 'none';
+                }
+            }
+        });
         
         function switchPriorityTab(priority) {
             // Update tab button states
@@ -2615,10 +2890,12 @@ def process_allocation_files_with_dates(allocation_df, data_df, selected_dates, 
         return f"❌ Error during processing: {str(e)}", None
 
 @app.route('/')
+@login_required
 def index():
     global allocation_data, data_file_data, allocation_filename, data_filename, processing_result
     global agent_processing_result, agent_allocations_data
     print(f"DEBUG: agent_allocations_data in index: {agent_allocations_data}")
+    current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     return render_template_string(HTML_TEMPLATE, 
                                 allocation_data=allocation_data, 
                                 data_file_data=data_file_data,
@@ -2626,9 +2903,40 @@ def index():
                                 data_filename=data_filename,
                                 processing_result=processing_result,
                                 agent_processing_result=agent_processing_result,
-                                agent_allocations_data=agent_allocations_data)
+                                agent_allocations_data=agent_allocations_data,
+                                current_time=current_time)
+
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    if request.method == 'POST':
+        username = request.form.get('username')
+        password = request.form.get('password')
+        
+        if username in USERS and USERS[username]['password'] == password:
+            session['user_id'] = username
+            session['user_role'] = USERS[username]['role']
+            session['user_name'] = USERS[username]['name']
+            flash(f'Welcome back, {USERS[username]["name"]}!', 'success')
+            return redirect(url_for('dashboard'))
+        else:
+            flash('Invalid username or password. Please try again.', 'error')
+    
+    return render_template_string(LOGIN_TEMPLATE)
+
+@app.route('/logout')
+def logout():
+    session.clear()
+    flash('You have been logged out successfully.', 'success')
+    return redirect(url_for('login'))
+
+@app.route('/dashboard')
+@login_required
+def dashboard():
+    return redirect(url_for('index'))
+
 
 @app.route('/upload_allocation', methods=['POST'])
+@admin_required
 def upload_allocation_file():
     global allocation_data, allocation_filename, processing_result
     
@@ -2658,6 +2966,7 @@ def upload_allocation_file():
         return redirect('/')
 
 @app.route('/upload_data', methods=['POST'])
+@admin_required
 def upload_data_file():
     global data_file_data, data_filename, processing_result
     
@@ -2688,6 +2997,7 @@ def upload_data_file():
 
 
 @app.route('/process_files', methods=['POST'])
+@admin_required
 def process_files():
     global allocation_data, data_file_data, processing_result, agent_processing_result, agent_allocations_data
     
@@ -2744,6 +3054,7 @@ def process_files():
                                     agent_allocations_data=agent_allocations_data)
 
 @app.route('/download_result', methods=['POST'])
+@admin_required
 def download_result():
     global data_file_data, data_filename
     
@@ -2775,7 +3086,32 @@ def download_result():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
+@app.route('/upload_status', methods=['POST'])
+@agent_required
+def upload_status_file():
+    if 'file' not in request.files:
+        flash('No file provided', 'error')
+        return redirect('/')
+    
+    file = request.files['file']
+    if file.filename == '':
+        flash('No file selected', 'error')
+        return redirect('/')
+    
+    try:
+        # Save uploaded file
+        filename = secure_filename(file.filename)
+        file.save(filename)
+        
+        flash(f'Status file uploaded successfully: {filename}', 'success')
+        return redirect('/')
+        
+    except Exception as e:
+        flash(f'Error uploading status file: {str(e)}', 'error')
+        return redirect('/')
+
 @app.route('/get_appointment_dates')
+@login_required
 def get_appointment_dates():
     global data_file_data
     
@@ -2819,6 +3155,7 @@ def get_appointment_dates():
         return jsonify({'error': str(e)}), 500
 
 @app.route('/get_receive_dates')
+@login_required
 def get_receive_dates():
     global data_file_data
     
@@ -2862,6 +3199,7 @@ def get_receive_dates():
         return jsonify({'error': str(e)}), 500
 
 @app.route('/get_agent_allocation', methods=['POST'])
+@admin_required
 def get_agent_allocation():
     global data_file_data, agent_allocations_data
     
@@ -2931,6 +3269,7 @@ def get_agent_allocation():
         return jsonify({'error': str(e)}), 500
 
 @app.route('/download_agent_file', methods=['POST'])
+@admin_required
 def download_agent_file():
     global data_file_data, agent_allocations_data
     
@@ -3017,6 +3356,7 @@ def download_agent_file():
         return jsonify({'error': str(e)}), 500
 
 @app.route('/send_approval_email', methods=['POST'])
+@admin_required
 def send_approval_email():
     try:
         data = request.get_json()
@@ -3148,6 +3488,7 @@ def create_agent_excel_file(agent_name, agent_info):
         return excel_buffer
 
 @app.route('/reset_app', methods=['POST'])
+@admin_required
 def reset_app():
     global allocation_data, data_file_data, allocation_filename, data_filename, processing_result
     global agent_allocations_data

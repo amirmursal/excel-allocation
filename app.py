@@ -1545,31 +1545,18 @@ HTML_TEMPLATE = """
 
             <!-- Agent Panel -->
             <div id="agent-panel" class="panel">
-                <div class="section">
-                    <h3><i class="fas fa-user"></i> Agent Dashboard</h3>
-                    <p>Welcome to your agent dashboard. Here you can manage your tasks and view your allocated work.</p>
-                </div>
-                
-                <div class="section">
-                    <h3><i class="fas fa-tasks"></i> My Tasks</h3>
-                    <div style="background: #f8f9fa; padding: 20px; border-radius: 10px; border-left: 4px solid #667eea;">
-                        <p><strong>Status:</strong> No tasks assigned yet</p>
-                        <p><strong>Last Updated:</strong> {{ current_time }}</p>
-                    </div>
-                </div>
+           
+          
                 
                 <div class="section">
                     <h3><i class="fas fa-upload"></i> Upload Work File</h3>
                     <div class="upload-card">
                         <form id="agentUploadForm" enctype="multipart/form-data">
                             <div class="form-group">
-                                <label for="file">Select Excel file with your work changes:</label>
+                            
                                 <input type="file" name="file" id="agentFile" accept=".xlsx,.xls" required>
                             </div>
-                            <div class="form-group">
-                                <label for="notes">Notes (optional):</label>
-                                <textarea name="notes" id="agentNotes" rows="3" placeholder="Add any notes about your changes..."></textarea>
-                            </div>
+                        
                             <button type="submit" class="process-btn" id="agentUploadBtn">
                                 <i class="fas fa-upload"></i> Upload Work File
                             </button>
@@ -1603,23 +1590,7 @@ HTML_TEMPLATE = """
                 </div>
                 {% endif %}
                 
-                <div class="section">
-                    <h3><i class="fas fa-chart-bar"></i> Performance Metrics</h3>
-                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px;">
-                        <div style="background: #e3f2fd; padding: 20px; border-radius: 10px; text-align: center;">
-                            <h4 style="color: #1976d2; font-size: 2em; margin-bottom: 10px;">0</h4>
-                            <p style="color: #666;">Tasks Completed</p>
-                        </div>
-                        <div style="background: #e8f5e8; padding: 20px; border-radius: 10px; text-align: center;">
-                            <h4 style="color: #4caf50; font-size: 2em; margin-bottom: 10px;">0</h4>
-                            <p style="color: #666;">Files Processed</p>
-                        </div>
-                        <div style="background: #fff3e0; padding: 20px; border-radius: 10px; text-align: center;">
-                            <h4 style="color: #ff9800; font-size: 2em; margin-bottom: 10px;">0</h4>
-                            <p style="color: #666;">Pending Tasks</p>
-                        </div>
-                    </div>
-                </div>
+            
             </div>
         </div>
     </div>
@@ -2504,18 +2475,24 @@ HTML_TEMPLATE = """
                 method: 'POST',
                 body: formData
             })
-            .then(response => response.json())
+            .then(response => {
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                return response.json();
+            })
             .then(data => {
+                console.log('Upload response:', data); // Debug log
                 if (data.success) {
                     showToast(data.message, 'success');
                     // Reset form
-                    form.reset();
-                    // Reload page to show updated file list
+                    if (form) form.reset();
+                    // Reload page to show updated file list after a short delay
                     setTimeout(() => {
                         window.location.reload();
-                    }, 1500);
+                    }, 2000);
                 } else {
-                    showToast(data.message, 'error');
+                    showToast(data.message || 'Upload failed', 'error');
                 }
             })
             .catch(error => {
@@ -2926,7 +2903,14 @@ HTML_TEMPLATE = """
     <script>
     // Toast notification system
     function showToast(message, type = 'info') {
+        console.log('Showing toast:', message, type); // Debug log
+        
         const container = document.getElementById('toastContainer');
+        if (!container) {
+            console.error('Toast container not found');
+            alert(message); // Fallback to alert
+            return;
+        }
         
         // Create toast element
         const toast = document.createElement('div');
@@ -2948,6 +2932,7 @@ HTML_TEMPLATE = """
             display: flex;
             align-items: center;
             gap: 10px;
+            z-index: 10001;
         `;
         
         // Add icon based on type
@@ -2973,10 +2958,11 @@ HTML_TEMPLATE = """
         // Add to container
         container.appendChild(toast);
         
-        // Animate in
+        // Force reflow and animate in
+        toast.offsetHeight; // Force reflow
         setTimeout(() => {
             toast.style.transform = 'translateX(0)';
-        }, 100);
+        }, 50);
         
         // Auto remove after 5 seconds
         setTimeout(() => {

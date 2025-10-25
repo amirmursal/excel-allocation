@@ -1601,6 +1601,19 @@ HTML_TEMPLATE = """
                                     <div id="selected_dates_list" style="margin-top: 5px; font-size: 12px; color: #666;"></div>
                                 </div>
                             </div>
+                            
+                            <!-- Receive Date Panel (appears when appointment dates are selected) -->
+                            <div id="receive-date-panel" style="display: none; margin-top: 20px; padding: 15px; background: #f0f8ff; border: 1px solid #b3d9ff; border-radius: 8px;">
+                                <h4 style="margin: 0 0 15px 0; color: #2c5aa0; font-size: 16px;">
+                                    <i class="fas fa-calendar-check"></i> Second Level Priority - Receive Dates
+                                </h4>
+                                <p style="margin: 0 0 15px 0; color: #666; font-size: 14px;">
+                                    Select receive dates for each appointment date. Each appointment date has its own independent receive date selections.
+                                </p>
+                                <div id="appointment_receive_dates_container">
+                                    <!-- Individual receive date panels for each appointment date will be populated here -->
+                                </div>
+                            </div>
                         </div>
                         
                         <!-- Second Priority Panel -->
@@ -1628,16 +1641,6 @@ HTML_TEMPLATE = """
                                 <div id="third_priority_dates_info" style="background: #f8f9fa; padding: 10px; border-radius: 5px; border: 1px solid #e9ecef;">
                                     <strong>Remaining Dates:</strong> <span id="third_priority_count">0</span> dates will be Third Priority
                                     <div id="third_priority_dates_list" style="margin-top: 5px; font-size: 12px; color: #666;"></div>
-                                </div>
-                            </div>
-                            
-                            <!-- Receive Date Column Checkboxes -->
-                            <div class="form-group">
-                                <div id="receive_date_checkboxes" style="margin-top: 15px; padding: 15px; background: #f8f9fa; border-radius: 8px; border: 1px solid #e9ecef;">
-                                    <h4 style="margin-bottom: 15px; color: #333; font-size: 1.1em;">📅 Receive Date Column Dates</h4>
-                                    <div id="receive_date_list" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 8px; max-height: 200px; overflow-y: auto;">
-                                        <p style="color: #666; font-style: italic; text-align: center; padding: 20px;">Loading receive dates...</p>
-                                    </div>
                                 </div>
                             </div>
                         </div>
@@ -2026,10 +2029,9 @@ HTML_TEMPLATE = """
                         window.location.reload();
                     }, 1500);
                 })
-                .catch(error => {
-                    console.error('Upload error:', error);
-                    showErrorToast('Upload Failed', 'Error uploading allocation file. Please try again.');
-                })
+                    .catch(error => {
+                        showErrorToast('Upload Failed', 'Error uploading allocation file. Please try again.');
+                    })
                 .finally(() => {
                     if (btn) {
                         btn.disabled = false;
@@ -2079,10 +2081,9 @@ HTML_TEMPLATE = """
                         window.location.reload();
                     }, 1500);
                 })
-                .catch(error => {
-                    console.error('Upload error:', error);
-                    showErrorToast('Upload Failed', 'Error uploading data file. Please try again.');
-                })
+                    .catch(error => {
+                        showErrorToast('Upload Failed', 'Error uploading data file. Please try again.');
+                    })
                 .finally(() => {
                     if (btn) {
                         btn.disabled = false;
@@ -2126,6 +2127,9 @@ HTML_TEMPLATE = """
         let appointmentDates = new Set();
         let selectedDates = new Set();
         let selectedSecondDates = new Set();
+        
+        // Store receive date selections per appointment date
+        let receiveDateSelections = new Map(); // appointmentDate -> Set of selected receive dates
         
         function loadAppointmentDates() {
             const calendarContainer = document.getElementById('calendar_container');
@@ -2206,27 +2210,79 @@ HTML_TEMPLATE = """
         }
         
         function loadReceiveDateCheckboxes() {
-            const receiveDateList = document.getElementById('receive_date_list');
-            if (!receiveDateList) return;
+            const appointmentReceiveDatesContainer = document.getElementById('appointment_receive_dates_container');
+            if (!appointmentReceiveDatesContainer) return;
             
-            // Fetch receive dates from server
-            fetch('/get_receive_dates')
+            // Get selected appointment dates
+            const selectedAppointmentDates = getSelectedAppointmentDates();
+            
+            if (selectedAppointmentDates.length === 0) {
+                appointmentReceiveDatesContainer.innerHTML = '<p style="color: #666; font-style: italic; text-align: center; padding: 20px;">No appointment dates selected.</p>';
+                return;
+            }
+            
+            // Create individual panels for each appointment date
+            let html = '';
+            selectedAppointmentDates.forEach((appointmentDate, appointmentIndex) => {
+                const appointmentDateObj = new Date(appointmentDate);
+                const appointmentFormatted = appointmentDateObj.toLocaleDateString('en-US', { 
+                    year: 'numeric', 
+                    month: 'short', 
+                    day: 'numeric',
+                    weekday: 'short'
+                });
+                
+                html += `
+                    <div class="appointment-receive-panel" style="margin-bottom: 20px; padding: 15px; background: white; border: 1px solid #e9ecef; border-radius: 8px;">
+                        <h5 style="margin: 0 0 10px 0; color: #2c5aa0; font-size: 14px;">
+                            <i class="fas fa-calendar"></i> ${appointmentFormatted}
+                        </h5>
+                        <div id="receive_dates_${appointmentDate.replace(/-/g, '_')}" style="display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px;">
+                            <p style="color: #666; font-style: italic; text-align: center; padding: 10px; width: 100%;">Loading receive dates...</p>
+                        </div>
+                        <div id="receive_info_${appointmentDate.replace(/-/g, '_')}" style="background: #f8f9fa; padding: 8px; border-radius: 5px; border: 1px solid #e9ecef; font-size: 12px;">
+                            <strong>Selected:</strong> <span id="receive_count_${appointmentDate.replace(/-/g, '_')}">0</span> receive dates
+                        </div>
+                    </div>
+                `;
+            });
+            
+            appointmentReceiveDatesContainer.innerHTML = html;
+            
+            // Load receive dates for each appointment date
+            selectedAppointmentDates.forEach((appointmentDate, appointmentIndex) => {
+                loadReceiveDatesForAppointment(appointmentDate);
+            });
+        }
+        
+        function loadReceiveDatesForAppointment(appointmentDate) {
+            const containerId = `receive_dates_${appointmentDate.replace(/-/g, '_')}`;
+            const container = document.getElementById(containerId);
+            if (!container) return;
+            
+            // Build query parameters for this specific appointment date
+            const url = `/get_receive_dates?appointment_dates=${appointmentDate}`;
+            
+            // Fetch receive dates for this specific appointment date
+            fetch(url)
                 .then(response => response.json())
                 .then(data => {
                     if (data.error) {
-                        receiveDateList.innerHTML = `<p style="color: #e74c3c; text-align: center; padding: 20px;">Error: ${data.error}</p>`;
+                        container.innerHTML = `<p style="color: #e74c3c; text-align: center; padding: 10px;">Error: ${data.error}</p>`;
                         return;
                     }
                     
                     const dates = data.receive_dates;
-                    const columnName = data.column_name;
                     
                     if (!dates || dates.length === 0) {
-                        receiveDateList.innerHTML = '<p style="color: #666; font-style: italic; text-align: center; padding: 20px;">No receive dates found in the file.</p>';
+                        container.innerHTML = '<p style="color: #666; font-style: italic; text-align: center; padding: 10px;">No receive dates found for this appointment date.</p>';
                         return;
                     }
                     
-                    // Display receive dates as checkboxes
+                    // Get saved selections for this appointment date
+                    const savedSelections = receiveDateSelections.get(appointmentDate) || new Set();
+                    
+                    // Display receive dates as checkboxes with saved selections
                     let html = '';
                     dates.forEach((date, index) => {
                         const dateObj = new Date(date);
@@ -2237,39 +2293,114 @@ HTML_TEMPLATE = """
                             day: 'numeric' 
                         });
                         
+                        // Check if this receive date should be selected based on saved selections
+                        // If no saved selections exist, default to all selected
+                        const isSelected = savedSelections.size === 0 ? true : savedSelections.has(date);
+                        const uniqueId = `receive_${appointmentDate.replace(/-/g, '_')}_${index}`;
+                        
                         html += `
-                            <div style="display: flex; align-items: center; padding: 8px; border: 1px solid #ddd; border-radius: 6px; background: white; cursor: pointer; transition: all 0.3s;" 
-                                 onclick="toggleReceiveDate('${date}', ${index})">
-                                <input type="checkbox" id="receive_checkbox_${index}" data-date="${date}" style="margin-right: 8px; transform: scale(1.1);">
+                            <label style="display: flex; align-items: center; padding: 6px 10px; border: 1px solid #ddd; border-radius: 4px; background: white; cursor: pointer; transition: all 0.3s; min-width: 120px; font-size: 12px;" 
+                                   onclick="toggleReceiveDateForAppointment('${appointmentDate}', '${date}', ${index})">
+                                <input type="checkbox" id="${uniqueId}" data-date="${date}" ${isSelected ? 'checked' : ''} style="margin-right: 6px; transform: scale(0.9);">
                                 <div>
-                                    <div style="font-weight: bold; font-size: 14px;">${formattedDate}</div>
-                                    <div style="color: #666; font-size: 12px;">${dayName}</div>
+                                    <div style="font-weight: bold; font-size: 12px;">${formattedDate}</div>
+                                    <div style="color: #666; font-size: 10px;">${dayName}</div>
                                 </div>
-                            </div>
+                            </label>
                         `;
                     });
                     
-                    receiveDateList.innerHTML = html;
+                    container.innerHTML = html;
+                    
+                    // Update receive date info for this appointment date
+                    updateReceiveDateInfoForAppointment(appointmentDate);
                 })
                 .catch(error => {
-                    receiveDateList.innerHTML = `<p style="color: #e74c3c; text-align: center; padding: 20px;">Error loading receive dates: ${error.message}</p>`;
+                    container.innerHTML = `<p style="color: #e74c3c; text-align: center; padding: 10px;">Error loading receive dates: ${error.message}</p>`;
                 });
         }
         
-        function toggleReceiveDate(dateStr, index) {
-            const checkbox = document.getElementById(`receive_checkbox_${index}`);
+        function toggleReceiveDateForAppointment(appointmentDate, dateStr, index) {
+            const uniqueId = `receive_${appointmentDate.replace(/-/g, '_')}_${index}`;
+            const checkbox = document.getElementById(uniqueId);
             if (!checkbox) return;
             
             checkbox.checked = !checkbox.checked;
             
             // Update the visual state
-            const container = checkbox.closest('div');
+            const container = checkbox.closest('label');
             if (checkbox.checked) {
                 container.style.background = '#e3f2fd';
                 container.style.borderColor = '#2196f3';
             } else {
                 container.style.background = 'white';
                 container.style.borderColor = '#ddd';
+            }
+            
+            // Save the receive date selection for this specific appointment date
+            saveReceiveDateSelectionForAppointment(appointmentDate);
+            
+            // Update receive date info for this appointment date
+            updateReceiveDateInfoForAppointment(appointmentDate);
+        }
+        
+        function saveReceiveDateSelectionForAppointment(appointmentDate) {
+            // Get current receive date selections for this specific appointment date
+            const containerId = `receive_dates_${appointmentDate.replace(/-/g, '_')}`;
+            const container = document.getElementById(containerId);
+            if (!container) return;
+            
+            const currentSelections = new Set();
+            const checkboxes = container.querySelectorAll('input[type="checkbox"]');
+            checkboxes.forEach(checkbox => {
+                if (checkbox.checked) {
+                    currentSelections.add(checkbox.dataset.date);
+                }
+            });
+            
+            // Save the selections for this appointment date
+            receiveDateSelections.set(appointmentDate, currentSelections);
+        }
+        
+        function updateReceiveDateInfoForAppointment(appointmentDate) {
+            const countElement = document.getElementById(`receive_count_${appointmentDate.replace(/-/g, '_')}`);
+            if (!countElement) return;
+            
+            const containerId = `receive_dates_${appointmentDate.replace(/-/g, '_')}`;
+            const container = document.getElementById(containerId);
+            if (!container) return;
+            
+            const checkboxes = container.querySelectorAll('input[type="checkbox"]');
+            const selectedCount = Array.from(checkboxes).filter(cb => cb.checked).length;
+            
+            countElement.textContent = selectedCount;
+        }
+        
+        function updateReceiveDateInfo() {
+            const selectedCount = document.getElementById('receive_selected_count');
+            const selectedText = document.getElementById('receive_selected_text');
+            const selectedList = document.getElementById('receive_selected_list');
+            
+            if (!selectedCount || !selectedText || !selectedList) return;
+            
+            // Get all checked receive date checkboxes
+            const checkboxes = document.querySelectorAll('input[id^="receive_checkbox_"]:checked');
+            const selectedDates = Array.from(checkboxes).map(cb => cb.dataset.date);
+            
+            selectedCount.textContent = selectedDates.length;
+            selectedText.textContent = selectedDates.length === 1 ? 'date selected' : 'dates selected';
+            
+            if (selectedDates.length > 0) {
+                const formattedDates = selectedDates.map(date => {
+                    const dateObj = new Date(date);
+                    return dateObj.toLocaleDateString('en-US', { 
+                        month: 'short', 
+                        day: 'numeric' 
+                    });
+                });
+                selectedList.textContent = formattedDates.join(', ');
+            } else {
+                selectedList.textContent = 'No receive dates selected';
             }
         }
         
@@ -2367,6 +2498,11 @@ HTML_TEMPLATE = """
                    today.getDate() === day;
         }
         
+        function getSelectedAppointmentDates() {
+            return Array.from(selectedDates);
+        }
+        
+        
         function toggleDate(dateStr) {
             if (!appointmentDates.has(dateStr)) return;
             
@@ -2385,6 +2521,18 @@ HTML_TEMPLATE = """
             renderCalendar();
             syncFallbackCheckboxes();
             updateThirdPriorityInfo(); // Update Third Priority info when First Priority changes
+            
+            // Show/hide receive date panel based on whether any appointment dates are selected
+            const receiveDatePanel = document.getElementById('receive-date-panel');
+            if (receiveDatePanel) {
+                if (selectedDates.size > 0) {
+                    receiveDatePanel.style.display = 'block';
+                    // Always reload receive dates when appointment dates change
+                    loadReceiveDateCheckboxes();
+                } else {
+                    receiveDatePanel.style.display = 'none';
+                }
+            }
         }
         
         function previousMonth() {
@@ -2779,6 +2927,22 @@ HTML_TEMPLATE = """
                     form.appendChild(input);
                 });
                 
+                // Add receive dates as hidden inputs from all appointment dates
+                selectedDates.forEach(appointmentDate => {
+                    const containerId = `receive_dates_${appointmentDate.replace(/-/g, '_')}`;
+                    const container = document.getElementById(containerId);
+                    if (container) {
+                        const receiveCheckboxes = container.querySelectorAll('input[type="checkbox"]:checked');
+                        receiveCheckboxes.forEach(checkbox => {
+                            const input = document.createElement('input');
+                            input.type = 'hidden';
+                            input.name = 'receive_dates';
+                            input.value = checkbox.dataset.date;
+                            form.appendChild(input);
+                        });
+                    }
+                });
+                
                 // If no dates selected for First Priority, add all appointment dates as fallback
                 if (selectedDates.size === 0) {
                     appointmentDates.forEach(date => {
@@ -2821,7 +2985,6 @@ HTML_TEMPLATE = """
             const progressText = document.getElementById('progress-text');
             
             if (!progressBar || !progressText) {
-                console.error('Progress elements not found');
                 return;
             }
             
@@ -2869,7 +3032,6 @@ HTML_TEMPLATE = """
                 if (progressText) {
                     progressText.textContent = 'Error: ' + error.message;
                 }
-                console.error('Error:', error);
             });
         }
         
@@ -2905,7 +3067,6 @@ HTML_TEMPLATE = """
                 return response.json();
             })
             .then(data => {
-                console.log('Upload response:', data); // Debug log
                 if (data.success) {
                     showSuccessToast('Upload Successful', data.message);
                     // Reset form
@@ -2919,7 +3080,6 @@ HTML_TEMPLATE = """
                 }
             })
             .catch(error => {
-                console.error('Upload error:', error);
                 showErrorToast('Upload Error', 'Error uploading file. Please try again.');
             })
             .finally(() => {
@@ -2950,7 +3110,6 @@ HTML_TEMPLATE = """
                 const observer = new MutationObserver(function(mutations) {
                     mutations.forEach(function(mutation) {
                         if (mutation.type === 'childList' && mutation.addedNodes.length > 0) {
-                            console.log('Agent rows detected, initializing pagination...');
                             setTimeout(initializePagination, 100);
                         }
                     });
@@ -2967,7 +3126,6 @@ HTML_TEMPLATE = """
             const agentRows = document.querySelectorAll('.agent-row');
             totalItems = agentRows.length;
             
-            console.log('Initializing pagination with', totalItems, 'items');
             
             if (totalItems > 0) {
                 // Hide all rows initially
@@ -2992,11 +3150,9 @@ HTML_TEMPLATE = """
                 if (pageNumbers && prevBtn && nextBtn) {
                 updatePagination();
                 } else {
-                    console.log('Pagination elements not found, skipping pagination initialization');
                 }
                 showPage(1);
             } else {
-                console.log('No agent rows found, retrying...');
             }
         }
         
@@ -3063,7 +3219,6 @@ HTML_TEMPLATE = """
             
             // Check if elements exist before trying to access them
             if (!prevBtn || !nextBtn || !pageNumbers) {
-                console.log('Pagination elements not found, skipping pagination update');
                 return;
             }
             
@@ -3157,7 +3312,6 @@ HTML_TEMPLATE = """
         
         // Global function to initialize pagination after data is loaded
         window.initializeAgentPagination = function() {
-            console.log('Manually initializing pagination...');
             initializePagination();
         }
         
@@ -3328,7 +3482,6 @@ HTML_TEMPLATE = """
     function showToast(type, title, message, duration = 5000) {
         const container = document.getElementById('toastContainer');
         if (!container) {
-            console.error('Toast container not found');
             alert(message); // Fallback to alert
             return;
         }
@@ -3521,7 +3674,7 @@ def process_allocation_files(allocation_df, data_df):
     except Exception as e:
         return f"❌ Error during processing: {str(e)}", None
 
-def process_allocation_files_with_dates(allocation_df, data_df, selected_dates, custom_dates, appointment_dates, appointment_dates_second=None):
+def process_allocation_files_with_dates(allocation_df, data_df, selected_dates, custom_dates, appointment_dates, appointment_dates_second=None, receive_dates=None):
     """Process data file with priority assignment and generate agent allocation summary"""
     global agent_allocations_data
     try:
@@ -3531,12 +3684,15 @@ def process_allocation_files_with_dates(allocation_df, data_df, selected_dates, 
         # Use data_df as the main file to process
         processed_df = data_df.copy()
         
-        # Find the appointment date column and insurance carrier column
+        # Find the appointment date column, receive date column, and insurance carrier column
         appointment_date_col = None
+        receive_date_col = None
         insurance_carrier_col = None
         for col in processed_df.columns:
             if 'appointment' in col.lower() and 'date' in col.lower():
                 appointment_date_col = col
+            elif 'receive' in col.lower() and 'date' in col.lower():
+                receive_date_col = col
             elif 'dental' in col.lower() and 'primary' in col.lower() and 'ins' in col.lower() and 'carr' in col.lower():
                 insurance_carrier_col = col
         
@@ -3605,8 +3761,33 @@ def process_allocation_files_with_dates(allocation_df, data_df, selected_dates, 
             
             # Check if appointment date is in First Priority dates
             if appointment_date_str in first_priority_dates_yyyy_mm_dd:
-                processed_df.at[idx, 'Priority Status'] = 'First Priority'
-                first_priority_count += 1
+                # Additional filtering: check receive dates if provided
+                should_include = True
+                if receive_dates and receive_date_col and receive_date_col in processed_df.columns:
+                    receive_date = row[receive_date_col]
+                    if not pd.isna(receive_date):
+                        # Convert receive date to string format
+                        receive_date_str = str(receive_date)
+                        if ' ' in receive_date_str:
+                            receive_date_str = receive_date_str.split(' ')[0]
+                        
+                        # Convert receive dates to YYYY-MM-DD format for comparison
+                        receive_dates_yyyy_mm_dd = set()
+                        for calendar_date in receive_dates:
+                            converted_date = convert_calendar_to_original_format(calendar_date)
+                            receive_dates_yyyy_mm_dd.add(converted_date)
+                        
+                        # Only include if receive date is in selected receive dates
+                        if receive_date_str not in receive_dates_yyyy_mm_dd:
+                            should_include = False
+                
+                if should_include:
+                    processed_df.at[idx, 'Priority Status'] = 'First Priority'
+                    first_priority_count += 1
+                else:
+                    # If receive date is not selected, assign to Second Priority
+                    processed_df.at[idx, 'Priority Status'] = 'Second Priority'
+                    second_priority_count += 1
             # Check if appointment date is in Second Priority dates
             elif appointment_date_str in second_priority_dates_yyyy_mm_dd:
                 processed_df.at[idx, 'Priority Status'] = 'Second Priority'
@@ -4240,11 +4421,12 @@ def process_files():
         # Get selected appointment dates from calendar
         appointment_dates = request.form.getlist('appointment_dates')
         appointment_dates_second = request.form.getlist('appointment_dates_second')
+        receive_dates = request.form.getlist('receive_dates')
         debug_count = request.form.get('debug_selected_count', '0')
         debug_count_second = request.form.get('debug_selected_count_second', '0')
         
         # Process the data file with selected dates and allocation data
-        result_message, processed_df = process_allocation_files_with_dates(allocation_data, data_df, [], '', appointment_dates, appointment_dates_second)
+        result_message, processed_df = process_allocation_files_with_dates(allocation_data, data_df, [], '', appointment_dates, appointment_dates_second, receive_dates)
         
         if processed_df is not None:
             # Store the result for download
@@ -4508,9 +4690,11 @@ def get_appointment_dates():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
-@app.route('/get_receive_dates')
-@login_required
+
+@app.route('/get_receive_dates', methods=['GET'])
+@admin_required
 def get_receive_dates():
+    """Get unique receive dates from data file, optionally filtered by appointment dates"""
     global data_file_data
     
     if not data_file_data:
@@ -4520,7 +4704,7 @@ def get_receive_dates():
         # Get the first sheet from data file
         data_df = list(data_file_data.values())[0]
         
-        # Find the receive date column (case-insensitive search)
+        # Find the receive date column
         receive_date_col = None
         for col in data_df.columns:
             if 'receive' in col.lower() and 'date' in col.lower():
@@ -4530,8 +4714,38 @@ def get_receive_dates():
         if receive_date_col is None:
             return jsonify({'error': 'Receive Date column not found'}), 400
         
-        # Get unique receive dates
-        receive_dates = data_df[receive_date_col].dropna().unique()
+        # Get appointment dates from query parameters
+        appointment_dates = request.args.getlist('appointment_dates')
+        
+        # Filter data based on selected appointment dates if provided
+        filtered_df = data_df
+        if appointment_dates:
+            # Find the appointment date column
+            appointment_date_col = None
+            for col in data_df.columns:
+                if 'appointment' in col.lower() and 'date' in col.lower():
+                    appointment_date_col = col
+                    break
+            
+            if appointment_date_col:
+                # Convert appointment dates to the same format as in the dataframe
+                appointment_dates_formatted = []
+                for date_str in appointment_dates:
+                    try:
+                        # Try to parse the date string and convert to the format used in dataframe
+                        from datetime import datetime
+                        parsed_date = datetime.strptime(date_str, '%Y-%m-%d').date()
+                        appointment_dates_formatted.append(parsed_date)
+                    except:
+                        # If parsing fails, try to match as string
+                        appointment_dates_formatted.append(date_str)
+                
+                # Filter rows where appointment date matches any of the selected dates
+                mask = data_df[appointment_date_col].isin(appointment_dates_formatted)
+                filtered_df = data_df[mask]
+        
+        # Get unique receive dates from filtered data
+        receive_dates = filtered_df[receive_date_col].dropna().unique()
         
         # Convert to string format and sort
         date_strings = []
@@ -4546,11 +4760,14 @@ def get_receive_dates():
         
         return jsonify({
             'receive_dates': date_strings,
-            'column_name': receive_date_col
+            'column_name': receive_date_col,
+            'filtered_by_appointment_dates': len(appointment_dates) > 0 if appointment_dates else False
         })
         
     except Exception as e:
         return jsonify({'error': str(e)}), 500
+
+
 
 @app.route('/get_agent_allocation', methods=['POST'])
 @admin_required

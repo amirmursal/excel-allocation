@@ -36,9 +36,6 @@ This guide will help you set up Google OAuth authentication for your Excel Alloc
 6. Click "Create"
 7. Copy the Client ID and Client Secret
 
-client ID - 762373596635-0iqkn5fdohgd15oaderth0nbq9k3598e.apps.googleusercontent.com
-client Secret- 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
-
 ## Step 4: Configure Environment Variables
 
 Create a `.env` file in your project root (if it doesn't exist) and add:

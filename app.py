@@ -19,6 +19,10 @@ import uuid
 import json
 from functools import wraps
 from dotenv import load_dotenv
+# Google OAuth imports
+from google.auth.transport import requests
+from google.oauth2 import id_token
+import requests as req
 
 # Load environment variables
 load_dotenv()
@@ -55,20 +59,28 @@ app.config['MAIL_DEFAULT_SENDER'] = 'amirmursal@gmail.com'
 # Initialize Flask-Mail
 mail = Mail(app)
 
+# Google OAuth Configuration
+GOOGLE_CLIENT_ID = os.environ.get('GOOGLE_CLIENT_ID')
+GOOGLE_CLIENT_SECRET = os.environ.get('GOOGLE_CLIENT_SECRET')
+GOOGLE_DISCOVERY_URL = "https://accounts.google.com/.well-known/openid_configuration"
+
 # Database Models
 class User(db.Model):
     """User model for authentication and employee management"""
     __tablename__ = 'users'
     
     id = db.Column(db.Integer, primary_key=True)
-    username = db.Column(db.String(80), unique=True, nullable=False)
+    username = db.Column(db.String(80), unique=True, nullable=True)  # Made nullable for OAuth users
     email = db.Column(db.String(120), unique=True, nullable=False)
-    password_hash = db.Column(db.String(255), nullable=False)
+    password_hash = db.Column(db.String(255), nullable=True)  # Made nullable for OAuth users
     role = db.Column(db.String(20), nullable=False, default='agent')  # admin, agent
     name = db.Column(db.String(100), nullable=False)
     is_active = db.Column(db.Boolean, default=True)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     last_login = db.Column(db.DateTime)
+    # Google OAuth fields
+    google_id = db.Column(db.String(100), unique=True, nullable=True)
+    auth_provider = db.Column(db.String(20), default='local')  # local, google
     
     # Relationships
     sessions = db.relationship('UserSession', backref='user', lazy=True, cascade='all, delete-orphan')
@@ -395,28 +407,8 @@ def init_database():
             admin_user.set_password('admin123')
             db.session.add(admin_user)
         
-        # Create default agent users if they don't exist
-        agent1 = User.query.filter_by(username='agent1').first()
-        if not agent1:
-            agent1 = User(
-                username='agent1',
-                email='agent1@example.com',
-                role='agent',
-                name='Agent One'
-            )
-            agent1.set_password('agent123')
-            db.session.add(agent1)
-        
-        agent2 = User.query.filter_by(username='agent2').first()
-        if not agent2:
-            agent2 = User(
-                username='agent2',
-                email='agent2@example.com',
-                role='agent',
-                name='Agent Two'
-            )
-            agent2.set_password('agent456')
-            db.session.add(agent2)
+        # Note: Agent users will be created automatically via Google OAuth
+        # No need to create static agent accounts
         
         db.session.commit()
         print("Database initialized with default users")
@@ -525,6 +517,68 @@ def get_agent_work_files(agent_id=None):
 def get_all_agent_work_files():
     """Get all agent work files for consolidation"""
     return AgentWorkFile.query.filter_by(status='uploaded').order_by(AgentWorkFile.upload_date.desc()).all()
+
+# Google OAuth helper functions
+def get_google_provider_cfg():
+    """Get Google OAuth provider configuration"""
+    # Use hardcoded Google OAuth endpoints instead of discovery
+    return {
+        "authorization_endpoint": "https://accounts.google.com/o/oauth2/v2/auth",
+        "token_endpoint": "https://oauth2.googleapis.com/token",
+        "userinfo_endpoint": "https://www.googleapis.com/oauth2/v3/userinfo"
+    }
+
+def verify_google_token(token):
+    """Verify Google OAuth token and return user info"""
+    try:
+        # Verify the token
+        idinfo = id_token.verify_oauth2_token(token, requests.Request(), GOOGLE_CLIENT_ID)
+        
+        # Verify the issuer
+        if idinfo['iss'] not in ['accounts.google.com', 'https://accounts.google.com']:
+            raise ValueError('Wrong issuer.')
+        
+        return {
+            'google_id': idinfo['sub'],
+            'email': idinfo['email'],
+            'name': idinfo['name'],
+            'picture': idinfo.get('picture', '')
+        }
+    except ValueError as e:
+        print(f"Token verification failed: {e}")
+        return None
+
+def get_or_create_google_user(google_user_info):
+    """Get existing user or create new user from Google OAuth info"""
+    # First try to find by Google ID
+    user = User.query.filter_by(google_id=google_user_info['google_id']).first()
+    
+    if user:
+        return user
+    
+    # If not found by Google ID, try to find by email
+    user = User.query.filter_by(email=google_user_info['email']).first()
+    
+    if user:
+        # Update existing user with Google ID
+        user.google_id = google_user_info['google_id']
+        user.auth_provider = 'google'
+        user.name = google_user_info['name']
+        db.session.commit()
+        return user
+    
+    # Create new user
+    user = User(
+        email=google_user_info['email'],
+        name=google_user_info['name'],
+        google_id=google_user_info['google_id'],
+        auth_provider='google',
+        role='agent',  # Default role for OAuth users
+        is_active=True
+    )
+    db.session.add(user)
+    db.session.commit()
+    return user
 
 # Authentication decorators
 def login_required(f):
@@ -718,6 +772,48 @@ LOGIN_TEMPLATE = """
         .demo-credentials strong {
             color: #333;
         }
+        .google-login-btn {
+            width: 100%;
+            background: #4285f4;
+            color: white;
+            padding: 12px;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 16px;
+            font-weight: 600;
+            transition: transform 0.2s;
+            margin-top: 15px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+        }
+        .google-login-btn:hover {
+            background: #3367d6;
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(66, 133, 244, 0.3);
+        }
+        .divider {
+            text-align: center;
+            margin: 20px 0;
+            position: relative;
+            color: #666;
+        }
+        .divider::before {
+            content: '';
+            position: absolute;
+            top: 50%;
+            left: 0;
+            right: 0;
+            height: 1px;
+            background: #ddd;
+        }
+        .divider span {
+            background: white;
+            padding: 0 15px;
+            position: relative;
+        }
     </style>
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
 </head>
@@ -725,7 +821,7 @@ LOGIN_TEMPLATE = """
     <div class="login-container">
         <div class="login-header">
             <h1><i class="fas fa-file-excel"></i> Excel Allocation System</h1>
-            <p>Please login to continue</p>
+            <p>Agents: Use Google Login | Admins: Use username/password</p>
         </div>
         
         {% with messages = get_flashed_messages(with_categories=true) %}
@@ -752,11 +848,36 @@ LOGIN_TEMPLATE = """
             </button>
         </form>
         
+        <div class="divider">
+            <span>OR</span>
+        </div>
+        
+        {% if GOOGLE_CLIENT_ID %}
+        <a href="{{ url_for('google_login') }}" class="google-login-btn">
+            <i class="fab fa-google"></i> Login with Google
+        </a>
+        {% else %}
+        <div style="background: #fff3cd; border: 1px solid #ffeaa7; color: #856404; padding: 15px; border-radius: 8px; margin-top: 15px; text-align: center;">
+            <i class="fas fa-exclamation-triangle"></i>
+            <strong>Google OAuth not configured</strong><br>
+            <small>Contact administrator to set up Google OAuth for agent login</small>
+        </div>
+        {% endif %}
+        
         <div class="demo-credentials">
-            <h4><i class="fas fa-info-circle"></i> Demo Credentials</h4>
-            <p><strong>Admin:</strong> admin / admin123</p>
-            <p><strong>Agent 1:</strong> agent1 / agent123</p>
-            <p><strong>Agent 2:</strong> agent2 / agent456</p>
+            <h4><i class="fas fa-info-circle"></i> Login Options</h4>
+            <p><strong>Admin:</strong> Use username/password (admin / admin123)</p>
+            {% if GOOGLE_CLIENT_ID %}
+            <p><strong>Agents:</strong> Use "Login with Google" button above</p>
+            <p style="color: #666; font-size: 12px; margin-top: 10px;">
+                <i class="fas fa-info-circle"></i> Agents with Gmail accounts can login instantly with Google OAuth
+            </p>
+            {% else %}
+            <p><strong>Agents:</strong> Google OAuth not configured - contact administrator</p>
+            <p style="color: #e74c3c; font-size: 12px; margin-top: 10px;">
+                <i class="fas fa-exclamation-triangle"></i> No static agent credentials available - Google OAuth required
+            </p>
+            {% endif %}
         </div>
     </div>
 </body>
@@ -823,6 +944,139 @@ HTML_TEMPLATE = """
             background: rgba(255, 255, 255, 0.9);
             color: #667eea;
             box-shadow: 0 4px 15px rgba(255, 255, 255, 0.3);
+        }
+        
+        .admin-tab-content {
+            display: none;
+        }
+        
+        .admin-tab-content.active {
+            display: block;
+        }
+        
+        .admin-tab-btn.active {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%) !important;
+            color: white !important;
+            border-bottom-color: #667eea !important;
+        }
+        
+        /* Toast Notifications */
+        .toast-container {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            z-index: 9999;
+        }
+        
+        .toast {
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+            padding: 16px 20px;
+            margin-bottom: 10px;
+            min-width: 300px;
+            max-width: 400px;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            transform: translateX(100%);
+            transition: transform 0.3s ease;
+            border-left: 4px solid #28a745;
+        }
+        
+        .toast.show {
+            transform: translateX(0);
+        }
+        
+        .toast.success {
+            border-left-color: #28a745;
+            background: linear-gradient(135deg, #d4edda 0%, #f8f9fa 100%);
+            border: 1px solid #c3e6cb;
+        }
+        
+        .toast.error {
+            border-left-color: #dc3545;
+            background: linear-gradient(135deg, #f8d7da 0%, #f8f9fa 100%);
+            border: 1px solid #f5c6cb;
+        }
+        
+        .toast.warning {
+            border-left-color: #ffc107;
+        }
+        
+        .toast.info {
+            border-left-color: #17a2b8;
+        }
+        
+        .toast-icon {
+            font-size: 20px;
+            flex-shrink: 0;
+        }
+        
+        .toast.success .toast-icon {
+            color: #28a745;
+        }
+        
+        .toast.error .toast-icon {
+            color: #dc3545;
+        }
+        
+        .toast.warning .toast-icon {
+            color: #ffc107;
+        }
+        
+        .toast.info .toast-icon {
+            color: #17a2b8;
+        }
+        
+        .toast-content {
+            flex: 1;
+        }
+        
+        .toast-title {
+            font-weight: 600;
+            margin: 0 0 4px 0;
+            color: #333;
+        }
+        
+        .toast.success .toast-title {
+            color: #155724;
+        }
+        
+        .toast.error .toast-title {
+            color: #721c24;
+        }
+        
+        .toast-message {
+            margin: 0;
+            color: #666;
+            font-size: 14px;
+        }
+        
+        .toast.success .toast-message {
+            color: #155724;
+        }
+        
+        .toast.error .toast-message {
+            color: #721c24;
+        }
+        
+        .toast-close {
+            background: none;
+            border: none;
+            font-size: 18px;
+            color: #999;
+            cursor: pointer;
+            padding: 0;
+            width: 20px;
+            height: 20px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        
+        .toast-close:hover {
+            color: #333;
         }
         
         .content { padding: 30px; }
@@ -1246,20 +1500,29 @@ HTML_TEMPLATE = """
             </div>
             
             {% if session.user_role == 'admin' %}
-              <!--<<div class="role-selector">
-                <button class="role-btn active" onclick="switchRole('admin')">
-                    <i class="fas fa-user-shield"></i> Admin
-                </button>
-              button class="role-btn" onclick="switchRole('agent')">
-                    <i class="fas fa-user"></i> Agent
-                </button>
-            </div>-->
             {% endif %}
         </div>
 
         <div class="content">
             <!-- Admin Panel -->
             <div id="admin-panel" class="panel active">
+                <!-- Admin Tab Navigation -->
+                <div class="admin-tabs" style="margin-bottom: 30px;">
+                    <div class="tab-nav" style="display: flex; border-bottom: 2px solid #e9ecef; margin-bottom: 20px;">
+                        <button class="admin-tab-btn active" onclick="switchAdminTab('file-management')" style="padding: 12px 24px; border: none; background: #f8f9fa; color: #666; cursor: pointer; border-bottom: 3px solid transparent; transition: all 0.3s;">
+                            <i class="fas fa-upload"></i> File Management
+                        </button>
+                        <button class="admin-tab-btn" onclick="switchAdminTab('agent-consolidation')" style="padding: 12px 24px; border: none; background: #f8f9fa; color: #666; cursor: pointer; border-bottom: 3px solid transparent; transition: all 0.3s;">
+                            <i class="fas fa-compress-arrows-alt"></i> Agent Consolidation
+                        </button>
+                        <button class="admin-tab-btn" onclick="switchAdminTab('system-settings')" style="padding: 12px 24px; border: none; background: #f8f9fa; color: #666; cursor: pointer; border-bottom: 3px solid transparent; transition: all 0.3s;">
+                            <i class="fas fa-cog"></i> System Settings
+                        </button>
+                    </div>
+                </div>
+                
+                <!-- File Management Tab -->
+                <div id="file-management-tab" class="admin-tab-content active">
                 <div class="upload-grid">
                     <div class="upload-card">
                         <form action="/upload_allocation" method="post" enctype="multipart/form-data" id="allocation-form">
@@ -1421,41 +1684,49 @@ HTML_TEMPLATE = """
                 </div>
                 {% endif %}
 
-                <!-- Agent Files Consolidation -->
-                {% if all_agent_work_files %}
-                <div class="section">
-                    <h3>📋 Agent Work Files Consolidation</h3>
-                    <div style="background: #f8f9fa; padding: 20px; border-radius: 10px; margin-bottom: 20px;">
-                        <h4>Available Agent Files:</h4>
-                        {% for work_file in all_agent_work_files %}
-                        <div style="border-bottom: 1px solid #dee2e6; padding: 10px 0; {% if loop.last %}border-bottom: none;{% endif %}">
-                            <strong>{{ work_file.agent.name }}</strong> - {{ work_file.filename }}
-                            <br>
-                            <small style="color: #666;">
-                                Uploaded: {{ work_file.upload_date.strftime('%Y-%m-%d %H:%M') }}
-                                | Status: <span style="color: {% if work_file.status == 'uploaded' %}#28a745{% elif work_file.status == 'consolidated' %}#007bff{% else %}#6c757d{% endif %}">{{ work_file.status.title() }}</span>
-                            </small>
-                            {% if work_file.notes %}
-                            <br>
-                            <small style="color: #666;"><em>{{ work_file.notes }}</em></small>
-                            {% endif %}
+                </div>
+                
+                <!-- Agent Consolidation Tab -->
+                <div id="agent-consolidation-tab" class="admin-tab-content">
+                    <!-- Agent Files Consolidation -->
+                    {% if all_agent_work_files %}
+                    <div class="section">
+                        <h3>📋 Agent Work Files Consolidation</h3>
+                        <div style="background: #f8f9fa; padding: 20px; border-radius: 10px; margin-bottom: 20px;">
+                            <h4>Available Agent Files:</h4>
+                            {% for work_file in all_agent_work_files %}
+                            <div style="border-bottom: 1px solid #dee2e6; padding: 10px 0; {% if loop.last %}border-bottom: none;{% endif %}">
+                                <strong>{{ work_file.agent.name }}</strong> - {{ work_file.filename }}
+                                <br>
+                                <small style="color: #666;">
+                                    Uploaded: {{ work_file.upload_date.strftime('%Y-%m-%d %H:%M') }}
+                                    | Status: <span style="color: {% if work_file.status == 'uploaded' %}#28a745{% elif work_file.status == 'consolidated' %}#007bff{% else %}#6c757d{% endif %}">{{ work_file.status.title() }}</span>
+                                </small>
+                                {% if work_file.notes %}
+                                <br>
+                                <small style="color: #666;"><em>{{ work_file.notes }}</em></small>
+                                {% endif %}
+                            </div>
+                            {% endfor %}
                         </div>
-                        {% endfor %}
+                        <form action="/consolidate_agent_files" method="post">
+                            <button type="submit" class="process-btn" style="background: linear-gradient(135deg, #e74c3c, #c0392b);">
+                                <i class="fas fa-compress-arrows-alt"></i> Consolidate All Agent Files
+                            </button>
+                        </form>
                     </div>
-                    <form action="/consolidate_agent_files" method="post">
-                        <button type="submit" class="process-btn" style="background: linear-gradient(135deg, #e74c3c, #c0392b);">
-                            <i class="fas fa-compress-arrows-alt"></i> Consolidate All Agent Files
-                        </button>
-                    </form>
-                </div>
-                {% else %}
-                <div class="section">
-                    <h3>📋 Agent Work Files</h3>
-                    <div style="background: #f8f9fa; padding: 20px; border-radius: 10px;">
-                        <p style="color: #666;">No agent work files uploaded yet.</p>
+                    {% else %}
+                    <div class="section">
+                        <h3>📋 Agent Work Files</h3>
+                        <div style="background: #f8f9fa; padding: 20px; border-radius: 10px;">
+                            <p style="color: #666;">No agent work files uploaded yet.</p>
+                        </div>
                     </div>
+                    {% endif %}
                 </div>
-                {% endif %}
+                
+                <!-- System Settings Tab -->
+                <div id="system-settings-tab" class="admin-tab-content">
 
 
                 <!-- Individual Agent Downloads -->
@@ -1533,13 +1804,14 @@ HTML_TEMPLATE = """
                     </div>
                 </div>
 
-                <!-- Reset Section -->
-                <div class="section">
-                    <h3>🔄 Reset Application</h3>
-                    <p>Clear all uploaded files and reset the application to start fresh.</p>
-                    <form action="/reset_app" method="post" onsubmit="return confirm('Are you sure you want to reset the application? This will clear all uploaded files and data.')">
-                        <button type="submit" class="reset-btn">🗑️ Reset Application</button>
-                    </form>
+                    <!-- Reset Section -->
+                    <div class="section">
+                        <h3>🔄 Reset Application</h3>
+                        <p>Clear all uploaded files, agent consolidation files, and reset the application to start fresh.</p>
+                        <form action="/reset_app" method="post" onsubmit="return confirm('Are you sure you want to reset the application? This will clear all uploaded files, agent consolidation files, and data.')">
+                            <button type="submit" class="reset-btn">🗑️ Reset Application</button>
+                        </form>
+                    </div>
                 </div>
             </div>
 
@@ -1595,6 +1867,9 @@ HTML_TEMPLATE = """
         </div>
     </div>
 
+    <!-- Toast Container -->
+    <div class="toast-container" id="toastContainer"></div>
+
     <script>
         function switchRole(role) {
             // Update button states
@@ -1605,6 +1880,67 @@ HTML_TEMPLATE = """
             document.querySelectorAll('.panel').forEach(panel => panel.classList.remove('active'));
             document.getElementById(role + '-panel').classList.add('active');
         }
+        
+        function switchAdminTab(tabName) {
+            // Update tab button states
+            document.querySelectorAll('.admin-tab-btn').forEach(btn => btn.classList.remove('active'));
+            event.target.classList.add('active');
+            
+            // Show/hide tab content
+            document.querySelectorAll('.admin-tab-content').forEach(tab => tab.classList.remove('active'));
+            document.getElementById(tabName + '-tab').classList.add('active');
+        }
+        
+        // Toast Notification Functions
+        function showToast(type, title, message, duration = 5000) {
+            const container = document.getElementById('toastContainer');
+            const toast = document.createElement('div');
+            toast.className = `toast ${type}`;
+            
+            const icons = {
+                success: 'fas fa-check-circle',
+                error: 'fas fa-exclamation-circle',
+                warning: 'fas fa-exclamation-triangle',
+                info: 'fas fa-info-circle'
+            };
+            
+            toast.innerHTML = `
+                <i class="toast-icon ${icons[type]}"></i>
+                <div class="toast-content">
+                    <div class="toast-title">${title}</div>
+                    <div class="toast-message">${message}</div>
+                </div>
+                <button class="toast-close" onclick="closeToast(this)">&times;</button>
+            `;
+            
+            container.appendChild(toast);
+            
+            // Trigger animation
+            setTimeout(() => toast.classList.add('show'), 100);
+            
+            // Auto remove
+            setTimeout(() => {
+                if (toast.parentNode) {
+                    closeToast(toast.querySelector('.toast-close'));
+                }
+            }, duration);
+        }
+        
+        function closeToast(button) {
+            const toast = button.closest('.toast');
+            toast.classList.remove('show');
+            setTimeout(() => {
+                if (toast.parentNode) {
+                    toast.parentNode.removeChild(toast);
+                }
+            }, 300);
+        }
+        
+        // Global toast functions for easy access
+        window.showSuccessToast = (title, message) => showToast('success', title, message);
+        window.showErrorToast = (title, message) => showToast('error', title, message);
+        window.showWarningToast = (title, message) => showToast('warning', title, message);
+        window.showInfoToast = (title, message) => showToast('info', title, message);
         
         // Auto-switch to appropriate panel based on user role
         document.addEventListener('DOMContentLoaded', function() {
@@ -1618,6 +1954,9 @@ HTML_TEMPLATE = """
                     roleSelector.style.display = 'none';
                 }
             }
+            
+            // Note: Flash messages are handled by the server-side template rendering
+            // Toast notifications are only used for file uploads via JavaScript
         });
         
         function switchPriorityTab(priority) {
@@ -1646,26 +1985,110 @@ HTML_TEMPLATE = """
             }
         }
 
-        // Form submission with loading states - with null checks
+        // Form submission with loading states and toast notifications
         const allocationForm = document.getElementById('allocation-form');
         if (allocationForm) {
-            allocationForm.addEventListener('submit', function() {
+            allocationForm.addEventListener('submit', function(e) {
+                e.preventDefault(); // Prevent default form submission
+                
                 const btn = document.getElementById('allocation-btn');
+                const fileInput = document.getElementById('allocation_file');
+                
+                if (!fileInput.files[0]) {
+                    showErrorToast('Upload Error', 'Please select a file to upload');
+                    return;
+                }
+                
                 if (btn) {
                     btn.disabled = true;
-                    btn.textContent = 'Uploading...';
+                    btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Uploading...';
                 }
+                
+                const formData = new FormData();
+                formData.append('file', fileInput.files[0]);
+                
+                fetch('/upload_allocation', {
+                    method: 'POST',
+                    body: formData
+                })
+                .then(response => {
+                    if (!response.ok) {
+                        throw new Error(`HTTP error! status: ${response.status}`);
+                    }
+                    return response.text();
+                })
+                .then(() => {
+                    showSuccessToast('Upload Successful', 'Allocation file uploaded successfully!');
+                    // Reset form
+                    allocationForm.reset();
+                    // Reload page to show updated status
+                    setTimeout(() => {
+                        window.location.reload();
+                    }, 1500);
+                })
+                .catch(error => {
+                    console.error('Upload error:', error);
+                    showErrorToast('Upload Failed', 'Error uploading allocation file. Please try again.');
+                })
+                .finally(() => {
+                    if (btn) {
+                        btn.disabled = false;
+                        btn.innerHTML = '<i class="fas fa-upload"></i> Upload Allocation File';
+                    }
+                });
             });
         }
 
         const dataForm = document.getElementById('data-form');
         if (dataForm) {
-            dataForm.addEventListener('submit', function() {
+            dataForm.addEventListener('submit', function(e) {
+                e.preventDefault(); // Prevent default form submission
+                
                 const btn = document.getElementById('data-btn');
+                const fileInput = document.getElementById('data_file');
+                
+                if (!fileInput.files[0]) {
+                    showErrorToast('Upload Error', 'Please select a file to upload');
+                    return;
+                }
+                
                 if (btn) {
                     btn.disabled = true;
-                    btn.textContent = 'Uploading...';
+                    btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Uploading...';
                 }
+                
+                const formData = new FormData();
+                formData.append('file', fileInput.files[0]);
+                
+                fetch('/upload_data', {
+                    method: 'POST',
+                    body: formData
+                })
+                .then(response => {
+                    if (!response.ok) {
+                        throw new Error(`HTTP error! status: ${response.status}`);
+                    }
+                    return response.text();
+                })
+                .then(() => {
+                    showSuccessToast('Upload Successful', 'Data file uploaded successfully!');
+                    // Reset form
+                    dataForm.reset();
+                    // Reload page to show updated status
+                    setTimeout(() => {
+                        window.location.reload();
+                    }, 1500);
+                })
+                .catch(error => {
+                    console.error('Upload error:', error);
+                    showErrorToast('Upload Failed', 'Error uploading data file. Please try again.');
+                })
+                .finally(() => {
+                    if (btn) {
+                        btn.disabled = false;
+                        btn.innerHTML = '<i class="fas fa-upload"></i> Upload Data File';
+                    }
+                });
             });
         }
 
@@ -2457,7 +2880,7 @@ HTML_TEMPLATE = """
             const uploadBtn = document.getElementById('agentUploadBtn');
             
             if (!fileInput.files[0]) {
-                showToast('Please select a file to upload', 'error');
+                showErrorToast('Upload Error', 'Please select a file to upload');
                 return;
             }
             
@@ -2469,7 +2892,7 @@ HTML_TEMPLATE = """
             
             const formData = new FormData();
             formData.append('file', fileInput.files[0]);
-            formData.append('notes', notesInput.value || '');
+            formData.append('notes', notesInput ? notesInput.value || '' : '');
             
             fetch('/upload_work_file', {
                 method: 'POST',
@@ -2484,7 +2907,7 @@ HTML_TEMPLATE = """
             .then(data => {
                 console.log('Upload response:', data); // Debug log
                 if (data.success) {
-                    showToast(data.message, 'success');
+                    showSuccessToast('Upload Successful', data.message);
                     // Reset form
                     if (form) form.reset();
                     // Reload page to show updated file list after a short delay
@@ -2492,12 +2915,12 @@ HTML_TEMPLATE = """
                         window.location.reload();
                     }, 2000);
                 } else {
-                    showToast(data.message || 'Upload failed', 'error');
+                    showErrorToast('Upload Failed', data.message || 'Upload failed');
                 }
             })
             .catch(error => {
                 console.error('Upload error:', error);
-                showToast('Error uploading file. Please try again.', 'error');
+                showErrorToast('Upload Error', 'Error uploading file. Please try again.');
             })
             .finally(() => {
                 // Reset button state
@@ -2761,17 +3184,17 @@ HTML_TEMPLATE = """
                     if (data.success) {
                         button.innerHTML = '<i class="fas fa-check"></i> Email Sent';
                         button.style.background = 'linear-gradient(135deg, #27ae60, #2ecc71)';
-                        showToast(`✅ ${data.message}`, 'success');
+                        showSuccessToast('Email Sent', data.message);
                     } else {
                         button.innerHTML = originalText;
                         button.disabled = false;
-                        showToast(`❌ Error: ${data.message}`, 'error');
+                        showErrorToast('Email Failed', data.message);
                     }
                 })
                 .catch(error => {
                     button.innerHTML = originalText;
                     button.disabled = false;
-                    showToast(`❌ Error sending email: ${error.message}`, 'error');
+                    showErrorToast('Email Error', `Error sending email: ${error.message}`);
                 });
             }
         }
@@ -2901,10 +3324,8 @@ HTML_TEMPLATE = """
     <div id="toastContainer" style="position: fixed; top: 20px; right: 20px; z-index: 10000; display: flex; flex-direction: column; gap: 10px;"></div>
     
     <script>
-    // Toast notification system
-    function showToast(message, type = 'info') {
-        console.log('Showing toast:', message, type); // Debug log
-        
+    // Toast notification system - using CSS classes for proper styling
+    function showToast(type, title, message, duration = 5000) {
         const container = document.getElementById('toastContainer');
         if (!container) {
             console.error('Toast container not found');
@@ -2912,75 +3333,53 @@ HTML_TEMPLATE = """
             return;
         }
         
-        // Create toast element
         const toast = document.createElement('div');
-        toast.style.cssText = `
-            background: ${type === 'success' ? 'linear-gradient(135deg, #27ae60, #2ecc71)' : 
-                        type === 'error' ? 'linear-gradient(135deg, #e74c3c, #c0392b)' : 
-                        'linear-gradient(135deg, #3498db, #2980b9)'};
-            color: white;
-            padding: 15px 20px;
-            border-radius: 8px;
-            box-shadow: 0 4px 15px rgba(0,0,0,0.2);
-            margin-bottom: 10px;
-            min-width: 300px;
-            max-width: 400px;
-            position: relative;
-            transform: translateX(100%);
-            transition: all 0.3s ease;
-            font-weight: 500;
-            display: flex;
-            align-items: center;
-            gap: 10px;
-            z-index: 10001;
-        `;
+        toast.className = `toast ${type}`;
         
-        // Add icon based on type
-        const icon = type === 'success' ? '✅' : 
-                    type === 'error' ? '❌' : 'ℹ️';
+        const icons = {
+            success: 'fas fa-check-circle',
+            error: 'fas fa-exclamation-circle',
+            warning: 'fas fa-exclamation-triangle',
+            info: 'fas fa-info-circle'
+        };
         
         toast.innerHTML = `
-            <span style="font-size: 18px;">${icon}</span>
-            <span style="flex: 1;">${message}</span>
-            <button onclick="removeToast(this.parentElement)" style="
-                background: none; 
-                border: none; 
-                color: white; 
-                font-size: 18px; 
-                cursor: pointer; 
-                padding: 0; 
-                margin-left: 10px;
-                opacity: 0.7;
-                transition: opacity 0.2s;
-            " onmouseover="this.style.opacity='1'" onmouseout="this.style.opacity='0.7'">×</button>
+            <i class="toast-icon ${icons[type]}"></i>
+            <div class="toast-content">
+                <div class="toast-title">${title}</div>
+                <div class="toast-message">${message}</div>
+            </div>
+            <button class="toast-close" onclick="closeToast(this)">&times;</button>
         `;
         
-        // Add to container
         container.appendChild(toast);
         
-        // Force reflow and animate in
-        toast.offsetHeight; // Force reflow
-        setTimeout(() => {
-            toast.style.transform = 'translateX(0)';
-        }, 50);
+        // Trigger animation
+        setTimeout(() => toast.classList.add('show'), 100);
         
-        // Auto remove after 5 seconds
+        // Auto remove
         setTimeout(() => {
-            removeToast(toast);
-        }, 5000);
+            if (toast.parentNode) {
+                closeToast(toast.querySelector('.toast-close'));
+            }
+        }, duration);
     }
     
-    function removeToast(toast) {
-        if (toast && toast.parentElement) {
-            toast.style.transform = 'translateX(100%)';
-            toast.style.opacity = '0';
-            setTimeout(() => {
-                if (toast.parentElement) {
-                    toast.parentElement.removeChild(toast);
-                }
-            }, 300);
-        }
+    function closeToast(button) {
+        const toast = button.closest('.toast');
+        toast.classList.remove('show');
+        setTimeout(() => {
+            if (toast.parentNode) {
+                toast.parentNode.removeChild(toast);
+            }
+        }, 300);
     }
+    
+    // Global toast functions for easy access
+    window.showSuccessToast = (title, message) => showToast('success', title, message);
+    window.showErrorToast = (title, message) => showToast('error', title, message);
+    window.showWarningToast = (title, message) => showToast('warning', title, message);
+    window.showInfoToast = (title, message) => showToast('info', title, message);
     </script>
 </body>
 </html>
@@ -3607,12 +4006,117 @@ def login():
             session['db_session_id'] = db_session.id
             session.update(session_data)
             
-            flash(f'Welcome back, {user.name}!', 'success')
             return redirect(url_for('dashboard'))
         else:
             flash('Invalid username or password. Please try again.', 'error')
     
-    return render_template_string(LOGIN_TEMPLATE)
+    return render_template_string(LOGIN_TEMPLATE, GOOGLE_CLIENT_ID=GOOGLE_CLIENT_ID)
+
+@app.route('/google-login')
+def google_login():
+    """Initiate Google OAuth login"""
+    if not GOOGLE_CLIENT_ID:
+        flash('Google OAuth is not configured. Please contact administrator to set up Google OAuth for agent login.', 'error')
+        return redirect(url_for('login'))
+    
+    # Get Google OAuth configuration
+    google_provider_cfg = get_google_provider_cfg()
+    if not google_provider_cfg:
+        flash('Unable to connect to Google OAuth service. Please check your internet connection and try again.', 'error')
+        return redirect(url_for('login'))
+    
+    authorization_endpoint = google_provider_cfg["authorization_endpoint"]
+    
+    # Create request URI
+    request_uri = f"{authorization_endpoint}?client_id={GOOGLE_CLIENT_ID}&redirect_uri={request.url_root}callback&scope=openid email profile&response_type=code"
+    
+    return redirect(request_uri)
+
+@app.route('/callback')
+def callback():
+    """Handle Google OAuth callback"""
+    if not GOOGLE_CLIENT_ID or not GOOGLE_CLIENT_SECRET:
+        flash('Google OAuth is not configured. Please contact administrator.', 'error')
+        return redirect(url_for('login'))
+    
+    # Get authorization code from the request
+    code = request.args.get("code")
+    if not code:
+        flash('Authorization failed. Please try again.', 'error')
+        return redirect(url_for('login'))
+    
+    try:
+        # Get Google OAuth configuration
+        google_provider_cfg = get_google_provider_cfg()
+        if not google_provider_cfg:
+            flash('Unable to connect to Google OAuth service. Please try again later.', 'error')
+            return redirect(url_for('login'))
+        
+        token_endpoint = google_provider_cfg["token_endpoint"]
+        
+        # Exchange code for token
+        token_data = {
+            'code': code,
+            'client_id': GOOGLE_CLIENT_ID,
+            'client_secret': GOOGLE_CLIENT_SECRET,
+            'redirect_uri': request.base_url,
+            'grant_type': 'authorization_code'
+        }
+        
+        token_response = req.post(
+            token_endpoint,
+            data=token_data,
+            headers={'Content-Type': 'application/x-www-form-urlencoded'}
+        )
+        
+        # Parse the tokens
+        if token_response.status_code != 200:
+            flash('Failed to exchange authorization code for token. Please try again.', 'error')
+            return redirect(url_for('login'))
+            
+        tokens = token_response.json()
+        
+        if 'id_token' not in tokens:
+            flash('No ID token received from Google. Please try again.', 'error')
+            return redirect(url_for('login'))
+        
+        # Verify the token
+        google_user_info = verify_google_token(tokens['id_token'])
+        
+        if not google_user_info:
+            flash('Token verification failed. Please try again.', 'error')
+            return redirect(url_for('login'))
+        
+        # Get or create user
+        user = get_or_create_google_user(google_user_info)
+        
+        if not user.is_active:
+            flash('Your account is inactive. Please contact administrator.', 'error')
+            return redirect(url_for('login'))
+        
+        # Update last login
+        user.last_login = datetime.utcnow()
+        db.session.commit()
+        
+        # Create database session
+        session_data = {
+            'user_id': user.email,  # Use email as user_id for OAuth users
+            'user_role': user.role,
+            'user_name': user.name,
+            'user_email': user.email
+        }
+        db_session = create_user_session(user.id, session_data)
+        
+        # Set Flask session
+        session['db_session_id'] = db_session.id
+        session.update(session_data)
+        
+        return redirect(url_for('dashboard'))
+        
+    except Exception as e:
+        print(f"OAuth callback error: {e}")
+        flash('Authentication failed. Please try again.', 'error')
+        return redirect(url_for('login'))
 
 @app.route('/logout')
 def logout():
@@ -3638,12 +4142,12 @@ def upload_allocation_file():
     global allocation_data, allocation_filename, processing_result
     
     if 'file' not in request.files:
-        processing_result = "❌ Error: No file provided"
+        flash('No file provided', 'error')
         return redirect('/')
     
     file = request.files['file']
     if file.filename == '':
-        processing_result = "❌ Error: No file selected"
+        flash('No file selected', 'error')
         return redirect('/')
     
     try:
@@ -3656,6 +4160,7 @@ def upload_allocation_file():
         allocation_filename = filename
         
         processing_result = f"✅ Allocation file uploaded successfully! Loaded {len(allocation_data)} sheets: {', '.join(list(allocation_data.keys()))}"
+        flash(f'Allocation file uploaded successfully! Loaded {len(allocation_data)} sheets: {", ".join(list(allocation_data.keys()))}', 'success')
         
         # Clean up uploaded file
         if os.path.exists(filename):
@@ -3665,6 +4170,7 @@ def upload_allocation_file():
         
     except Exception as e:
         processing_result = f"❌ Error uploading allocation file: {str(e)}"
+        flash(f'Error uploading allocation file: {str(e)}', 'error')
         # Clean up uploaded file on error
         if 'filename' in locals() and os.path.exists(filename):
             os.remove(filename)
@@ -3676,12 +4182,12 @@ def upload_data_file():
     global data_file_data, data_filename, processing_result
     
     if 'file' not in request.files:
-        processing_result = "❌ Error: No file provided"
+        flash('No file provided', 'error')
         return redirect('/')
     
     file = request.files['file']
     if file.filename == '':
-        processing_result = "❌ Error: No file selected"
+        flash('No file selected', 'error')
         return redirect('/')
     
     try:
@@ -3694,6 +4200,7 @@ def upload_data_file():
         data_filename = filename
         
         processing_result = f"✅ Data file uploaded successfully! Loaded {len(data_file_data)} sheets: {', '.join(list(data_file_data.keys()))}"
+        flash(f'Data file uploaded successfully! Loaded {len(data_file_data)} sheets: {", ".join(list(data_file_data.keys()))}', 'success')
         
         # Clean up uploaded file
         if os.path.exists(filename):
@@ -3703,6 +4210,7 @@ def upload_data_file():
         
     except Exception as e:
         processing_result = f"❌ Error uploading data file: {str(e)}"
+        flash(f'Error uploading data file: {str(e)}', 'error')
         # Clean up uploaded file on error
         if 'filename' in locals() and os.path.exists(filename):
             os.remove(filename)
@@ -3814,7 +4322,19 @@ def upload_work_file():
     
     try:
         # Get current agent
-        user = get_user_by_username(session.get('user_id'))
+        user_id = session.get('user_id')
+        if not user_id:
+            return jsonify({'success': False, 'message': 'User not found'}), 400
+        
+        # Try to find user by ID first, then by email/google_id
+        user = User.query.filter_by(id=user_id, is_active=True).first()
+        if not user:
+            # If not found by ID, try by email (for Google OAuth users)
+            user = User.query.filter_by(email=user_id, is_active=True).first()
+        if not user:
+            # If still not found, try by google_id
+            user = User.query.filter_by(google_id=user_id, is_active=True).first()
+            
         if not user:
             return jsonify({'success': False, 'message': 'User not found'}), 400
         
@@ -3845,7 +4365,7 @@ def upload_work_file():
                 os.remove(filename)
             
             return jsonify({'success': True, 'message': f'Work file uploaded successfully: {filename} (Previous files cleared)'})
-            
+        
         except Exception as e:
             # Clean up uploaded file on error
             if os.path.exists(filename):
@@ -4328,17 +4848,27 @@ def reset_app():
     global agent_allocations_data
     
     try:
+        # Clear all agent work files from database
+        AgentWorkFile.query.delete()
+        
+        # Clear all allocations from database
+        Allocation.query.delete()
+        
         # Reset all global variables
         allocation_data = None
         data_file_data = None
         allocation_filename = None
         data_filename = None
-        processing_result = "🔄 Application reset successfully! All files and data have been cleared."
+        processing_result = "🔄 Application reset successfully! All files, data, and agent consolidation files have been cleared."
         agent_allocations_data = None
+        
+        # Commit database changes
+        db.session.commit()
         
         return redirect('/')
         
     except Exception as e:
+        db.session.rollback()
         processing_result = f"❌ Error resetting application: {str(e)}"
         return redirect('/')
 

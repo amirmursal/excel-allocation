@@ -41,8 +41,8 @@ This guide will help you set up Google OAuth authentication for your Excel Alloc
 Create a `.env` file in your project root (if it doesn't exist) and add:
 
 ```env
-GOOGLE_CLIENT_ID=your_google_client_id_here
-GOOGLE_CLIENT_SECRET=your_google_client_secret_here
+GOOGLE_CLIENT_ID=REPLACE_WITH_YOUR_ACTUAL_CLIENT_ID
+GOOGLE_CLIENT_SECRET=REPLACE_WITH_YOUR_ACTUAL_CLIENT_SECRET
 ```
 
 ## Step 5: Install Dependencies

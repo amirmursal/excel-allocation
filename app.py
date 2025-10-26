@@ -4370,52 +4370,93 @@ def consolidate_agent_files():
         excel_buffer = io.BytesIO()
         
         with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
-            # Create summary sheet
+            # Create summary sheet with updated columns
             summary_data = []
             for work_file in work_files:
+                file_data = work_file.get_file_data()
+                total_assigned_count = 0
+                completed_count = 0
+                
+                # Calculate counts from file data
+                if file_data:
+                    if isinstance(file_data, dict):
+                        # Multiple sheets - count rows from all sheets except Summary
+                        for sheet_name, sheet_data in file_data.items():
+                            # Skip Summary sheet
+                            if sheet_name.lower() == 'summary':
+                                continue
+                                
+                            if isinstance(sheet_data, pd.DataFrame):
+                                # Total assigned count = all rows (excluding header)
+                                total_assigned_count += len(sheet_data)
+                                
+                                # Count completed (non-Workable remarks)
+                                if 'Remark' in sheet_data.columns:
+                                    # Filter out NaN values and count non-Workable entries
+                                    remark_data = sheet_data['Remark'].dropna()
+                                    completed_count += len(remark_data[remark_data.str.lower() != 'workable'])
+                                elif 'remark' in sheet_data.columns:
+                                    remark_data = sheet_data['remark'].dropna()
+                                    completed_count += len(remark_data[remark_data.str.lower() != 'workable'])
+                                elif 'remarks' in sheet_data.columns:
+                                    remark_data = sheet_data['remarks'].dropna()
+                                    completed_count += len(remark_data[remark_data.str.lower() != 'workable'])
+                    elif isinstance(file_data, pd.DataFrame):
+                        # Single DataFrame
+                        # Total assigned count = all rows (excluding header)
+                        total_assigned_count = len(file_data)
+                        
+                        # Count completed (non-Workable remarks)
+                        if 'Remark' in file_data.columns:
+                            remark_data = file_data['Remark'].dropna()
+                            completed_count = len(remark_data[remark_data.str.lower() != 'workable'])
+                        elif 'remark' in file_data.columns:
+                            remark_data = file_data['remark'].dropna()
+                            completed_count = len(remark_data[remark_data.str.lower() != 'workable'])
+                        elif 'remarks' in file_data.columns:
+                            remark_data = file_data['remarks'].dropna()
+                            completed_count = len(remark_data[remark_data.str.lower() != 'workable'])
+                
                 summary_data.append({
                     'Agent': work_file.agent.name,
-                    'Filename': work_file.filename,
-                    'Upload Date': work_file.upload_date.strftime('%Y-%m-%d %H:%M:%S'),
-                    'Status': work_file.status,
-                    'Notes': work_file.notes or 'No notes'
+                    'Total Assigned Count': total_assigned_count,
+                    'Completed Count': completed_count
                 })
             
             summary_df = pd.DataFrame(summary_data)
             summary_df.to_excel(writer, sheet_name='Summary', index=False)
             
-            # Create individual sheets for each agent's work
+            # Combine all agent data into one sheet
+            all_agent_data = []
             for work_file in work_files:
                 file_data = work_file.get_file_data()
                 if file_data:
-                    # Use the first sheet or create a combined sheet
                     if isinstance(file_data, dict):
-                        # Multiple sheets - combine them
-                        combined_data = []
+                        # Multiple sheets - combine them (excluding Summary sheets)
                         for sheet_name, sheet_data in file_data.items():
+                            # Skip Summary sheet
+                            if sheet_name.lower() == 'summary':
+                                continue
+                                
                             if isinstance(sheet_data, pd.DataFrame):
                                 sheet_data_copy = sheet_data.copy()
+                                sheet_data_copy['Agent'] = work_file.agent.name
                                 sheet_data_copy['Source_Sheet'] = sheet_name
-                                combined_data.append(sheet_data_copy)
-                        
-                        if combined_data:
-                            combined_df = pd.concat(combined_data, ignore_index=True)
-                            sheet_name = f"{work_file.agent.name}_{work_file.id}"
-                            combined_df.to_excel(writer, sheet_name=sheet_name, index=False)
-                        else:
-                            # If no DataFrames found, create a simple sheet with available data
-                            sheet_name = f"{work_file.agent.name}_{work_file.id}"
-                            simple_df = pd.DataFrame([{'Message': 'No data available', 'Agent': work_file.agent.name}])
-                            simple_df.to_excel(writer, sheet_name=sheet_name, index=False)
+                                all_agent_data.append(sheet_data_copy)
                     elif isinstance(file_data, pd.DataFrame):
                         # Single DataFrame
-                        sheet_name = f"{work_file.agent.name}_{work_file.id}"
-                        file_data.to_excel(writer, sheet_name=sheet_name, index=False)
-                    else:
-                        # Fallback for unexpected data format
-                        sheet_name = f"{work_file.agent.name}_{work_file.id}"
-                        simple_df = pd.DataFrame([{'Message': 'Data format not supported', 'Agent': work_file.agent.name}])
-                        simple_df.to_excel(writer, sheet_name=sheet_name, index=False)
+                        file_data_copy = file_data.copy()
+                        file_data_copy['Agent'] = work_file.agent.name
+                        all_agent_data.append(file_data_copy)
+            
+            # Create combined sheet with all agent data
+            if all_agent_data:
+                combined_df = pd.concat(all_agent_data, ignore_index=True)
+                combined_df.to_excel(writer, sheet_name='All Agent Data', index=False)
+            else:
+                # Fallback if no data found
+                simple_df = pd.DataFrame([{'Message': 'No data available from any agent'}])
+                simple_df.to_excel(writer, sheet_name='All Agent Data', index=False)
         
         excel_buffer.seek(0)
         

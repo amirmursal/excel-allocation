@@ -1458,12 +1458,8 @@ HTML_TEMPLATE = """
             background-color: #e8ecff;
         }
         
-        /* Hide all agent rows by default, show only first 10 */
+        /* Show all agent rows */
         .agent-row {
-            display: none;
-        }
-        
-        .agent-row:nth-child(-n+10) {
             display: table-row;
         }
     </style>
@@ -1511,6 +1507,9 @@ HTML_TEMPLATE = """
                     <div class="tab-nav" style="display: flex; border-bottom: 2px solid #e9ecef; margin-bottom: 20px;">
                         <button class="admin-tab-btn active" onclick="switchAdminTab('file-management')" style="padding: 12px 24px; border: none; background: #f8f9fa; color: #666; cursor: pointer; border-bottom: 3px solid transparent; transition: all 0.3s;">
                             <i class="fas fa-upload"></i> File Management
+                        </button>
+                        <button class="admin-tab-btn" onclick="switchAdminTab('agent-allocation')" style="padding: 12px 24px; border: none; background: #f8f9fa; color: #666; cursor: pointer; border-bottom: 3px solid transparent; transition: all 0.3s;">
+                            <i class="fas fa-users"></i> Agent Allocation
                         </button>
                         <button class="admin-tab-btn" onclick="switchAdminTab('agent-consolidation')" style="padding: 12px 24px; border: none; background: #f8f9fa; color: #666; cursor: pointer; border-bottom: 3px solid transparent; transition: all 0.3s;">
                             <i class="fas fa-compress-arrows-alt"></i> Agent Consolidation
@@ -1689,6 +1688,87 @@ HTML_TEMPLATE = """
 
                 </div>
                 
+                <!-- Agent Allocation Tab -->
+                <div id="agent-allocation-tab" class="admin-tab-content">
+                    <!-- Individual Agent Downloads -->
+                    {% if agent_allocations_data %}
+                    <div class="section">
+                        <h3>👥 Agent Allocation Overview</h3>
+                        <p>View and manage agent allocations. Each agent has been assigned specific rows based on their capacity and the allocation rules.</p>
+                        
+                        <div style="overflow-x: auto; margin-top: 15px;">
+                            <table class="agent-table" style="width: 100%; border-collapse: collapse; background: white; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 10px rgba(0,0,0,0.1);">
+                                <thead>
+                                    <tr style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white;">
+                                        <th style="padding: 15px; text-align: center; font-weight: 600; border: none; width: 60px;">Sr No</th>
+                                        <th style="padding: 15px; text-align: left; font-weight: 600; border: none;">Agent Name</th>
+                                        <th style="padding: 15px; text-align: center; font-weight: 600; border: none;">Allocated</th>
+                                        <th style="padding: 15px; text-align: center; font-weight: 600; border: none;">Capacity</th>
+                                        <th style="padding: 15px; text-align: center; font-weight: 600; border: none;">Actions</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="agentTableBody">
+                                    {% for agent in agent_allocations_data %}
+                                    <tr class="agent-row" style="border-bottom: 1px solid #e9ecef; transition: background-color 0.2s;" data-index="{{ loop.index0 }}">
+                                        <td style="padding: 15px; text-align: center; font-weight: 600; color: #667eea;">{{ loop.index }}</td>
+                                        <td style="padding: 15px; font-weight: 500; color: #333;">{{ agent.name }}</td>
+                                        <td style="padding: 15px; text-align: center; color: #27ae60; font-weight: 600;">{{ agent.allocated }}</td>
+                                        <td style="padding: 15px; text-align: center; color: #666;">{{ agent.capacity }}</td>
+                                        <td style="padding: 15px; text-align: center;">
+                                            <div style="display: flex; gap: 8px; justify-content: center;">
+                                                <button type="button" class="process-btn view-btn" style="background: linear-gradient(135deg, #f39c12, #e67e22); font-size: 12px; padding: 6px 12px; border: none; border-radius: 4px; color: white; cursor: pointer; transition: transform 0.2s;" onclick="viewAgentAllocation('{{ agent.name }}')">
+                                                    <i class="fas fa-eye"></i> View
+                                                </button>
+                                                <button type="button" class="process-btn approve-btn" style="background: linear-gradient(135deg, #3498db, #2980b9); font-size: 12px; padding: 6px 12px; border: none; border-radius: 4px; color: white; cursor: pointer; transition: transform 0.2s;" onclick="approveAllocation('{{ agent.name }}')">
+                                                    <i class="fas fa-check"></i> Approve
+                                                </button>
+                                            </div>
+                                        </td>
+                                    </tr>
+                                    {% endfor %}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                    {% else %}
+                    <div class="section">
+                        <h3>👥 Agent Allocation Overview</h3>
+                        <div style="background: #f8f9fa; padding: 20px; border-radius: 10px;">
+                            <p style="color: #666;">No agent allocation data available. Please upload allocation and data files, then process them to see agent allocations.</p>
+                        </div>
+                    </div>
+                    {% endif %}
+                    
+                    <!-- Agent Allocation Modal -->
+                    <div id="agentModal" class="modal" style="display: none; position: fixed; z-index: 1000; left: 0; top: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.5);">
+                        <div class="modal-content" style="background-color: #fefefe; margin: 5% auto; padding: 0; border: none; border-radius: 10px; width: 90%; max-width: 1200px; max-height: 80vh; overflow: hidden; box-shadow: 0 10px 30px rgba(0,0,0,0.3);">
+                            <div class="modal-header" style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 20px; display: flex; justify-content: space-between; align-items: center;">
+                                <h2 style="margin: 0; font-size: 1.5em;" id="modalAgentName">Agent Allocation</h2>
+                                <span class="close" style="color: white; font-size: 28px; font-weight: bold; cursor: pointer; transition: opacity 0.3s;">&times;</span>
+                            </div>
+                            <div class="modal-body" style="padding: 20px; max-height: 60vh; overflow-y: auto;">
+                                <div id="modalContent">
+                                    <div style="text-align: center; padding: 40px;">
+                                        <i class="fas fa-spinner fa-spin" style="font-size: 2em; color: #667eea;"></i>
+                                        <p style="margin-top: 15px; color: #666;">Loading agent allocation data...</p>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="modal-footer" style="background: #f8f9fa; padding: 15px 20px; border-top: 1px solid #e9ecef; display: flex; justify-content: space-between; align-items: center;">
+                                <div id="modalStats" style="color: #666; font-size: 14px;"></div>
+                                <div style="display: flex; gap: 10px;">
+                                    <button id="downloadBtn" class="process-btn" style="background: linear-gradient(135deg, #27ae60, #2ecc71); padding: 8px 16px; border: none; border-radius: 5px; color: white; cursor: pointer; font-size: 14px;">
+                                        <i class="fas fa-download"></i> Download Excel
+                                    </button>
+                                    <button class="close-btn process-btn" style="background: linear-gradient(135deg, #95a5a6, #7f8c8d); padding: 8px 16px; border: none; border-radius: 5px; color: white; cursor: pointer; font-size: 14px;">
+                                        Close
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
                 <!-- Agent Consolidation Tab -->
                 <div id="agent-consolidation-tab" class="admin-tab-content">
                     <!-- Agent Files Consolidation -->
@@ -1730,83 +1810,6 @@ HTML_TEMPLATE = """
                 
                 <!-- System Settings Tab -->
                 <div id="system-settings-tab" class="admin-tab-content">
-
-
-                <!-- Individual Agent Downloads -->
-                {% if agent_allocations_data %}
-                <div class="section">
-                    <h3>👥 Download Individual Agent Files</h3>
-                    <p>Download separate Excel files for each agent with their allocated data.</p>
-                    
-                    
-                    <div style="overflow-x: auto; margin-top: 15px;">
-                        <table class="agent-table" style="width: 100%; border-collapse: collapse; background: white; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 10px rgba(0,0,0,0.1);">
-                            <thead>
-                                <tr style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white;">
-                                    <th style="padding: 15px; text-align: center; font-weight: 600; border: none; width: 60px;">Sr No</th>
-                                    <th style="padding: 15px; text-align: left; font-weight: 600; border: none;">Agent Name</th>
-                                    <th style="padding: 15px; text-align: center; font-weight: 600; border: none;">Allocated</th>
-                                    <th style="padding: 15px; text-align: center; font-weight: 600; border: none;">Capacity</th>
-                                    <th style="padding: 15px; text-align: center; font-weight: 600; border: none;">Actions</th>
-                                </tr>
-                            </thead>
-                            <tbody id="agentTableBody">
-                                {% for agent in agent_allocations_data %}
-                                <tr class="agent-row" style="border-bottom: 1px solid #e9ecef; transition: background-color 0.2s;" data-index="{{ loop.index0 }}">
-                                    <td style="padding: 15px; text-align: center; font-weight: 600; color: #667eea;">{{ loop.index }}</td>
-                                    <td style="padding: 15px; font-weight: 500; color: #333;">{{ agent.name }}</td>
-                                    <td style="padding: 15px; text-align: center; color: #27ae60; font-weight: 600;">{{ agent.allocated }}</td>
-                                    <td style="padding: 15px; text-align: center; color: #666;">{{ agent.capacity }}</td>
-                                    <td style="padding: 15px; text-align: center;">
-                                        <div style="display: flex; gap: 8px; justify-content: center;">
-                                            <button type="button" class="process-btn view-btn" style="background: linear-gradient(135deg, #f39c12, #e67e22); font-size: 12px; padding: 6px 12px; border: none; border-radius: 4px; color: white; cursor: pointer; transition: transform 0.2s;" onclick="viewAgentAllocation('{{ agent.name }}')">
-                                                <i class="fas fa-eye"></i> View
-                                            </button>
-                                            <button type="button" class="process-btn approve-btn" style="background: linear-gradient(135deg, #3498db, #2980b9); font-size: 12px; padding: 6px 12px; border: none; border-radius: 4px; color: white; cursor: pointer; transition: transform 0.2s;" onclick="approveAllocation('{{ agent.name }}')">
-                                                <i class="fas fa-check"></i> Approve
-                                            </button>
-                                        </div>
-                                    </td>
-                                </tr>
-                                {% endfor %}
-                            </tbody>
-                        </table>
-                    </div>
-                    
-                    
-                </div>
-                
-                {% endif %}
-                
-                <!-- Agent Allocation Modal -->
-                <div id="agentModal" class="modal" style="display: none; position: fixed; z-index: 1000; left: 0; top: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.5);">
-                    <div class="modal-content" style="background-color: #fefefe; margin: 5% auto; padding: 0; border: none; border-radius: 10px; width: 90%; max-width: 1200px; max-height: 80vh; overflow: hidden; box-shadow: 0 10px 30px rgba(0,0,0,0.3);">
-                        <div class="modal-header" style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 20px; display: flex; justify-content: space-between; align-items: center;">
-                            <h2 style="margin: 0; font-size: 1.5em;" id="modalAgentName">Agent Allocation</h2>
-                            <span class="close" style="color: white; font-size: 28px; font-weight: bold; cursor: pointer; transition: opacity 0.3s;">&times;</span>
-                        </div>
-                        <div class="modal-body" style="padding: 20px; max-height: 60vh; overflow-y: auto;">
-                            <div id="modalContent">
-                                <div style="text-align: center; padding: 40px;">
-                                    <i class="fas fa-spinner fa-spin" style="font-size: 2em; color: #667eea;"></i>
-                                    <p style="margin-top: 15px; color: #666;">Loading agent allocation data...</p>
-                                </div>
-                            </div>
-                        </div>
-                        <div class="modal-footer" style="background: #f8f9fa; padding: 15px 20px; border-top: 1px solid #e9ecef; display: flex; justify-content: space-between; align-items: center;">
-                            <div id="modalStats" style="color: #666; font-size: 14px;"></div>
-                            <div style="display: flex; gap: 10px;">
-                                <button id="downloadBtn" class="process-btn" style="background: linear-gradient(135deg, #27ae60, #2ecc71); padding: 8px 16px; border: none; border-radius: 5px; color: white; cursor: pointer; font-size: 14px;">
-                                    <i class="fas fa-download"></i> Download Excel
-                                </button>
-                                <button class="close-btn process-btn" style="background: linear-gradient(135deg, #95a5a6, #7f8c8d); padding: 8px 16px; border: none; border-radius: 5px; color: white; cursor: pointer; font-size: 14px;">
-                                    Close
-                                </button>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-
                     <!-- Reset Section -->
                     <div class="section">
                         <h3>🔄 Reset Application</h3>
@@ -3091,229 +3094,17 @@ HTML_TEMPLATE = """
             });
         }
         
-        // Pagination variables
-        let currentPage = 1;
-        let itemsPerPage = 10;
-        let totalItems = 0;
-        
-        // Initialize pagination when page loads
+        // Initialize agent table when page loads
         document.addEventListener('DOMContentLoaded', function() {
-            // Try to initialize pagination immediately and also with a delay
-            initializePagination();
-            setTimeout(initializePagination, 500);
-            setTimeout(initializePagination, 1000);
-            setTimeout(initializePagination, 2000);
-            
-            // Watch for changes in the agent table body
-            const agentTableBody = document.getElementById('agentTableBody');
-            if (agentTableBody) {
-                const observer = new MutationObserver(function(mutations) {
-                    mutations.forEach(function(mutation) {
-                        if (mutation.type === 'childList' && mutation.addedNodes.length > 0) {
-                            setTimeout(initializePagination, 100);
-                        }
-                    });
-                });
-                
-                observer.observe(agentTableBody, {
-                    childList: true,
-                    subtree: true
-                });
-            }
-        });
-        
-        function initializePagination() {
+            // Update serial numbers for all agent rows
             const agentRows = document.querySelectorAll('.agent-row');
-            totalItems = agentRows.length;
-            
-            
-            if (totalItems > 0) {
-                // Hide all rows initially
-                agentRows.forEach((row, index) => {
-                    if (index >= itemsPerPage) {
-                        row.style.display = 'none';
-                    } else {
-                        row.style.display = '';
-                        // Update serial number
-                        const srNoCell = row.querySelector('td:first-child');
-                        if (srNoCell) {
-                            srNoCell.textContent = index + 1;
-                        }
-                    }
-                });
-                
-                // Only call updatePagination if pagination elements exist
-                const pageNumbers = document.getElementById('pageNumbers');
-                const prevBtn = document.getElementById('prevBtn');
-                const nextBtn = document.getElementById('nextBtn');
-                
-                if (pageNumbers && prevBtn && nextBtn) {
-                updatePagination();
-                } else {
-                }
-                showPage(1);
-            } else {
-            }
-        }
-        
-        
-        function changePage(direction) {
-            const totalPages = Math.ceil(totalItems / itemsPerPage);
-            const newPage = currentPage + direction;
-            
-            // Prevent navigation if buttons are disabled
-            if (direction === -1 && currentPage === 1) {
-                return; // Can't go to previous page if on first page
-            }
-            if (direction === 1 && (currentPage === totalPages || totalPages === 0)) {
-                return; // Can't go to next page if on last page or no pages
-            }
-            
-            if (newPage >= 1 && newPage <= totalPages) {
-                currentPage = newPage;
-                showPage(currentPage);
-                updatePagination();
-            }
-        }
-        
-        function goToPage(pageNumber) {
-            const totalPages = Math.ceil(totalItems / itemsPerPage);
-            if (pageNumber >= 1 && pageNumber <= totalPages) {
-                currentPage = pageNumber;
-                showPage(currentPage);
-                updatePagination();
-            }
-        }
-        
-        function showPage(page) {
-            const agentRows = document.querySelectorAll('.agent-row');
-            const startIndex = (page - 1) * itemsPerPage;
-            const endIndex = Math.min(startIndex + itemsPerPage, totalItems);
-            
-            // Hide all rows
             agentRows.forEach((row, index) => {
-                if (index >= startIndex && index < endIndex) {
-                    row.style.display = '';
-                    // Update serial number
-                    const srNoCell = row.querySelector('td:first-child');
-                    if (srNoCell) {
-                        srNoCell.textContent = index + 1;
-                    }
-                } else {
-                    row.style.display = 'none';
+                const srNoCell = row.querySelector('td:first-child');
+                if (srNoCell) {
+                    srNoCell.textContent = index + 1;
                 }
             });
-            
-            // Update pagination info
-            const paginationInfo = document.getElementById('paginationInfo');
-            if (paginationInfo) {
-                paginationInfo.textContent = `Showing ${startIndex + 1}-${endIndex} of ${totalItems} agents`;
-            }
-        }
-        
-        function updatePagination() {
-            const totalPages = Math.ceil(totalItems / itemsPerPage);
-            const pageNumbers = document.getElementById('pageNumbers');
-            const prevBtn = document.getElementById('prevBtn');
-            const nextBtn = document.getElementById('nextBtn');
-            
-            // Check if elements exist before trying to access them
-            if (!prevBtn || !nextBtn || !pageNumbers) {
-                return;
-            }
-            
-            // Update Previous/Next buttons with proper styling
-            if (currentPage === 1) {
-                prevBtn.disabled = true;
-                prevBtn.style.opacity = '0.5';
-                prevBtn.style.cursor = 'not-allowed';
-            } else {
-                prevBtn.disabled = false;
-                prevBtn.style.opacity = '1';
-                prevBtn.style.cursor = 'pointer';
-            }
-            
-            if (currentPage === totalPages || totalPages === 0) {
-                nextBtn.disabled = true;
-                nextBtn.style.opacity = '0.5';
-                nextBtn.style.cursor = 'not-allowed';
-            } else {
-                nextBtn.disabled = false;
-                nextBtn.style.opacity = '1';
-                nextBtn.style.cursor = 'pointer';
-            }
-            
-            // Generate page numbers
-            pageNumbers.innerHTML = '';
-            
-            // Show up to 5 page numbers
-            let startPage = Math.max(1, currentPage - 2);
-            let endPage = Math.min(totalPages, startPage + 4);
-            
-            // Adjust start page if we're near the end
-            if (endPage - startPage < 4) {
-                startPage = Math.max(1, endPage - 4);
-            }
-            
-            // Add first page and ellipsis if needed
-            if (startPage > 1) {
-                addPageButton(1);
-                if (startPage > 2) {
-                    addEllipsis();
-                }
-            }
-            
-            // Add page numbers
-            for (let i = startPage; i <= endPage; i++) {
-                addPageButton(i);
-            }
-            
-            // Add last page and ellipsis if needed
-            if (endPage < totalPages) {
-                if (endPage < totalPages - 1) {
-                    addEllipsis();
-                }
-                addPageButton(totalPages);
-            }
-        }
-        
-        function addPageButton(pageNumber) {
-            const pageNumbers = document.getElementById('pageNumbers');
-            const button = document.createElement('button');
-            button.textContent = pageNumber;
-            button.onclick = () => goToPage(pageNumber);
-            
-            if (pageNumber === currentPage) {
-                button.style.background = 'linear-gradient(135deg, #667eea, #764ba2)';
-                button.style.color = 'white';
-                button.style.border = 'none';
-            } else {
-                button.style.background = 'white';
-                button.style.color = '#333';
-                button.style.border = '1px solid #ddd';
-            }
-            
-            button.style.padding = '8px 12px';
-            button.style.borderRadius = '4px';
-            button.style.cursor = 'pointer';
-            button.style.transition = 'background-color 0.2s';
-            
-            pageNumbers.appendChild(button);
-        }
-        
-        function addEllipsis() {
-            const pageNumbers = document.getElementById('pageNumbers');
-            const ellipsis = document.createElement('span');
-            ellipsis.textContent = '...';
-            ellipsis.style.padding = '8px 4px';
-            ellipsis.style.color = '#666';
-            pageNumbers.appendChild(ellipsis);
-        }
-        
-        // Global function to initialize pagination after data is loaded
-        window.initializeAgentPagination = function() {
-            initializePagination();
-        }
+        });
         
         function approveAllocation(agentName) {
             if (confirm(`Are you sure you want to approve the allocation for ${agentName}? This will send an email with the allocated data.`)) {

@@ -1039,6 +1039,89 @@ HTML_TEMPLATE = """
             color: #333;
         }
         
+        /* Loader/Progress Bar */
+        .loader-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.5);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            z-index: 10000;
+            opacity: 0;
+            visibility: hidden;
+            transition: opacity 0.3s ease, visibility 0.3s ease;
+        }
+        
+        .loader-overlay.show {
+            opacity: 1;
+            visibility: visible;
+        }
+        
+        .loader-container {
+            background: white;
+            border-radius: 15px;
+            padding: 40px 50px;
+            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3);
+            text-align: center;
+            max-width: 400px;
+        }
+        
+        .loader-spinner {
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #667eea;
+            border-radius: 50%;
+            width: 50px;
+            height: 50px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 20px;
+        }
+        
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        
+        .loader-text {
+            font-size: 18px;
+            color: #667eea;
+            font-weight: 600;
+            margin: 0;
+        }
+        
+        .loader-subtitle {
+            font-size: 14px;
+            color: #666;
+            margin-top: 8px;
+        }
+        
+        .progress-bar-container {
+            width: 100%;
+            height: 6px;
+            background: #e0e0e0;
+            border-radius: 3px;
+            margin-top: 20px;
+            overflow: hidden;
+        }
+        
+        .progress-bar {
+            height: 100%;
+            background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
+            border-radius: 3px;
+            width: 0%;
+            transition: width 0.3s ease;
+            animation: progress 1.5s ease-in-out infinite;
+        }
+        
+        @keyframes progress {
+            0% { width: 0%; }
+            50% { width: 70%; }
+            100% { width: 100%; }
+        }
+        
         .toast.success .toast-title {
             color: #155724;
         }
@@ -1528,7 +1611,7 @@ HTML_TEMPLATE = """
                             <div class="form-group">
                                 <input type="file" id="allocation_file" name="file" accept=".xlsx,.xls" required>
                             </div>
-                            <button type="submit" id="allocation-btn">📤 Upload Agent Allocation Details</button>
+                            <button type="submit" id="allocation-btn">📤 Upload Staff Details</button>
                         </form>
                     </div>
 
@@ -1695,6 +1778,12 @@ HTML_TEMPLATE = """
                     <div class="section">
                         <h3>👥 Agent Allocation Overview</h3>
                         <p>View and manage agent allocations. Each agent has been assigned specific rows based on their capacity and the allocation rules.</p>
+                        
+                        <div style="margin-bottom: 15px; text-align: right;">
+                            <button type="button" class="process-btn" style="background: linear-gradient(135deg, #27ae60, #2ecc71); font-size: 14px; padding: 10px 20px; border: none; border-radius: 6px; color: white; cursor: pointer; transition: transform 0.2s; font-weight: 600;" onclick="approveAllAllocations()" id="approve-all-btn">
+                                <i class="fas fa-check-double"></i> Approve All Allocations
+                            </button>
+                        </div>
                         
                         <div style="overflow-x: auto; margin-top: 15px;">
                             <table class="agent-table" style="width: 100%; border-collapse: collapse; background: white; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 10px rgba(0,0,0,0.1);">
@@ -2027,6 +2116,7 @@ HTML_TEMPLATE = """
                     showSuccessToast('Upload Successful', 'Allocation file uploaded successfully!');
                     // Reset form
                     allocationForm.reset();
+                    // Don't show loader yet - wait until both files are uploaded
                     // Reload page to show updated status
                     setTimeout(() => {
                         window.location.reload();
@@ -2079,6 +2169,10 @@ HTML_TEMPLATE = """
                     showSuccessToast('Upload Successful', 'Data file uploaded successfully!');
                     // Reset form
                     dataForm.reset();
+                    // Mark that files were just uploaded (both files should be present now)
+                    sessionStorage.setItem('filesJustUploaded', 'true');
+                    // Show loader before reloading
+                    showLoader();
                     // Reload page to show updated status
                     setTimeout(() => {
                         window.location.reload();
@@ -2115,14 +2209,64 @@ HTML_TEMPLATE = """
         
         // Populate date fields when page loads
         document.addEventListener('DOMContentLoaded', function() {
-            // Load appointment dates from uploaded file
-            loadAppointmentDates();
-            
-            // Also try to load calendar after a short delay to ensure page is fully loaded
-            setTimeout(() => {
-                loadAppointmentDates();
-            }, 1000);
+            // Only load appointment dates if files have been uploaded
+            // Check if data file container exists and has content before showing loader
+            const calendarContainer = document.getElementById('calendar_container');
+            if (calendarContainer) {
+                // Try to load appointment dates, but don't show loader on initial page load
+                // Loader will only show if files were just uploaded (handled in upload handlers)
+                loadAppointmentDatesWithoutLoader();
+            }
         });
+        
+        // Version of loadAppointmentDates that checks if loader should be shown (for initial page load after file upload)
+        function loadAppointmentDatesWithoutLoader() {
+            const calendarContainer = document.getElementById('calendar_container');
+            if (!calendarContainer) return;
+            
+            // Check if loader was shown before page reload (e.g., after data file upload)
+            // If loader overlay is visible or was just uploaded, we'll show it when dates are successfully loaded
+            const wasJustUploaded = sessionStorage.getItem('filesJustUploaded') === 'true';
+            sessionStorage.removeItem('filesJustUploaded');
+            
+            // Show loading message in the container
+            calendarContainer.innerHTML = '<p style="color: #666; font-style: italic; text-align: center; padding: 20px;">Checking for uploaded files...</p>';
+            
+            // Fetch appointment dates from server
+            fetch('/get_appointment_dates')
+                .then(response => {
+                    return response.json();
+                })
+                .then(data => {
+                    if (data.error) {
+                        calendarContainer.innerHTML = `<p style="color: #666; font-style: italic; text-align: center; padding: 20px;">${data.error}</p>`;
+                        return;
+                    }
+                    
+                    const dates = data.appointment_dates;
+                    const datesWithCounts = data.appointment_dates_with_counts;
+                    const columnName = data.column_name;
+                    
+                    if (!dates || dates.length === 0) {
+                        calendarContainer.innerHTML = '<p style="color: #666; font-style: italic; text-align: center; padding: 20px;">No appointment dates found in the file.</p>';
+                        return;
+                    }
+                    
+                    // If both files exist and we have dates, show loader (if files were just uploaded)
+                    if (wasJustUploaded && dates && dates.length > 0) {
+                        showLoader();
+                    }
+                    
+                    // Store appointment dates
+                    appointmentDates = new Set(dates);
+                    // Directly show checkbox list (no calendar view)
+                    showFallbackDateList(datesWithCounts, columnName);
+                    updateSelectedDatesInfo();
+                })
+                .catch(error => {
+                    calendarContainer.innerHTML = '<p style="color: #666; font-style: italic; text-align: center; padding: 20px;">No data file uploaded yet.</p>';
+                });
+        }
         
         
         // Global variables for calendar
@@ -2134,9 +2278,32 @@ HTML_TEMPLATE = """
         // Store receive date selections per appointment date
         let receiveDateSelections = new Map(); // appointmentDate -> Set of selected receive dates
         
+        // Loader functions
+        function showLoader() {
+            const loader = document.getElementById('loader-overlay');
+            if (loader) {
+                loader.classList.add('show');
+            }
+        }
+        
+        function hideLoader() {
+            const loader = document.getElementById('loader-overlay');
+            if (loader) {
+                loader.classList.remove('show');
+            }
+        }
+        
+        function isLoaderVisible() {
+            const loader = document.getElementById('loader-overlay');
+            return loader && loader.classList.contains('show');
+        }
+        
         function loadAppointmentDates() {
             const calendarContainer = document.getElementById('calendar_container');
             if (!calendarContainer) return;
+            
+            // Show loader when starting to load (assuming both files exist when this is called manually)
+            showLoader();
             
             // Always try to load appointment dates (file might be uploaded via form submission)
             calendarContainer.innerHTML = '<p style="color: #666; font-style: italic; text-align: center; padding: 20px;">Loading appointment dates...</p>';
@@ -2147,28 +2314,34 @@ HTML_TEMPLATE = """
                     return response.json();
                 })
                 .then(data => {
-                    
                     if (data.error) {
                         calendarContainer.innerHTML = `<p style="color: #e74c3c; text-align: center; padding: 20px;">Error: ${data.error}</p>`;
+                        // Hide loader if there's an error (likely files not uploaded yet)
+                        hideLoader();
                         return;
                     }
                     
                     const dates = data.appointment_dates;
+                    const datesWithCounts = data.appointment_dates_with_counts;
                     const columnName = data.column_name;
                     
                     if (!dates || dates.length === 0) {
                         calendarContainer.innerHTML = '<p style="color: #666; font-style: italic; text-align: center; padding: 20px;">No appointment dates found in the file.</p>';
+                        // Hide loader if no dates found
+                        hideLoader();
                         return;
                     }
-                    
                     
                     // Store appointment dates
                     appointmentDates = new Set(dates);
                     // Directly show checkbox list (no calendar view)
-                    showFallbackDateList(dates, columnName);
+                    // Loader will be hidden in showFallbackDateList after dates are displayed
+                    showFallbackDateList(datesWithCounts, columnName);
                     updateSelectedDatesInfo();
                 })
                 .catch(error => {
+                    // Hide loader on error
+                    hideLoader();
                     calendarContainer.innerHTML = `<p style="color: #e74c3c; text-align: center; padding: 20px;">Error loading appointment dates: ${error.message}</p>`;
                 });
         }
@@ -2177,6 +2350,9 @@ HTML_TEMPLATE = """
             const calendarContainer = document.getElementById('calendar_container_second');
             if (!calendarContainer) return;
             
+            // Show loader when starting to load appointment dates
+            showLoader();
+            
             // Always try to load appointment dates (file might be uploaded via form submission)
             calendarContainer.innerHTML = '<p style="color: #666; font-style: italic; text-align: center; padding: 20px;">Loading appointment dates...</p>';
             
@@ -2186,17 +2362,19 @@ HTML_TEMPLATE = """
                     return response.json();
                 })
                 .then(data => {
-                    
                     if (data.error) {
                         calendarContainer.innerHTML = `<p style="color: #e74c3c; text-align: center; padding: 20px;">Error: ${data.error}</p>`;
+                        hideLoader();
                         return;
                     }
                     
                     const dates = data.appointment_dates;
+                    const datesWithCounts = data.appointment_dates_with_counts;
                     const columnName = data.column_name;
                     
                     if (!dates || dates.length === 0) {
                         calendarContainer.innerHTML = '<p style="color: #666; font-style: italic; text-align: center; padding: 20px;">No appointment dates found in the file.</p>';
+                        hideLoader();
                         return;
                     }
                     
@@ -2204,10 +2382,13 @@ HTML_TEMPLATE = """
                     // Store appointment dates
                     appointmentDates = new Set(dates);
                     // Directly show checkbox list (no calendar view)
-                    showFallbackDateListSecond(dates, columnName);
+                    // Loader will be hidden in showFallbackDateListSecond after dates are displayed
+                    showFallbackDateListSecond(datesWithCounts, columnName);
                     updateSelectedDatesInfoSecond();
                 })
                 .catch(error => {
+                    // Hide loader on error
+                    hideLoader();
                     calendarContainer.innerHTML = `<p style="color: #e74c3c; text-align: center; padding: 20px;">Error loading appointment dates: ${error.message}</p>`;
                 });
         }
@@ -2590,7 +2771,7 @@ HTML_TEMPLATE = """
             }
         }
         
-        function showFallbackDateList(dates, columnName) {
+        function showFallbackDateList(datesWithCounts, columnName) {
             const calendarContainer = document.getElementById('calendar_container');
             if (!calendarContainer) return;
             
@@ -2601,7 +2782,9 @@ HTML_TEMPLATE = """
                 <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 10px; max-height: 300px; overflow-y: auto;">
             `;
             
-            dates.forEach((date, index) => {
+            datesWithCounts.forEach((dateData, index) => {
+                const date = dateData.date;
+                const rowCount = dateData.row_count;
                 const dateObj = new Date(date);
                 const dayName = dateObj.toLocaleDateString('en-US', { weekday: 'long' });
                 const formattedDate = dateObj.toLocaleDateString('en-US', { 
@@ -2617,15 +2800,18 @@ HTML_TEMPLATE = """
                 let itemStyle = 'display: flex; align-items: center; padding: 10px; border: 2px solid #e0e0e0; border-radius: 8px; background: #f9f9f9; cursor: pointer; transition: all 0.3s;';
                 let textStyle = 'font-weight: bold; font-size: 16px;';
                 let dayStyle = 'color: #666; font-size: 14px;';
+                let countStyle = 'color: #666; font-size: 12px; margin-top: 2px;';
                 
                 if (isSelectedInFirst) {
                     itemStyle = 'display: flex; align-items: center; padding: 10px; border: 2px solid #4caf50; border-radius: 8px; background: #4caf50; color: white; cursor: pointer; transition: all 0.3s;';
                     textStyle = 'font-weight: bold; font-size: 16px; color: white;';
                     dayStyle = 'color: rgba(255,255,255,0.8); font-size: 14px;';
+                    countStyle = 'color: rgba(255,255,255,0.9); font-size: 12px; margin-top: 2px;';
                 } else if (isDisabled) {
                     itemStyle = 'display: flex; align-items: center; padding: 10px; border: 2px solid #f39c12; border-radius: 8px; background: #f39c12; color: white; cursor: not-allowed; opacity: 0.7; transition: all 0.3s;';
                     textStyle = 'font-weight: bold; font-size: 16px; color: white;';
                     dayStyle = 'color: rgba(255,255,255,0.8); font-size: 14px;';
+                    countStyle = 'color: rgba(255,255,255,0.9); font-size: 12px; margin-top: 2px;';
                 }
                 
                 html += `
@@ -2636,6 +2822,7 @@ HTML_TEMPLATE = """
                         <div>
                             <div style="${textStyle}">${formattedDate}${isDisabled ? ' (Second Priority)' : ''}</div>
                             <div style="${dayStyle}">${dayName}</div>
+                            <div style="${countStyle}">${rowCount} rows</div>
                         </div>
                     </div>
                 `;
@@ -2645,9 +2832,13 @@ HTML_TEMPLATE = """
             calendarContainer.innerHTML = html;
             // Sync checkboxes to current selection
             syncFallbackCheckboxes();
+            // Hide loader after dates are displayed (only if it was visible)
+            if (isLoaderVisible()) {
+                hideLoader();
+            }
         }
         
-        function showFallbackDateListSecond(dates, columnName) {
+        function showFallbackDateListSecond(datesWithCounts, columnName) {
             const calendarContainer = document.getElementById('calendar_container_second');
             if (!calendarContainer) return;
             
@@ -2658,7 +2849,9 @@ HTML_TEMPLATE = """
                 <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 10px; max-height: 300px; overflow-y: auto;">
             `;
             
-            dates.forEach((date, index) => {
+            datesWithCounts.forEach((dateData, index) => {
+                const date = dateData.date;
+                const rowCount = dateData.row_count;
                 const dateObj = new Date(date);
                 const dayName = dateObj.toLocaleDateString('en-US', { weekday: 'long' });
                 const formattedDate = dateObj.toLocaleDateString('en-US', { 
@@ -2674,15 +2867,18 @@ HTML_TEMPLATE = """
                 let itemStyle = 'display: flex; align-items: center; padding: 10px; border: 2px solid #e0e0e0; border-radius: 8px; background: #f9f9f9; cursor: pointer; transition: all 0.3s;';
                 let textStyle = 'font-weight: bold; font-size: 16px;';
                 let dayStyle = 'color: #666; font-size: 14px;';
+                let countStyle = 'color: #666; font-size: 12px; margin-top: 2px;';
                 
                 if (isSelectedInSecond) {
                     itemStyle = 'display: flex; align-items: center; padding: 10px; border: 2px solid #f39c12; border-radius: 8px; background: #f39c12; color: white; cursor: pointer; transition: all 0.3s;';
                     textStyle = 'font-weight: bold; font-size: 16px; color: white;';
                     dayStyle = 'color: rgba(255,255,255,0.8); font-size: 14px;';
+                    countStyle = 'color: rgba(255,255,255,0.9); font-size: 12px; margin-top: 2px;';
                 } else if (isDisabled) {
                     itemStyle = 'display: flex; align-items: center; padding: 10px; border: 2px solid #4caf50; border-radius: 8px; background: #4caf50; color: white; cursor: not-allowed; opacity: 0.7; transition: all 0.3s;';
                     textStyle = 'font-weight: bold; font-size: 16px; color: white;';
                     dayStyle = 'color: rgba(255,255,255,0.8); font-size: 14px;';
+                    countStyle = 'color: rgba(255,255,255,0.9); font-size: 12px; margin-top: 2px;';
                 }
                 
                 html += `
@@ -2693,6 +2889,7 @@ HTML_TEMPLATE = """
                         <div>
                             <div style="${textStyle}">${formattedDate}${isDisabled ? ' (First Priority)' : ''}</div>
                             <div style="${dayStyle}">${dayName}</div>
+                            <div style="${countStyle}">${rowCount} rows</div>
                         </div>
                     </div>
                 `;
@@ -2702,6 +2899,10 @@ HTML_TEMPLATE = """
             calendarContainer.innerHTML = html;
             // Sync checkboxes to current selection
             syncFallbackCheckboxesSecond();
+            // Hide loader after dates are displayed (only if it was visible)
+            if (isLoaderVisible()) {
+                hideLoader();
+            }
         }
         
         function toggleSelectAllDates() {
@@ -3144,6 +3345,50 @@ HTML_TEMPLATE = """
             }
         }
         
+        function approveAllAllocations() {
+            if (confirm('Are you sure you want to approve ALL allocations? This will send emails to all agents with their allocated data.')) {
+                const button = document.getElementById('approve-all-btn');
+                const originalText = button.innerHTML;
+                button.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Processing...';
+                button.disabled = true;
+                
+                // Send approval for all allocations
+                fetch('/approve_all_allocations', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    }
+                })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        button.innerHTML = '<i class="fas fa-check-double"></i> All Approved';
+                        button.style.background = 'linear-gradient(135deg, #27ae60, #2ecc71)';
+                        showSuccessToast('All Allocations Approved', data.message);
+                        
+                        // Update individual approve buttons to show as sent
+                        const approveButtons = document.querySelectorAll('.approve-btn');
+                        approveButtons.forEach(btn => {
+                            if (!btn.disabled) {
+                                btn.innerHTML = '<i class="fas fa-check"></i> Email Sent';
+                                btn.style.background = 'linear-gradient(135deg, #27ae60, #2ecc71)';
+                                btn.disabled = true;
+                            }
+                        });
+                    } else {
+                        button.innerHTML = originalText;
+                        button.disabled = false;
+                        showErrorToast('Approval Failed', data.message);
+                    }
+                })
+                .catch(error => {
+                    button.innerHTML = originalText;
+                    button.disabled = false;
+                    showErrorToast('Error', `Error approving allocations: ${error.message}`);
+                });
+            }
+        }
+        
         function viewAgentAllocation(agentName) {
             const modal = document.getElementById('agentModal');
             const modalAgentName = document.getElementById('modalAgentName');
@@ -3325,6 +3570,18 @@ HTML_TEMPLATE = """
     window.showWarningToast = (title, message) => showToast('warning', title, message);
     window.showInfoToast = (title, message) => showToast('info', title, message);
     </script>
+    
+    <!-- Loader/Progress Bar -->
+    <div id="loader-overlay" class="loader-overlay">
+        <div class="loader-container">
+            <div class="loader-spinner"></div>
+            <p class="loader-text">Loading Appointment Dates</p>
+            <p class="loader-subtitle">Please wait while we process your files...</p>
+            <div class="progress-bar-container">
+                <div class="progress-bar"></div>
+            </div>
+        </div>
+    </div>
 </body>
 </html>
 """
@@ -3346,6 +3603,106 @@ def get_business_days_until_date(start_date, target_date):
             business_days += 1
     
     return business_days
+
+def detect_and_assign_new_insurance_companies(data_df, agent_data, insurance_carrier_col, insurance_working_col, agent_name_col=None):
+    """Detect new insurance companies in data file and automatically assign them to senior agents"""
+    try:
+        if not insurance_carrier_col or not insurance_working_col:
+            return agent_data, []
+        
+        # Get all insurance companies from data file
+        data_insurance_companies = set()
+        for _, row in data_df.iterrows():
+            if pd.notna(row[insurance_carrier_col]):
+                company = str(row[insurance_carrier_col]).strip()
+                if company and company.lower() != 'unknown':
+                    data_insurance_companies.add(company)
+        
+        # Console log all unique insurance companies from data file
+        print(f"🔍 Unique insurance companies found in data file:")
+        for company in sorted(data_insurance_companies):
+            print(f"  - {company}")
+        print(f"Total unique insurance companies: {len(data_insurance_companies)}")
+        
+        # Get all insurance companies currently assigned to agents
+        agent_insurance_companies = set()
+        for _, row in agent_data.iterrows():
+            if pd.notna(row[insurance_working_col]):
+                companies_str = str(row[insurance_working_col])
+                companies = [comp.strip() for comp in companies_str.replace(',', ';').replace('|', ';').split(';') if comp.strip()]
+                for comp in companies:
+                    if comp.lower() != 'senior':
+                        agent_insurance_companies.add(comp)
+        
+        # Console log insurance companies currently assigned to agents
+        print(f"👥 Insurance companies currently assigned to agents:")
+        for company in sorted(agent_insurance_companies):
+            print(f"  - {company}")
+        print(f"Total assigned insurance companies: {len(agent_insurance_companies)}")
+        
+        # Find new insurance companies
+        new_insurance_companies = data_insurance_companies - agent_insurance_companies
+        
+        # Console log new insurance companies detected
+        if new_insurance_companies:
+            print(f"🆕 New insurance companies detected:")
+            for company in sorted(new_insurance_companies):
+                print(f"  - {company}")
+            print(f"Total new insurance companies: {len(new_insurance_companies)}")
+        else:
+            print("✅ No new insurance companies detected - all companies are already assigned to agents")
+        
+        if not new_insurance_companies:
+            return agent_data, []
+        
+        # Find senior agents (those with 'senior' in their Insurance Working column)
+        senior_agents = []
+        for idx, row in agent_data.iterrows():
+            if pd.notna(row[insurance_working_col]):
+                companies_str = str(row[insurance_working_col])
+                if 'senior' in companies_str.lower():
+                    senior_agents.append(idx)
+        
+        # Console log senior agents found
+        print(f"👨‍💼 Senior agents found: {len(senior_agents)}")
+        if senior_agents:
+            for idx in senior_agents:
+                if agent_name_col and agent_name_col in agent_data.columns:
+                    agent_name = agent_data.iloc[idx][agent_name_col]
+                else:
+                    agent_name = f"Agent {idx}"
+                print(f"  - {agent_name}")
+        else:
+            print("⚠️ No senior agents found - new insurance companies cannot be automatically assigned")
+        
+        # Assign new insurance companies to senior agents
+        updated_agents = []
+        for idx, row in agent_data.iterrows():
+            if idx in senior_agents:
+                # Add new insurance companies to senior agents
+                current_companies = str(row[insurance_working_col]) if pd.notna(row[insurance_working_col]) else ''
+                new_companies_str = '; '.join(new_insurance_companies)
+                
+                if current_companies:
+                    updated_companies = f"{current_companies}; {new_companies_str}"
+                else:
+                    updated_companies = new_companies_str
+                
+                # Update the row
+                row_copy = row.copy()
+                row_copy[insurance_working_col] = updated_companies
+                updated_agents.append(row_copy)
+            else:
+                updated_agents.append(row)
+        
+        # Convert back to DataFrame
+        updated_agent_data = pd.DataFrame(updated_agents)
+        
+        return updated_agent_data, list(new_insurance_companies)
+        
+    except Exception as e:
+        print(f"Error in detect_and_assign_new_insurance_companies: {str(e)}")
+        return agent_data, []
 
 def get_nth_business_day(start_date, n):
     """Get the nth business day from start_date"""
@@ -3381,9 +3738,9 @@ def process_allocation_files(allocation_df, data_df):
         if appointment_date_col is None:
             return f"❌ Error: 'Appointment Date' column not found in data file.\nAvailable columns: {list(processed_df.columns)}", None
         
-        # Convert appointment date column to datetime
+        # Convert appointment date column to datetime and remove time component
         try:
-            processed_df[appointment_date_col] = pd.to_datetime(processed_df[appointment_date_col], errors='coerce')
+            processed_df[appointment_date_col] = pd.to_datetime(processed_df[appointment_date_col], errors='coerce').dt.date
         except Exception as e:
             return f"❌ Error converting appointment dates: {str(e)}", None
         
@@ -3489,6 +3846,12 @@ def process_allocation_files_with_dates(allocation_df, data_df, selected_dates, 
         
         if appointment_date_col is None:
             return f"❌ Error: 'Appointment Date' column not found in data file.\nAvailable columns: {list(processed_df.columns)}", None
+        
+        # Convert appointment date column to datetime and remove time component
+        try:
+            processed_df[appointment_date_col] = pd.to_datetime(processed_df[appointment_date_col], errors='coerce').dt.date
+        except Exception as e:
+            return f"❌ Error converting appointment dates: {str(e)}", None
         
         # Check if Priority Status column exists, if not create it
         if 'Priority Status' not in processed_df.columns:
@@ -3639,6 +4002,14 @@ def process_allocation_files_with_dates(allocation_df, data_df, selected_dates, 
                     if not insurance_working_col:
                         agent_data['Insurance Working'] = ''
                         insurance_working_col = 'Insurance Working'
+                    
+                    # Detect and assign new insurance companies to senior agents
+                    if insurance_carrier_col and insurance_working_col:
+                        agent_data, new_insurance_companies = detect_and_assign_new_insurance_companies(
+                            processed_df, agent_data, insurance_carrier_col, insurance_working_col, agent_name_col
+                        )
+                        if new_insurance_companies:
+                            agent_summary += f"\n🆕 New insurance companies detected and assigned to senior agents: {', '.join(new_insurance_companies)}"
                     if not insurance_needs_training_col:
                         agent_data['Insurance Needs Training'] = ''
                         insurance_needs_training_col = 'Insurance Needs Training'
@@ -3811,6 +4182,23 @@ def process_allocation_files_with_dates(allocation_df, data_df, selected_dates, 
                     # Calculate total allocated rows
                     total_allocated = sum(agent['allocated'] for agent in agent_allocations)
                     print(f"DEBUG: Total rows allocated: {total_allocated}, Total rows available: {total_rows}")
+                    
+                    # Add Agent Name column to processed_df based on allocation
+                    # Initialize Agent Name column if it doesn't exist
+                    if 'Agent Name' not in processed_df.columns:
+                        processed_df['Agent Name'] = ''
+                    
+                    # Set agent name for each allocated row
+                    for agent in agent_allocations:
+                        agent_name = agent['name']
+                        row_indices = agent.get('row_indices', [])
+                        if row_indices:
+                            # Filter to only valid indices within the dataframe
+                            valid_indices = [idx for idx in row_indices if idx < len(processed_df)]
+                            if valid_indices:
+                                # Set agent name for all rows allocated to this agent
+                                processed_df.loc[valid_indices, 'Agent Name'] = agent_name
+                                print(f"DEBUG: Set Agent Name '{agent_name}' for {len(valid_indices)} rows (from {len(row_indices)} total indices)")
                     
                     # Store agent allocations data globally for individual downloads
                     agent_allocations_data = agent_allocations
@@ -4267,7 +4655,16 @@ def download_result():
         try:
             with pd.ExcelWriter(temp_path, engine='openpyxl') as writer:
                 for sheet_name, df in data_file_data.items():
-                    df.to_excel(writer, sheet_name=sheet_name, index=False)
+                    # Create a copy of the dataframe to avoid modifying the original
+                    df_copy = df.copy()
+                    
+                    # Find appointment date columns and ensure they're formatted as dates without time
+                    for col in df_copy.columns:
+                        if 'appointment' in col.lower() and 'date' in col.lower():
+                            # Convert to datetime and then format as date string
+                            df_copy[col] = pd.to_datetime(df_copy[col], errors='coerce').dt.strftime('%Y-%m-%d')
+                    
+                    df_copy.to_excel(writer, sheet_name=sheet_name, index=False)
             
             return send_file(temp_path, as_attachment=True, download_name=filename)
             
@@ -4500,22 +4897,34 @@ def get_appointment_dates():
         if appointment_date_col is None:
             return jsonify({'error': 'Appointment Date column not found'}), 400
         
-        # Get unique appointment dates
+        # Get unique appointment dates with row counts
         appointment_dates = data_df[appointment_date_col].dropna().unique()
         
-        # Convert to string format and sort
-        date_strings = []
+        # Convert to string format and count rows for each date
+        date_data = []
         for date in appointment_dates:
             if hasattr(date, 'date'):
                 date_str = date.date().strftime('%Y-%m-%d')
             else:
                 date_str = str(date)
-            date_strings.append(date_str)
+            
+            # Count rows for this specific date
+            if hasattr(date, 'date'):
+                row_count = len(data_df[data_df[appointment_date_col].dt.date == date.date()])
+            else:
+                row_count = len(data_df[data_df[appointment_date_col] == date])
+            
+            date_data.append({
+                'date': date_str,
+                'row_count': row_count
+            })
         
-        date_strings.sort()
+        # Sort by date
+        date_data.sort(key=lambda x: x['date'])
         
         return jsonify({
-            'appointment_dates': date_strings,
+            'appointment_dates': [item['date'] for item in date_data],
+            'appointment_dates_with_counts': date_data,
             'column_name': appointment_date_col
         })
         
@@ -4730,7 +5139,16 @@ def download_agent_file():
         
         try:
             with pd.ExcelWriter(temp_path, engine='openpyxl') as writer:
-                agent_df.to_excel(writer, sheet_name=f'{agent_name}_Allocation', index=False)
+                # Create a copy of the dataframe to avoid modifying the original
+                agent_df_copy = agent_df.copy()
+                
+                # Find appointment date columns and ensure they're formatted as dates without time
+                for col in agent_df_copy.columns:
+                    if 'appointment' in col.lower() and 'date' in col.lower():
+                        # Convert to datetime and then format as date string
+                        agent_df_copy[col] = pd.to_datetime(agent_df_copy[col], errors='coerce').dt.strftime('%Y-%m-%d')
+                
+                agent_df_copy.to_excel(writer, sheet_name=f'{agent_name}_Allocation', index=False)
                 
                 # Add a summary sheet
                 summary_data = {
@@ -4837,6 +5255,116 @@ Allocation Management System
         
     except Exception as e:
         return jsonify({'success': False, 'message': f'Error sending email: {str(e)}'})
+
+@app.route('/approve_all_allocations', methods=['POST'])
+@admin_required
+def approve_all_allocations():
+    """Approve all agent allocations and send emails to all agents"""
+    try:
+        if not agent_allocations_data:
+            return jsonify({'success': False, 'message': 'No allocation data found'})
+        
+        successful_sends = []
+        failed_sends = []
+        
+        # Loop through all agents and send approval emails
+        for agent in agent_allocations_data:
+            agent_name = agent.get('name')
+            agent_email = agent.get('email')
+            allocated = agent.get('allocated', 0)
+            
+            # Skip agents with no email or no allocated rows
+            if not agent_email:
+                failed_sends.append(f"{agent_name}: No email address")
+                continue
+            
+            if allocated == 0:
+                # Skip agents with no allocations (no need to send email)
+                continue
+            
+            try:
+                # Create Excel file with agent's allocated data
+                excel_buffer = create_agent_excel_file(agent_name, agent)
+                
+                # Send email
+                msg = Message(
+                    subject=f'Your Work Allocation - {agent_name}',
+                    recipients=[agent_email],
+                    body=f'''
+Dear {agent_name},
+
+Your work allocation has been approved and is attached to this email.
+
+Allocation Details:
+- Total Allocated: {agent['allocated']} rows
+- Your Capacity: {agent['capacity']} rows
+- Allocation Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+
+Please find your allocated data in the attached Excel file.
+
+Best regards,
+Allocation Management System
+                    ''',
+                    html=f'''
+                    <h2>Work Allocation Approved</h2>
+                    <p>Dear <strong>{agent_name}</strong>,</p>
+                    <p>Your work allocation has been approved and is attached to this email.</p>
+                    
+                    <h3>Allocation Details:</h3>
+                    <ul>
+                        <li><strong>Total Allocated:</strong> {agent['allocated']} rows</li>
+                        <li><strong>Your Capacity:</strong> {agent['capacity']} rows</li>
+                        <li><strong>Allocation Date:</strong> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</li>
+                    </ul>
+                    
+                    <p>Please find your allocated data in the attached Excel file.</p>
+                    
+                    <p>Best regards,<br>
+                    Allocation Management System</p>
+                    '''
+                )
+                
+                # Attach Excel file
+                msg.attach(
+                    filename=f'{agent_name}_allocation_{datetime.now().strftime("%Y%m%d")}.xlsx',
+                    content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                    data=excel_buffer.getvalue()
+                )
+                
+                mail.send(msg)
+                successful_sends.append(f"{agent_name} ({agent_email})")
+                
+            except Exception as e:
+                failed_sends.append(f"{agent_name}: {str(e)}")
+        
+        # Prepare response message
+        total_agents = len(agent_allocations_data)
+        agents_with_allocation = sum(1 for a in agent_allocations_data if a.get('allocated', 0) > 0)
+        successful_count = len(successful_sends)
+        failed_count = len(failed_sends)
+        
+        if successful_count > 0:
+            message = f"Successfully sent approval emails to {successful_count} agent(s): {', '.join([s.split(' (')[0] for s in successful_sends])}"
+            if failed_count > 0:
+                message += f". {failed_count} agent(s) failed: {', '.join(failed_sends)}"
+        else:
+            message = f"No emails sent. Errors: {', '.join(failed_sends)}" if failed_sends else "No agents with allocations to approve."
+        
+        return jsonify({
+            'success': successful_count > 0,
+            'message': message,
+            'details': {
+                'total_agents': total_agents,
+                'agents_with_allocation': agents_with_allocation,
+                'successful': successful_count,
+                'failed': failed_count,
+                'successful_list': successful_sends,
+                'failed_list': failed_sends
+            }
+        })
+        
+    except Exception as e:
+        return jsonify({'success': False, 'message': f'Error approving all allocations: {str(e)}'})
 
 def create_agent_excel_file(agent_name, agent_info):
     """Create Excel file with agent's allocated data"""

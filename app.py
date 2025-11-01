@@ -10,6 +10,7 @@ from flask_sqlalchemy import SQLAlchemy
 from flask_migrate import Migrate
 import pandas as pd
 import os
+import re
 from datetime import datetime, timedelta
 from werkzeug.utils import secure_filename
 from werkzeug.security import generate_password_hash, check_password_hash
@@ -411,7 +412,6 @@ def init_database():
         # No need to create static agent accounts
         
         db.session.commit()
-        print("Database initialized with default users")
 
 def get_user_by_username(username):
     """Get user by username"""
@@ -545,7 +545,6 @@ def verify_google_token(token):
             'picture': idinfo.get('picture', '')
         }
     except ValueError as e:
-        print(f"Token verification failed: {e}")
         return None
 
 def get_or_create_google_user(google_user_info):
@@ -2240,6 +2239,10 @@ HTML_TEMPLATE = """
                 .then(data => {
                     if (data.error) {
                         calendarContainer.innerHTML = `<p style="color: #666; font-style: italic; text-align: center; padding: 20px;">${data.error}</p>`;
+                        // Hide loader if there's an error
+                        if (isLoaderVisible()) {
+                            hideLoader();
+                        }
                         return;
                     }
                     
@@ -2249,6 +2252,10 @@ HTML_TEMPLATE = """
                     
                     if (!dates || dates.length === 0) {
                         calendarContainer.innerHTML = '<p style="color: #666; font-style: italic; text-align: center; padding: 20px;">No appointment dates found in the file.</p>';
+                        // Hide loader if no dates found
+                        if (isLoaderVisible()) {
+                            hideLoader();
+                        }
                         return;
                     }
                     
@@ -2260,11 +2267,16 @@ HTML_TEMPLATE = """
                     // Store appointment dates
                     appointmentDates = new Set(dates);
                     // Directly show checkbox list (no calendar view)
+                    // Loader will be hidden in showFallbackDateList after dates are displayed
                     showFallbackDateList(datesWithCounts, columnName);
                     updateSelectedDatesInfo();
                 })
                 .catch(error => {
                     calendarContainer.innerHTML = '<p style="color: #666; font-style: italic; text-align: center; padding: 20px;">No data file uploaded yet.</p>';
+                    // Hide loader on error
+                    if (isLoaderVisible()) {
+                        hideLoader();
+                    }
                 });
         }
         
@@ -2773,29 +2785,42 @@ HTML_TEMPLATE = """
         
         function showFallbackDateList(datesWithCounts, columnName) {
             const calendarContainer = document.getElementById('calendar_container');
-            if (!calendarContainer) return;
+            if (!calendarContainer) {
+                // Hide loader even if container doesn't exist
+                hideLoader();
+                return;
+            }
             
-            let html = `
-                <div style="text-align: center; margin-bottom: 20px;">
-                    <p>Click on dates to select them for First Priority:</p>
-                </div>
-                <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 10px; max-height: 300px; overflow-y: auto;">
-            `;
-            
-            datesWithCounts.forEach((dateData, index) => {
-                const date = dateData.date;
-                const rowCount = dateData.row_count;
-                const dateObj = new Date(date);
-                const dayName = dateObj.toLocaleDateString('en-US', { weekday: 'long' });
-                const formattedDate = dateObj.toLocaleDateString('en-US', { 
-                    year: 'numeric', 
-                    month: 'short', 
-                    day: 'numeric' 
-                });
+            try {
+                // Ensure variables are initialized
+                if (typeof selectedDates === 'undefined') {
+                    selectedDates = new Set();
+                }
+                if (typeof selectedSecondDates === 'undefined') {
+                    selectedSecondDates = new Set();
+                }
                 
-                const isSelectedInFirst = selectedDates.has(date);
-                const isSelectedInSecond = selectedSecondDates.has(date);
-                const isDisabled = isSelectedInSecond;
+                let html = `
+                    <div style="text-align: center; margin-bottom: 20px;">
+                        <p>Click on dates to select them for First Priority:</p>
+                    </div>
+                    <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 10px; max-height: 300px; overflow-y: auto;">
+                `;
+                
+                datesWithCounts.forEach((dateData, index) => {
+                    const date = dateData.date;
+                    const rowCount = dateData.row_count || 0;
+                    const dateObj = new Date(date);
+                    const dayName = dateObj.toLocaleDateString('en-US', { weekday: 'long' });
+                    const formattedDate = dateObj.toLocaleDateString('en-US', { 
+                        year: 'numeric', 
+                        month: 'short', 
+                        day: 'numeric' 
+                    });
+                    
+                    const isSelectedInFirst = selectedDates.has(date);
+                    const isSelectedInSecond = selectedSecondDates.has(date);
+                    const isDisabled = isSelectedInSecond;
                 
                 let itemStyle = 'display: flex; align-items: center; padding: 10px; border: 2px solid #e0e0e0; border-radius: 8px; background: #f9f9f9; cursor: pointer; transition: all 0.3s;';
                 let textStyle = 'font-weight: bold; font-size: 16px;';
@@ -2822,47 +2847,67 @@ HTML_TEMPLATE = """
                         <div>
                             <div style="${textStyle}">${formattedDate}${isDisabled ? ' (Second Priority)' : ''}</div>
                             <div style="${dayStyle}">${dayName}</div>
-                            <div style="${countStyle}">${rowCount} rows</div>
+                                <div style="${countStyle}">${rowCount} rows</div>
                         </div>
                     </div>
                 `;
             });
             
-            html += '</div>';
-            calendarContainer.innerHTML = html;
-            // Sync checkboxes to current selection
-            syncFallbackCheckboxes();
-            // Hide loader after dates are displayed (only if it was visible)
-            if (isLoaderVisible()) {
-                hideLoader();
+                html += '</div>';
+                calendarContainer.innerHTML = html;
+                // Sync checkboxes to current selection
+                syncFallbackCheckboxes();
+            } catch (error) {
+                console.error('Error displaying dates (First Priority):', error);
+                console.error('Error details:', error.message, error.stack);
+                calendarContainer.innerHTML = '<p style="color: #e74c3c; text-align: center; padding: 20px;">Error displaying dates: ' + (error.message || 'Unknown error') + '. Please try again.</p>';
+            } finally {
+                // Always hide loader after attempting to display dates
+                // Use setTimeout to ensure DOM updates complete
+                setTimeout(function() {
+                    hideLoader();
+                }, 100);
             }
         }
         
         function showFallbackDateListSecond(datesWithCounts, columnName) {
             const calendarContainer = document.getElementById('calendar_container_second');
-            if (!calendarContainer) return;
+            if (!calendarContainer) {
+                // Hide loader even if container doesn't exist
+                hideLoader();
+                return;
+            }
             
-            let html = `
-                <div style="text-align: center; margin-bottom: 20px;">
-                    <p>Click on dates to select them for Second Priority:</p>
-                </div>
-                <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 10px; max-height: 300px; overflow-y: auto;">
-            `;
-            
-            datesWithCounts.forEach((dateData, index) => {
-                const date = dateData.date;
-                const rowCount = dateData.row_count;
-                const dateObj = new Date(date);
-                const dayName = dateObj.toLocaleDateString('en-US', { weekday: 'long' });
-                const formattedDate = dateObj.toLocaleDateString('en-US', { 
-                    year: 'numeric', 
-                    month: 'short', 
-                    day: 'numeric' 
-                });
+            try {
+                // Ensure variables are initialized
+                if (typeof selectedDates === 'undefined') {
+                    selectedDates = new Set();
+                }
+                if (typeof selectedSecondDates === 'undefined') {
+                    selectedSecondDates = new Set();
+                }
                 
-                const isSelectedInFirst = selectedDates.has(date);
-                const isSelectedInSecond = selectedSecondDates.has(date);
-                const isDisabled = isSelectedInFirst;
+                let html = `
+                    <div style="text-align: center; margin-bottom: 20px;">
+                        <p>Click on dates to select them for Second Priority:</p>
+                    </div>
+                    <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 10px; max-height: 300px; overflow-y: auto;">
+                `;
+            
+                datesWithCounts.forEach((dateData, index) => {
+                    const date = dateData.date;
+                    const rowCount = dateData.row_count || 0;
+                    const dateObj = new Date(date);
+                    const dayName = dateObj.toLocaleDateString('en-US', { weekday: 'long' });
+                    const formattedDate = dateObj.toLocaleDateString('en-US', { 
+                        year: 'numeric', 
+                        month: 'short', 
+                        day: 'numeric' 
+                    });
+                    
+                    const isSelectedInFirst = selectedDates.has(date);
+                    const isSelectedInSecond = selectedSecondDates.has(date);
+                    const isDisabled = isSelectedInFirst;
                 
                 let itemStyle = 'display: flex; align-items: center; padding: 10px; border: 2px solid #e0e0e0; border-radius: 8px; background: #f9f9f9; cursor: pointer; transition: all 0.3s;';
                 let textStyle = 'font-weight: bold; font-size: 16px;';
@@ -2895,13 +2940,20 @@ HTML_TEMPLATE = """
                 `;
             });
             
-            html += '</div>';
-            calendarContainer.innerHTML = html;
-            // Sync checkboxes to current selection
-            syncFallbackCheckboxesSecond();
-            // Hide loader after dates are displayed (only if it was visible)
-            if (isLoaderVisible()) {
-                hideLoader();
+                html += '</div>';
+                calendarContainer.innerHTML = html;
+                // Sync checkboxes to current selection
+                syncFallbackCheckboxesSecond();
+            } catch (error) {
+                console.error('Error displaying dates (Second Priority):', error);
+                console.error('Error details:', error.message, error.stack);
+                calendarContainer.innerHTML = '<p style="color: #e74c3c; text-align: center; padding: 20px;">Error displaying dates: ' + (error.message || 'Unknown error') + '. Please try again.</p>';
+            } finally {
+                // Always hide loader after attempting to display dates
+                // Use setTimeout to ensure DOM updates complete
+                setTimeout(function() {
+                    hideLoader();
+                }, 100);
             }
         }
         
@@ -3604,6 +3656,763 @@ def get_business_days_until_date(start_date, target_date):
     
     return business_days
 
+# Global variable to cache insurance name mapping
+_insurance_name_mapping = None
+_insurance_name_mapping_loaded = False
+_formatted_insurance_names = set()  # Track formatted insurance names
+_formatted_insurance_details = []  # Track original -> formatted mappings
+
+# Insurance corrected list mappings (stored directly in code since file will be deleted)
+CORRECTED_LIST_MAPPINGS = {
+    'Always Care': 'Always Care',
+    'Always Care Dental Benefits': 'Always Care',
+    'BCBS Arizona': 'BCBS Arizona',
+    'BCBS Arizona FEP': 'BCBS Arizona',
+    'BCBS California Dental Plan': 'BCBS California',
+    'BCBS California FEP': 'BCBS California FEP',
+    'BCBS FEP BLUEDENTAL': 'BCBS FEP',
+    'BCBS FEP Dental': 'BCBS FEP',
+    'BCBS FEP Program': 'BCBS FEP',
+    'BCBS FEPOREGON': 'BCBS FEP',
+    'BCBS Federal Dental': 'BCBS Federal',
+    'BCBS Federal Gov`t': 'BCBS Federal',
+    'BCBS IDAHO': 'BCBS IDAHO',
+    'BCBS Idaho': 'BCBS IDAHO',
+    'BCBS Illinois  Federal': 'BCBS Illinois',
+    'BCBS Oregon FEP Program': 'BCBS Oregon FEP Program',
+    'BCBS Tennessee Federal Gov`t': 'BCBS Tennessee Federal',
+    'Beam Insurance Administrators': 'Beam',
+    'Benefit & Risk Management (BRMS  CA)': 'Benefit & Risk Management',
+    'Best Life': 'Best Life',
+    'Best Life & Health Insurance Co.': 'Best Life',
+    'BlueCross BlueShield AZ': 'BCBS Arizona',
+    'BlueShield AZ': 'BCBS Arizona',
+    'CCPOA': 'CCPOA',
+    'CENTRAL STATES': 'CENTRAL STATES',
+    'CONVERSION DEFAULT  Do NOT Delete! Change Pt Ins!': 'CONVERSION DEFAULT  Do NOT Delete! Change Pt Ins!',
+    'CarePlus': 'CarePlus',
+    'Careington Benefit Solutions': 'Careington Benefit Solutions',
+    'Central States Health & Life Co. Of Omaha': 'Central States Health & Life Co. Of Omaha',
+    'Cigna': 'Cigna',
+    'Community Dental Associates': 'Community Dental Associates',
+    'Core Five Solutions': 'Core Five Solutions',
+    'Cypress Ancillary Benefits': 'Cypress Ancillary Benefits',
+    'DD $2000 MAX': 'DD $2000 MAX',
+    'DD California Federal Plan': 'DD California Federal Plan',
+    'DD California Federal Services': 'DD California Federal Plan',
+    'DD DI': 'DD DI',
+    'DD Dental Choice': 'DD Dental Choice',
+    'DD FE': 'DD FEP',
+    'DD Fed Govt': 'DD FEP',
+    'DD Federal Employee Dental Pro': 'DD FEP',
+    'DD Federal Government Programs': 'DD FEP',
+    'DD GE': 'DD GE',
+    'DD GeorgiaBasic': 'DD GeorgiaBasic',
+    'DD IO': 'DD IO',
+    'DD Idaho': 'DD Idaho',
+    'DD Individual': 'DD Individual',
+    'DD Individual Plan': 'DD Individual',
+    'DD Indv': 'DD Individual',
+    'DD Ins Company': 'DD Ins Company',
+    'DD Insurance Colorado': 'DD Colorado',
+    'DD Iowa': 'DD Iowa',
+    'DD KA': 'DD KA',
+    'DD KE': 'DD KE',
+    'DD M': 'DD M',
+    'DD Mass': 'DD Mass',
+    'DD NO': 'DD NO',
+    'DD PE': 'DD PE',
+    'DD PL': 'DD PL',
+    'DD PLAN OF Wisconsin.': 'DD Wisconsin.',
+    'DD PP': 'DD',
+    'DD PPO': 'DD',
+    'DD Plan': 'DD',
+    'DD Plan Of Arizona': 'DD Arizona',
+    'DD Plan of Arizona': 'DD Arizona',
+    'DD RH': 'DD Rhode Island',
+    'DD Rhode Island': 'DD Rhode Island',
+    'DD SO': 'DD SO',
+    'DD TE': 'DD Tennesse',
+    'DD VI': 'DD VI',
+    'DD Wisconsin INDV': 'DD Wisconsin INDV',
+    'DD plan': 'DD plan',
+    'DDIC': 'DDIC',
+    'DELTA': 'DD',
+    'DENCAP Dental Plans': 'DENCAP Dental Plans',
+    'Delt Dental of CA': 'DD California',
+    'Delta': 'DD',
+    'Delta Deltal premier': 'DD',
+    'Delta Denta': 'DD',
+    'Delta MN': 'DD Minnesota',
+    'Delta WI': 'DD Wisconsin',
+    'Delta Wi': 'DD Wisconsin',
+    'Delta of WA': 'DD of Washington',
+    'DeltaCare USA': 'DeltaCare USA',
+    'Dental Claims': 'Dental Claims',
+    'Dental Claims Administrator': 'Dental Claims',
+    'FEP Blue Dental': 'FEP Blue Dental',
+    'FEP BlueDental': 'FEP BlueDental',
+    'Fiedler Dentistry Membership Plan': 'Fiedler Dentistry Membership Plan',
+    'LINE CONSTRUCTION  LINECO': 'LIneco',
+    'LIneco': 'LIneco',
+    'Liberty Dental Plan': 'Liberty Dental',
+    'Lincoln Financial Group': 'Lincoln Financial Group',
+    'Lincoln Financial Group (Lincoln Nationa': 'Lincoln Financial Group',
+    'Line Construction Benefit Fund': 'LIneco',
+    'Manhattan Life': 'Manhattan Life',
+    'Medical Mutual': 'Medical Mutual',
+    'Medico Insurance Company': 'Medico Insurance Company',
+    'Meritain': 'Meritain',
+    'Meritain Health': 'Meritain',
+    'Met': 'Metlife',
+    'Metlife': 'Metlife',
+    'Metropolitan': 'Metropolitan',
+    'Moonlight Graham': 'Moonlight Graham',
+    'Mutual Omaha': 'Mutual Omaha',
+    'NECAIBEW Welfare Trust Fund': 'NECAIBEW Welfare Trust Fund',
+    'NHW': 'NHW',
+    'NTCA': 'NTCA',
+    'NTCA Benefits': 'NTCA',
+    'National Elevator Industry Health Benefit Plan': 'National Elevator Industry Plan',
+    'National Elevator Industry Plan': 'National Elevator Industry Plan',
+    'Network Health Wisconsin': 'Network Health Wisconsin',
+    'Nippon Life Insurance': 'Nippon Life Insurance',
+    'Novartis Corporation': 'Novartis Corporation',
+    'OSF MedAdvantage': 'OSF MedAdvantage',
+    'Oakland County Discount Plan': 'Oakland County Discount Plan',
+    'Operating Engineers Local #49': 'Operating Engineers Local #49',
+    'PACIFIC SOURCE': 'PACIFIC SOURCE',
+    'PacificSource Health Plans': 'PacificSource Health Plans',
+    'Paramount Dental': 'Paramount Dental',
+    'Perio Membership Plan August': 'Perio Membership Plan August',
+    "Physician's Mutual": 'Physicians Mutual',
+    'Physicians Mutual': 'Physicians Mutual',
+    'Plan for Health': 'Plan for Health',
+    'Prairie States': 'Prairie States',
+    'Principal': 'Principal',
+    'Principlal': 'Principal',
+    'Professional Benefits Administr': 'Professional Benefits Administr',
+    'REGENCE BCBS': 'REGENCE BCBS',
+    'Regarding Dentistry  Membership': 'Regarding Dentistry  Membership',
+    'Reliance Standard': 'Reliance Standard',
+    'Renaissance': 'Renaissance',
+    'Renaissance Life and Health': 'Renaissance',
+    'Renaissance, Dental': 'Renaissance',
+    'SIHO': 'SIHO',
+    'Secure Care Dental': 'Secure Care Dental',
+    'Security Life Ins of America': 'Security Life Ins of America',
+    'Simple Dental': 'Simple Dental',
+    'Standard Life Insurance': 'Standard Life Insurance',
+    'Strong Family Health': 'Strong Family Health',
+    'Sunlife': 'Sunlife',
+    'Superior Dental Care': 'Superior Dental Care',
+    'THE UNITED FURNITURE WORKERS INSURANCE F': 'THE UNITED FURNITURE WORKERS INSURANCE F',
+    'Team Care': 'Teamcare',
+    'Teamcare': 'Teamcare',
+    'Texas International Life Ins Co': 'Texas International Life Ins Co',
+    'The Benefit Group': 'The Benefit Group',
+    'Tricare': 'Tricare',
+    'TruAssure Insurance Company': 'TruAssure',
+    'UHC': 'UHC',
+    'UMR': 'UMR',
+    'US Health Group': 'US Health Group',
+    'United Concordia': 'UCCI',
+    'Unum': 'Unum',
+    'WilsonMcShane Corporation': 'WilsonMcShane Corporation',
+}
+
+def clean_insurance_name(name):
+    """Remove spaces and special characters from the beginning and end of insurance name"""
+    if not name or pd.isna(name):
+        return name
+    
+    name_str = str(name)
+    # Remove spaces and special characters from start and end
+    # Special characters: - . , ; : | / \ _ ( ) [ ] { } * # @ $ % ^ & + = ~ ` ' " < > ?
+    name_str = re.sub(r'^[\s\-.,;:|/\\_()\[\]{}*#@$%^&+=\~`\'"<>?]+', '', name_str)
+    name_str = re.sub(r'[\s\-.,;:|/\\_()\[\]{}*#@$%^&+=\~`\'"<>?]+$', '', name_str)
+    return name_str.strip()
+
+def load_insurance_name_mapping():
+    """Load insurance name mapping from Insurance Uniform Name.xlsx file and CORRECTED_LIST_MAPPINGS dictionary"""
+    global _insurance_name_mapping, _insurance_name_mapping_loaded
+    
+    if _insurance_name_mapping_loaded:
+        return _insurance_name_mapping
+    
+    _insurance_name_mapping = {}
+    total_mappings = 0
+    
+    # Load from Insurance Uniform Name.xlsx
+    mapping_file1 = 'Insurance Uniform Name.xlsx'
+    try:
+        if os.path.exists(mapping_file1):
+            df = pd.read_excel(mapping_file1)
+            count = 0
+            # Create mapping dictionary: original name -> uniform name
+            # Handle case-insensitive matching by storing both original and lowercase keys
+            for _, row in df.iterrows():
+                original = str(row['Insurance']).strip() if pd.notna(row['Insurance']) else ''
+                uniform = str(row['Insurance New']).strip() if pd.notna(row['Insurance New']) else ''
+                
+                if original and uniform:
+                    # Clean both original and formatted names
+                    original = clean_insurance_name(original)
+                    uniform = clean_insurance_name(uniform)
+                    
+                    if original and uniform:
+                        # Store with original case
+                        _insurance_name_mapping[original] = uniform
+                        # Also store with lowercase for case-insensitive lookup
+                        _insurance_name_mapping[original.lower()] = uniform
+                        count += 1
+            
+            total_mappings += count
+        else:
+            pass
+    except Exception as e:
+        pass
+    
+    # Load from CORRECTED_LIST_MAPPINGS dictionary (stored directly in code)
+    try:
+        count = 0
+        for original, formatted in CORRECTED_LIST_MAPPINGS.items():
+            # Clean both original and formatted names
+            original_clean = clean_insurance_name(original)
+            formatted_clean = clean_insurance_name(formatted)
+            
+            if original_clean and formatted_clean:
+                # Store with original case
+                _insurance_name_mapping[original_clean] = formatted_clean
+                # Also store with lowercase for case-insensitive lookup
+                _insurance_name_mapping[original_clean.lower()] = formatted_clean
+                count += 1
+        
+        total_mappings += count
+    except Exception as e:
+        pass
+    
+    if total_mappings > 0:
+        pass
+    else:
+        pass
+    
+    _insurance_name_mapping_loaded = True
+    return _insurance_name_mapping
+
+def format_insurance_company_name(insurance_text):
+    """Format insurance company name for better allocation matching - uses Insurance Uniform Name.xlsx mapping first"""
+    global _formatted_insurance_names, _formatted_insurance_details
+    
+    if pd.isna(insurance_text):
+        return insurance_text
+    
+    insurance_str = clean_insurance_name(insurance_text)
+    if not insurance_str:
+        return insurance_text  # Return original if cleaning results in empty
+    
+    original_name = insurance_str  # Keep original for tracking
+    matched_from_mapping = False  # Track if matched from mapping file
+    
+    # Handle special cases first (after cleaning)
+    if insurance_str.upper() == 'NO INSURANCE':
+        formatted = clean_insurance_name('No Insurance')
+    elif insurance_str.upper() == 'PATIENT NOT FOUND':
+        formatted = clean_insurance_name('PATIENT NOT FOUND')
+    elif insurance_str.upper() == 'DUPLICATE':
+        formatted = clean_insurance_name('DUPLICATE')
+    elif insurance_str.upper() == 'UNKNOWN':
+        formatted = clean_insurance_name('Unknown')
+    else:
+        # Load insurance name mapping (will only load once)
+        mapping = load_insurance_name_mapping()
+        formatted = None
+        
+        # Try exact match first (with original text)
+        if insurance_str in mapping:
+            formatted = clean_insurance_name(str(mapping[insurance_str]))
+            matched_from_mapping = True
+        else:
+            # Extract company name before "Ph#" or phone numbers for matching
+            if "Ph#" in insurance_str:
+                company_name = insurance_str.split("Ph#")[0]
+            elif re.search(r'Ph#:?-?\s*\(?\d{3}', insurance_str):
+                # Handle various phone number patterns
+                company_name = re.split(r'Ph#:?-?\s*\(?\d', insurance_str)[0]
+            else:
+                company_name = insurance_str
+            
+            # Clean the company name
+            company_name = clean_insurance_name(company_name)
+            
+            # Try matching with cleaned company name
+            if company_name and company_name in mapping:
+                formatted = clean_insurance_name(str(mapping[company_name]))
+                matched_from_mapping = True
+            elif company_name and company_name.lower() in mapping:
+                formatted = clean_insurance_name(str(mapping[company_name.lower()]))
+                matched_from_mapping = True
+            
+            # Try matching original string (lowercase) as fallback
+            if not formatted and insurance_str.lower() in mapping:
+                formatted = clean_insurance_name(str(mapping[insurance_str.lower()]))
+                matched_from_mapping = True
+            
+            # Remove "Primary" and "Secondary" text
+            if not formatted and company_name:
+                company_name = re.sub(r'\s*\(Primary\)', '', company_name, flags=re.IGNORECASE)
+                company_name = re.sub(r'\s*\(Secondary\)', '', company_name, flags=re.IGNORECASE)
+                company_name = re.sub(r'\s*Primary', '', company_name, flags=re.IGNORECASE)
+                company_name = re.sub(r'\s*Secondary', '', company_name, flags=re.IGNORECASE)
+                company_name = clean_insurance_name(company_name)
+                
+                # Try matching again after removing Primary/Secondary
+                if company_name and company_name in mapping:
+                    formatted = clean_insurance_name(str(mapping[company_name]))
+                    matched_from_mapping = True
+                elif company_name and company_name.lower() in mapping:
+                    formatted = clean_insurance_name(str(mapping[company_name.lower()]))
+                    matched_from_mapping = True
+        
+        # If no match found in mapping, use fallback logic (existing code continues below)
+        if not formatted:
+            formatted = None  # Will be set by fallback logic
+    
+    # Continue with fallback logic if no mapping match found
+    if not formatted:
+        # Use existing fallback formatting logic
+        # State abbreviations mapping
+        STATE_ABBREVIATIONS = {
+            'AL': 'Alabama', 'AK': 'Alaska', 'AR': 'Arkansas', 'AZ': 'Arizona',
+            'CA': 'California', 'CL': 'California', 'CO': 'Colorado', 'CT': 'Connecticut', 'DE': 'Delaware',
+            'DC': 'District of Columbia', 'FL': 'Florida', 'GA': 'Georgia', 'HI': 'Hawaii',
+            'ID': 'Idaho', 'IL': 'Illinois', 'IN': 'Indiana', 'IA': 'Iowa',
+            'KS': 'Kansas', 'KY': 'Kentucky', 'LA': 'Louisiana', 'ME': 'Maine',
+            'MD': 'Maryland', 'MA': 'Massachusetts', 'MI': 'Michigan', 'MN': 'Minnesota',
+            'MS': 'Mississippi', 'MO': 'Missouri', 'MT': 'Montana', 'NE': 'Nebraska',
+            'NV': 'Nevada', 'NH': 'New Hampshire', 'NJ': 'New Jersey', 'NM': 'New Mexico',
+            'NY': 'New York', 'NC': 'North Carolina', 'ND': 'North Dakota', 'OH': 'Ohio',
+            'OK': 'Oklahoma', 'OR': 'Oregon', 'PA': 'Pennsylvania', 'RI': 'Rhode Island',
+            'SC': 'South Carolina', 'SD': 'South Dakota', 'TN': 'Tennessee', 'TX': 'Texas',
+            'UT': 'Utah', 'VT': 'Vermont', 'VA': 'Virginia', 'WA': 'Washington',
+            'WV': 'West Virginia', 'WI': 'Wisconsin', 'WY': 'Wyoming'
+        }
+        
+        # Common state name typos and variations
+        STATE_TYPO_CORRECTIONS = {
+            'californi': 'California',  # Missing last letter
+            'californa': 'California',  # Common typo
+            'californai': 'California',  # Letter order typo
+            'colarado': 'Colorado',  # Missing 'o' typo
+            'minnesotta': 'Minnesota',  # Extra 't' typo
+        }
+        
+        def expand_state_abbreviations(text):
+            """Expand state abbreviations to full state names"""
+            for abbr, full_name in STATE_ABBREVIATIONS.items():
+                pattern = r'\b' + re.escape(abbr) + r'\b'
+                text = re.sub(pattern, full_name, text, flags=re.IGNORECASE)
+            return text
+        
+        def correct_state_typos(text):
+            """Correct common state name typos"""
+            if not text:
+                return text
+            
+            # Replace any occurrence of typo words with correct spelling (case-insensitive)
+            for typo, correct in STATE_TYPO_CORRECTIONS.items():
+                pattern = r'\b' + re.escape(typo) + r'\b'
+                text = re.sub(pattern, correct, text, flags=re.IGNORECASE)
+            
+            return text
+        
+        def format_state_name(state_text):
+            """Format state name: first letter capital, rest lowercase (handles all caps, mixed case, etc.)"""
+            if not state_text:
+                return state_text
+            
+            # Handle multi-word state names (e.g., "NEW YORK" -> "New York", "NORTH CAROLINA" -> "North Carolina")
+            words = state_text.split()
+            formatted_words = []
+            for word in words:
+                if word.isupper() and len(word) > 1:
+                    # If word is all caps, convert to title case (first letter capital, rest lowercase)
+                    formatted_words.append(word.capitalize())
+                elif word.isupper() and len(word) == 1:
+                    # Single letter stays as is (for abbreviations like "I" in "Rhode Island")
+                    formatted_words.append(word)
+                elif word.islower():
+                    # All lowercase, capitalize first letter
+                    formatted_words.append(word.capitalize())
+                elif word.istitle():
+                    # Already in title case (e.g., "New"), keep as is
+                    formatted_words.append(word)
+                else:
+                    # Mixed case or other, convert to title case
+                    formatted_words.append(word.capitalize())
+            
+            return ' '.join(formatted_words)
+        
+        # Handle Delta Dental variations - normalize to "DD {state}" format
+        if re.search(r'\bDD\b', company_name, re.IGNORECASE):
+            # Handle existing "DD" patterns like "DD California", "DD of California", "DD CA", "DD PLAN OF Wisconsin"
+            dd_match = re.search(r'\bDD\b\s+(?:plan\s+of\s+|of\s+)?(.+)', company_name, re.IGNORECASE)
+            if dd_match:
+                state = clean_insurance_name(dd_match.group(1))
+                # Remove "PLAN OF" if it appears in the state text
+                state = re.sub(r'\bplan\s+of\s+', '', state, flags=re.IGNORECASE)
+                # Remove common suffixes
+                state = re.sub(r'\s*\(.*?\)', '', state)
+                # Remove trailing periods, pipes, and other special characters
+                state = re.sub(r'[|.]+\s*$', '', state)
+                state = correct_state_typos(state)
+                state = expand_state_abbreviations(state)
+                state = format_state_name(state)
+                formatted = clean_insurance_name(f"DD {state}")
+            else:
+                formatted = clean_insurance_name("DD")
+        elif re.search(r'delta\s+dental', company_name, re.IGNORECASE):
+            # Handle "Delta Dental" variations
+            delta_match = re.search(r'delta\s+dental\s+(?:of\s+)?(.+)', company_name, re.IGNORECASE)
+            if delta_match:
+                state = clean_insurance_name(delta_match.group(1))
+                # Remove "PLAN OF" if it appears in the state text
+                state = re.sub(r'\bplan\s+of\s+', '', state, flags=re.IGNORECASE)
+                # Remove common suffixes
+                state = re.sub(r'\s*\(.*?\)', '', state)
+                # Remove trailing periods, pipes, and other special characters
+                state = re.sub(r'[|.]+\s*$', '', state)
+                state = correct_state_typos(state)
+                state = expand_state_abbreviations(state)
+                state = format_state_name(state)
+                formatted = clean_insurance_name(f"DD {state}")
+            else:
+                formatted = clean_insurance_name("DD")
+        
+        # Handle Anthem variations FIRST (before BCBS to avoid conflicts)
+        elif re.search(r'anthem|blue\s+cross.*anthem|anthem.*blue\s+cross', company_name, re.IGNORECASE):
+            formatted = clean_insurance_name("Anthem")
+        
+        # Handle BCBS variations (including BC/BS with slash)
+        elif re.search(r'bc\s*/\s*bs|bcbs|bc\s+of|blue\s+cross|blue\s+shield|bcbbs', company_name, re.IGNORECASE):
+            # Check for "BCBS / BLUE SHEILD", "BCBS Blue Shiel", "BCBS Blue Shield" -> just "BCBS"
+            # Handles: "shiel" (without 'd'), "shield" (correct spelling), "sheild" (misspelling)
+            if (re.search(r'bcbs\s*/\s*blue\s+(shiel|shield|sheild)', company_name, re.IGNORECASE) or
+                re.search(r'bcbs\s+blue\s+(shiel|shield|sheild)', company_name, re.IGNORECASE)):
+                formatted = clean_insurance_name("BCBS")
+            # Handle BCBBS typo
+            elif re.search(r'bcbbs', company_name, re.IGNORECASE):
+                formatted = clean_insurance_name("BCBS")
+            # Check for full "Blue Cross Blue Shield" pattern first
+            elif re.search(r'blue\s+cross\s+blue\s+shield', company_name, re.IGNORECASE):
+                bcbs_match = re.search(r'blue\s+cross\s+blue\s+shield\s+(?:of\s+)?(.+)', company_name, re.IGNORECASE)
+                if bcbs_match:
+                    state = bcbs_match.group(1)
+                    # Remove trailing dashes and extra text like "- federal", "- Federal", etc.
+                    state = re.sub(r'\s*-\s*(federal|Federal|FEDERAL).*$', '', state, flags=re.IGNORECASE)
+                    # Remove common suffixes in parentheses
+                    state = re.sub(r'\s*\(.*?\)', '', state)
+                    state = clean_insurance_name(state)
+                    state = re.sub(r'[|.]+\s*$', '', state)
+                    state = correct_state_typos(state)
+                    state = expand_state_abbreviations(state)
+                    state = format_state_name(state)
+                    formatted = clean_insurance_name(f"BCBS {state}") if state else clean_insurance_name("BCBS")
+                else:
+                    formatted = clean_insurance_name("BCBS")
+            # Handle BC/BS patterns
+            elif re.search(r'bc/bs', company_name, re.IGNORECASE):
+                bcbs_match = re.search(r'bc/bs\s+(?:of\s+)?(.+)', company_name, re.IGNORECASE)
+                if bcbs_match:
+                    state = bcbs_match.group(1)
+                    state = re.sub(r'\s*-\s*(federal|Federal|FEDERAL).*$', '', state, flags=re.IGNORECASE)
+                    state = re.sub(r'\s*\(.*?\)', '', state)
+                    state = clean_insurance_name(state)
+                    state = re.sub(r'[|.]+\s*$', '', state)
+                    state = correct_state_typos(state)
+                    state = expand_state_abbreviations(state)
+                    state = format_state_name(state)
+                    formatted = clean_insurance_name(f"BCBS {state}") if state else clean_insurance_name("BCBS")
+                else:
+                    formatted = clean_insurance_name("BCBS")
+            # Handle BC Of patterns
+            elif re.search(r'bc\s+of', company_name, re.IGNORECASE):
+                bcbs_match = re.search(r'bc\s+of\s+(.+)', company_name, re.IGNORECASE)
+                if bcbs_match:
+                    state = bcbs_match.group(1)
+                    state = re.sub(r'\s*-\s*(federal|Federal|FEDERAL).*$', '', state, flags=re.IGNORECASE)
+                    state = re.sub(r'\s*\(.*?\)', '', state)
+                    state = clean_insurance_name(state)
+                    state = re.sub(r'[|.]+\s*$', '', state)
+                    state = correct_state_typos(state)
+                    state = expand_state_abbreviations(state)
+                    state = format_state_name(state)
+                    formatted = clean_insurance_name(f"BCBS {state}") if state else clean_insurance_name("BCBS")
+                else:
+                    formatted = clean_insurance_name("BCBS")
+            # Handle other BCBS patterns
+            else:
+                bcbs_match = re.search(r'(?:bcbs|blue\s+cross|blue\s+shield)\s+(?:of\s+)?(.+)', company_name, re.IGNORECASE)
+                if bcbs_match:
+                    state = bcbs_match.group(1)
+                    # Remove trailing dashes and extra text like "- federal", "- Federal", etc.
+                    state = re.sub(r'\s*-\s*(federal|Federal|FEDERAL).*$', '', state, flags=re.IGNORECASE)
+                    # Remove common suffixes in parentheses
+                    state = re.sub(r'\s*\(.*?\)', '', state)
+                    # Remove trailing dashes and special characters
+                    state = clean_insurance_name(state)
+                    # Remove trailing periods, pipes, and other special characters
+                    state = re.sub(r'[|.]+\s*$', '', state)
+                    state = correct_state_typos(state)
+                    state = expand_state_abbreviations(state)
+                    state = format_state_name(state)
+                    if state:
+                        formatted = clean_insurance_name(f"BCBS {state}")
+                    else:
+                        formatted = clean_insurance_name("BCBS")
+                else:
+                    formatted = clean_insurance_name("BCBS")
+        
+        # Handle other specific companies
+        elif re.search(r'metlife|met\s+life', company_name, re.IGNORECASE):
+            formatted = clean_insurance_name("Metlife")
+        elif re.search(r'cigna', company_name, re.IGNORECASE):
+            formatted = clean_insurance_name("Cigna")
+        elif re.search(r'aarp', company_name, re.IGNORECASE):
+            formatted = clean_insurance_name("AARP")
+        elif re.search(r'uhc|united\s*healthcare|united\s*health\s*care', company_name, re.IGNORECASE):
+            formatted = clean_insurance_name("UHC")
+        elif re.search(r'teamcare', company_name, re.IGNORECASE):
+            formatted = clean_insurance_name("Teamcare")
+        elif re.search(r'humana', company_name, re.IGNORECASE):
+            formatted = clean_insurance_name("Humana")
+        elif re.search(r'aetna', company_name, re.IGNORECASE):
+            formatted = clean_insurance_name("Aetna")
+        elif re.search(r'guardian', company_name, re.IGNORECASE):
+            formatted = clean_insurance_name("Guardian")
+        elif re.search(r'g\s*e\s*h\s*a', company_name, re.IGNORECASE):
+            formatted = clean_insurance_name("GEHA")
+        elif re.search(r'principal', company_name, re.IGNORECASE):
+            formatted = clean_insurance_name("Principal")
+        elif re.search(r'ameritas', company_name, re.IGNORECASE):
+            formatted = clean_insurance_name("Ameritas")
+        elif re.search(r'physicians\s+mutual', company_name, re.IGNORECASE):
+            formatted = clean_insurance_name("Physicians Mutual")
+        elif re.search(r'mutual\s+of\s+omaha', company_name, re.IGNORECASE):
+            formatted = clean_insurance_name("Mutual Omaha")
+        elif re.search(r'sunlife|sun\s+life', company_name, re.IGNORECASE):
+            formatted = clean_insurance_name("Sunlife")
+        elif re.search(r'careington', company_name, re.IGNORECASE):
+            formatted = clean_insurance_name("Careington Benefit Solutions")
+        elif re.search(r'automated\s+benefit', company_name, re.IGNORECASE):
+            formatted = clean_insurance_name("Automated Benefit Services Inc")
+        elif re.search(r'regence', company_name, re.IGNORECASE):
+            formatted = clean_insurance_name("REGENCE BCBS")
+        elif re.search(r'united\s+concordia', company_name, re.IGNORECASE):
+            formatted = clean_insurance_name("United Concordia")
+        elif re.search(r'medical\s+mutual', company_name, re.IGNORECASE):
+            formatted = clean_insurance_name("Medical Mutual")
+        elif re.search(r'unum', company_name, re.IGNORECASE):
+            formatted = clean_insurance_name("Unum")
+        elif re.search(r'wilson\s+mcshane', company_name, re.IGNORECASE):
+            formatted = clean_insurance_name("Wilson McShane- Delta Dental")
+        elif re.search(r'dentaquest', company_name, re.IGNORECASE):
+            formatted = clean_insurance_name("Dentaquest")
+        elif re.search(r'umr', company_name, re.IGNORECASE):
+            formatted = clean_insurance_name("UMR")
+        elif re.search(r'adn\s+administrators', company_name, re.IGNORECASE):
+            formatted = clean_insurance_name("ADN Administrators")
+        elif re.search(r'beam', company_name, re.IGNORECASE):
+            formatted = clean_insurance_name("Beam")
+        elif re.search(r'liberty(?:\s+dental)?', company_name, re.IGNORECASE):
+            formatted = clean_insurance_name("Liberty Dental Plan")
+        elif re.search(r'ucci', company_name, re.IGNORECASE):
+            formatted = clean_insurance_name("UCCI")
+        elif re.search(r'ccpoa|cc\s*poa|c\s+c\s+p\s+o\s+a', company_name, re.IGNORECASE):
+            formatted = clean_insurance_name("CCPOA")
+        elif re.search(r'kansas\s+city', company_name, re.IGNORECASE):
+            formatted = clean_insurance_name("Kansas City")
+        elif re.search(r'the\s+guardian', company_name, re.IGNORECASE):
+            formatted = clean_insurance_name("The Guardian")
+        elif re.search(r'community\s+dental', company_name, re.IGNORECASE):
+            formatted = clean_insurance_name("Community Dental Associates")
+        elif re.search(r'northeast\s+delta\s+dental', company_name, re.IGNORECASE):
+            formatted = clean_insurance_name("Northeast Delta Dental")
+        elif re.search(r'equitable', company_name, re.IGNORECASE):
+            formatted = clean_insurance_name("Equitable")
+        elif re.search(r'manhattan\s+life', company_name, re.IGNORECASE):
+            formatted = clean_insurance_name("Manhattan Life")
+        elif re.search(r'standard\s+(?:life\s+)?insurance', company_name, re.IGNORECASE):
+            formatted = clean_insurance_name("Standard Life Insurance")
+        elif re.search(r'keenan', company_name, re.IGNORECASE):
+            formatted = clean_insurance_name("Keenan")
+        elif re.search(r'plan\s+for\s+health', company_name, re.IGNORECASE):
+            formatted = clean_insurance_name("Plan for Health")
+        elif re.search(r'conversion\s+default', company_name, re.IGNORECASE):
+            formatted = clean_insurance_name("CONVERSION DEFAULT - Do NOT Delete! Change Pt Ins!")
+        elif re.search(r'health\s*partners', company_name, re.IGNORECASE):
+            # Check if it has "of [State]" pattern
+            hp_match = re.search(r'health\s*partners\s+of\s+(.+)', company_name, re.IGNORECASE)
+            if hp_match:
+                state = hp_match.group(1).strip()
+                state = clean_insurance_name(state)
+                state = format_state_name(state)
+                formatted = clean_insurance_name(f"Health Partners {state}")
+            else:
+                formatted = clean_insurance_name("Health Partners")
+        elif re.search(r'network\s+health', company_name, re.IGNORECASE):
+            # Check if it has "Wisconsin" in the name
+            if re.search(r'wisconsin', company_name, re.IGNORECASE):
+                formatted = clean_insurance_name("Network Health Wisconsin")
+            else:
+                formatted = clean_insurance_name("Network Health Go")
+        else:
+            # If no specific pattern matches, return the cleaned company name
+            formatted = clean_insurance_name(company_name) if company_name else company_name
+    
+    # Track formatted names (only if different from original)
+    if formatted and formatted != original_name:
+        if original_name not in _formatted_insurance_names:
+            _formatted_insurance_names.add(original_name)
+            _formatted_insurance_details.append({
+                'original': original_name,
+                'formatted': formatted,
+                'from_mapping': matched_from_mapping
+            })
+    
+    # Ensure final output is cleaned (remove any spaces/special chars before/after)
+    return clean_insurance_name(formatted) if formatted else formatted
+
+def print_formatted_insurance_companies():
+    """Print list of all formatted insurance companies to console"""
+    global _formatted_insurance_details
+    
+    if not _formatted_insurance_details:
+        return
+    
+    
+    # Group by source (mapping vs fallback)
+    from_mapping = [d for d in _formatted_insurance_details if d['from_mapping']]
+    from_fallback = [d for d in _formatted_insurance_details if not d['from_mapping']]
+    
+    if from_mapping:
+        for i, detail in enumerate(from_mapping, 1):
+            pass
+    
+    if from_fallback:
+        for i, detail in enumerate(from_fallback, 1):
+            pass
+    
+
+# DD INS group mapping - these companies should be treated as part of "DD INS" or "INS" group
+DD_INS_GROUP = [
+    'DD California',
+    'DD Florida',
+    'DD Texas',
+    'DD Pennsylvania',
+    'DD New York',
+    'DD Alabama',
+    'DD Georgia',
+    'DD Delaware'
+]
+
+# DD Toolkit group mapping - these companies should be treated as part of "DD Toolkit", "DD Toolkits", or "DD" group
+DD_TOOLKIT_GROUP = [
+    'DD New Mexico',
+    'DD Ohio',
+    'DD Indiana',
+    'DD Michigan',  # Note: user mentioned "Michigen" but correct spelling is "Michigan"
+    'DD Minnesota',
+    'DD Tennessee',
+    'DD Arizona',
+    'DD North Carolina',
+    'DD California Federal'
+]
+
+def expand_insurance_groups(insurance_list_str):
+    """
+    Expand insurance group names to include all companies in those groups.
+    Handles:
+    - "DD INS" or "INS" -> expands to DD_INS_GROUP companies
+    - "DD Toolkit", "DD Toolkits", or "DD" (when used as group) -> expands to DD_TOOLKIT_GROUP companies
+    
+    Args:
+        insurance_list_str: String containing insurance companies separated by ; , or |
+    
+    Returns:
+        String with group names expanded to individual companies
+    """
+    if pd.isna(insurance_list_str) or not insurance_list_str:
+        return insurance_list_str
+    
+    value_str = str(insurance_list_str)
+    # Split by common delimiters
+    companies = [comp.strip() for comp in re.split(r'[;,\|]', value_str) if comp.strip()]
+    
+    expanded_companies = []
+    has_dd_ins = False
+    has_ins = False
+    has_dd_toolkit = False
+    has_dd_toolkits = False
+    has_dd_group = False
+    
+    for comp in companies:
+        comp_lower = comp.lower().strip()
+        
+        # Check for "DD INS" or "INS" (case-insensitive)
+        if comp_lower == 'dd ins' or comp_lower == 'ins':
+            if 'dd' in comp_lower:
+                has_dd_ins = True
+            else:
+                has_ins = True
+            # Don't add the group name itself, we'll add the group companies
+        # Check for "DD Toolkit", "DD Toolkits", or "DD" (as group name)
+        elif comp_lower == 'dd toolkit':
+            has_dd_toolkit = True
+        elif comp_lower == 'dd toolkits':
+            has_dd_toolkits = True
+        elif comp_lower == 'dd':
+            # "DD" can be a group name OR a standalone company name
+            # We'll treat it as a group name if it appears alone or with other groups
+            # To be safe, we'll check if there are other group keywords nearby
+            has_dd_group = True
+        else:
+            # Keep other companies as-is
+            expanded_companies.append(comp)
+    
+    # Add all DD INS group companies if DD INS or INS was found
+    if has_dd_ins or has_ins:
+        for dd_ins_company in DD_INS_GROUP:
+            # Check if company is already in the list (case-insensitive)
+            if not any(existing.lower() == dd_ins_company.lower() for existing in expanded_companies):
+                expanded_companies.append(dd_ins_company)
+        expansion_type = 'DD INS' if has_dd_ins else 'INS'
+    
+    # Add all DD Toolkit group companies if DD Toolkit/Toolkits/DD was found
+    if has_dd_toolkit or has_dd_toolkits or has_dd_group:
+        for dd_toolkit_company in DD_TOOLKIT_GROUP:
+            # Check if company is already in the list (case-insensitive)
+            if not any(existing.lower() == dd_toolkit_company.lower() for existing in expanded_companies):
+                expanded_companies.append(dd_toolkit_company)
+        expansion_type = 'DD Toolkit' if has_dd_toolkit else ('DD Toolkits' if has_dd_toolkits else 'DD')
+    
+    # Join back with semicolon
+    return '; '.join(expanded_companies) if expanded_companies else insurance_list_str
+
+def format_insurance_column_in_dataframe(df, column_name):
+    """Format insurance company names in a DataFrame column"""
+    if column_name not in df.columns:
+        return df
+    
+    original_count = len(df[column_name].dropna())
+    
+    # Apply formatting
+    df[column_name] = df[column_name].apply(format_insurance_company_name)
+    
+    formatted_count = len(df[column_name].dropna())
+    
+    return df
+
 def detect_and_assign_new_insurance_companies(data_df, agent_data, insurance_carrier_col, insurance_working_col, agent_name_col=None):
     """Detect new insurance companies in data file and automatically assign them to senior agents"""
     try:
@@ -3618,12 +4427,6 @@ def detect_and_assign_new_insurance_companies(data_df, agent_data, insurance_car
                 if company and company.lower() != 'unknown':
                     data_insurance_companies.add(company)
         
-        # Console log all unique insurance companies from data file
-        print(f"🔍 Unique insurance companies found in data file:")
-        for company in sorted(data_insurance_companies):
-            print(f"  - {company}")
-        print(f"Total unique insurance companies: {len(data_insurance_companies)}")
-        
         # Get all insurance companies currently assigned to agents
         agent_insurance_companies = set()
         for _, row in agent_data.iterrows():
@@ -3634,23 +4437,8 @@ def detect_and_assign_new_insurance_companies(data_df, agent_data, insurance_car
                     if comp.lower() != 'senior':
                         agent_insurance_companies.add(comp)
         
-        # Console log insurance companies currently assigned to agents
-        print(f"👥 Insurance companies currently assigned to agents:")
-        for company in sorted(agent_insurance_companies):
-            print(f"  - {company}")
-        print(f"Total assigned insurance companies: {len(agent_insurance_companies)}")
-        
         # Find new insurance companies
         new_insurance_companies = data_insurance_companies - agent_insurance_companies
-        
-        # Console log new insurance companies detected
-        if new_insurance_companies:
-            print(f"🆕 New insurance companies detected:")
-            for company in sorted(new_insurance_companies):
-                print(f"  - {company}")
-            print(f"Total new insurance companies: {len(new_insurance_companies)}")
-        else:
-            print("✅ No new insurance companies detected - all companies are already assigned to agents")
         
         if not new_insurance_companies:
             return agent_data, []
@@ -3664,16 +4452,14 @@ def detect_and_assign_new_insurance_companies(data_df, agent_data, insurance_car
                     senior_agents.append(idx)
         
         # Console log senior agents found
-        print(f"👨‍💼 Senior agents found: {len(senior_agents)}")
         if senior_agents:
             for idx in senior_agents:
                 if agent_name_col and agent_name_col in agent_data.columns:
                     agent_name = agent_data.iloc[idx][agent_name_col]
                 else:
                     agent_name = f"Agent {idx}"
-                print(f"  - {agent_name}")
         else:
-            print("⚠️ No senior agents found - new insurance companies cannot be automatically assigned")
+            pass
         
         # Assign new insurance companies to senior agents
         updated_agents = []
@@ -3701,7 +4487,6 @@ def detect_and_assign_new_insurance_companies(data_df, agent_data, insurance_car
         return updated_agent_data, list(new_insurance_companies)
         
     except Exception as e:
-        print(f"Error in detect_and_assign_new_insurance_companies: {str(e)}")
         return agent_data, []
 
 def get_nth_business_day(start_date, n):
@@ -4082,29 +4867,284 @@ def process_allocation_files_with_dates(allocation_df, data_df, selected_dates, 
                         })
                     
                     # Now allocate rows based on insurance company matching and priority
+                    unmatched_insurance_companies = set()  # Initialize for use in summary
                     if insurance_carrier_col:
-                        # Group data by insurance carrier and priority
-                        data_by_insurance_priority = {}
+                        # Step 1: Identify all insurance companies in the data and all agent insurance companies
+                        all_data_insurance_companies = set()
+                        all_agent_insurance_companies = set()
+                        
                         for idx, row in processed_df.iterrows():
-                            insurance_carrier = str(row[insurance_carrier_col]) if pd.notna(row[insurance_carrier_col]) else 'Unknown'
+                            insurance_carrier = str(row[insurance_carrier_col]).strip() if pd.notna(row[insurance_carrier_col]) else 'Unknown'
+                            if insurance_carrier and insurance_carrier.lower() != 'unknown':
+                                all_data_insurance_companies.add(insurance_carrier)
+                        
+                        # Collect all insurance companies from non-senior agents (normalize to lowercase for comparison)
+                        agent_insurance_lower = set()
+                        for agent in agent_allocations:
+                            if not agent['is_senior'] and agent['insurance_companies']:
+                                for comp in agent['insurance_companies']:
+                                    if comp != 'ALL_COMPANIES':
+                                        agent_insurance_lower.add(comp.strip().lower())
+                        
+                        # Identify unmatched insurance companies (not in any non-senior agent's list)
+                        # Compare case-insensitively
+                        unmatched_insurance_companies = set()
+                        for data_comp in all_data_insurance_companies:
+                            data_comp_lower = data_comp.lower()
+                            # Check if this insurance company matches any agent's insurance companies
+                            is_matched = False
+                            for agent_comp_lower in agent_insurance_lower:
+                                if data_comp_lower in agent_comp_lower or agent_comp_lower in data_comp_lower:
+                                    is_matched = True
+                                    break
+                            if not is_matched:
+                                unmatched_insurance_companies.add(data_comp)
+                        
+                        # Get all senior agents
+                        senior_agents = [a for a in agent_allocations if a['is_senior']]
+                        
+                        # Step 2: Group data by insurance carrier and priority
+                        data_by_insurance_priority = {}
+                        unmatched_data_by_priority = {}
+                        matched_data_by_insurance_priority = {}
+                        
+                        for idx, row in processed_df.iterrows():
+                            insurance_carrier = str(row[insurance_carrier_col]).strip() if pd.notna(row[insurance_carrier_col]) else 'Unknown'
                             priority = row.get('Priority Status', 'Unknown')
                             
+                            if insurance_carrier.lower() == 'unknown' or not insurance_carrier:
+                                insurance_carrier = 'Unknown'
+                            
+                            # Separate unmatched and matched insurance companies
+                            # Unknown insurance is always unmatched (senior only)
+                            # First Priority is always senior only (for both matched and unmatched)
+                            is_unmatched = (insurance_carrier in unmatched_insurance_companies or 
+                                          insurance_carrier == 'Unknown')
+                            
+                            if is_unmatched:
+                                # Store unmatched insurance companies separately (highest priority)
+                                if insurance_carrier not in unmatched_data_by_priority:
+                                    unmatched_data_by_priority[insurance_carrier] = {}
+                                if priority not in unmatched_data_by_priority[insurance_carrier]:
+                                    unmatched_data_by_priority[insurance_carrier][priority] = []
+                                unmatched_data_by_priority[insurance_carrier][priority].append(idx)
+                            else:
+                                # Store matched insurance companies normally
+                                if insurance_carrier not in matched_data_by_insurance_priority:
+                                    matched_data_by_insurance_priority[insurance_carrier] = {}
+                                if priority not in matched_data_by_insurance_priority[insurance_carrier]:
+                                    matched_data_by_insurance_priority[insurance_carrier][priority] = []
+                                matched_data_by_insurance_priority[insurance_carrier][priority].append(idx)
+                            
+                            # Also keep full data structure for reference
                             if insurance_carrier not in data_by_insurance_priority:
                                 data_by_insurance_priority[insurance_carrier] = {}
                             if priority not in data_by_insurance_priority[insurance_carrier]:
                                 data_by_insurance_priority[insurance_carrier][priority] = []
                             data_by_insurance_priority[insurance_carrier][priority].append(idx)
                         
-                        # Allocate rows to agents based on their insurance capabilities and priority
-                        for insurance_carrier, priority_data in data_by_insurance_priority.items():
+                        # Initialize INS and Toolkit group tracking (used across all allocation steps)
+                        ins_group_allocations = {}  # {agent_name: count}
+                        toolkit_group_allocations = {}  # {agent_name: count}
+                        ins_group_companies = set(DD_INS_GROUP)
+                        toolkit_group_companies = set(DD_TOOLKIT_GROUP)
+                        
+                        # Identify agents with INS or Toolkit groups
+                        # After expansion, DD INS/INS becomes the actual companies, so we check if agent has any DD_INS_GROUP companies
+                        agents_with_ins = []
+                        agents_with_toolkit = []
+                        
+                        # Convert to sets for faster lookup
+                        ins_group_set = set([c.upper() for c in DD_INS_GROUP])
+                        toolkit_group_set = set([c.upper() for c in DD_TOOLKIT_GROUP])
+                        
+                        for agent in agent_allocations:
+                            insurance_list = agent.get('insurance_companies', [])
+                            agent_name = agent.get('name', 'Unknown')
+                            
+                            if insurance_list:
+                                # Convert to uppercase set for comparison
+                                agent_insurance_set = set([c.upper().strip() for c in insurance_list if c and c != 'ALL_COMPANIES'])
+                                
+                                # Debug: Show first few agents' insurance companies
+                                if len(agents_with_ins) + len(agents_with_toolkit) < 5:
+                                    pass
+                                
+                                # Check if agent has any DD_INS_GROUP companies
+                                has_ins_group = bool(agent_insurance_set.intersection(ins_group_set))
+                                if has_ins_group:
+                                    agents_with_ins.append(agent_name)
+                                    ins_group_allocations[agent_name] = 0
+                                
+                                # Check if agent has any DD_TOOLKIT_GROUP companies
+                                has_toolkit_group = bool(agent_insurance_set.intersection(toolkit_group_set))
+                                if has_toolkit_group:
+                                    agents_with_toolkit.append(agent_name)
+                                    toolkit_group_allocations[agent_name] = 0
+                            else:
+                                if len(agents_with_ins) + len(agents_with_toolkit) < 5:
+                                    pass
+                        
+                        
+                        # Step 3: FIRST PRIORITY - Allocate First Priority matched work to senior agents FIRST
+                        # This takes precedence over unmatched insurance
+                        
+                        # Check senior agent remaining capacity before Step 3
+                        senior_capacity_before = sum(a['capacity'] - a['allocated'] for a in senior_agents)
+                        
+                        # ONLY process First Priority matched work for senior agents
+                        priority = 'First Priority'
+                        # Collect all unallocated First Priority matched work across all insurance carriers
+                        priority_work = []  # List of (insurance_carrier, row_index) tuples
+                        for insurance_carrier, priority_data in matched_data_by_insurance_priority.items():
+                            if priority in priority_data:
+                                row_indices = priority_data[priority]
+                                # Get unallocated indices for this insurance carrier and priority
+                                unallocated_indices = [idx for idx in row_indices if idx not in [i for ag in agent_allocations for i in ag['row_indices']]]
+                                for idx in unallocated_indices:
+                                    priority_work.append((insurance_carrier, idx))
+                        
+                        if priority_work:
+                            pass
+                            
+                            # Allocate all First Priority matched work to senior agents, maximizing capacity utilization
+                            work_idx = 0
+                            while work_idx < len(priority_work):
+                                # Check if any senior agent has capacity
+                                available_seniors = [a for a in senior_agents if (a['capacity'] - a['allocated']) > 0]
+                                if not available_seniors:
+                                    # No more senior capacity for First Priority
+                                    remaining = len(priority_work) - work_idx
+                                    break
+                                
+                                # Sort by remaining capacity (highest first) to fill largest capacity first
+                                available_seniors.sort(key=lambda x: x['capacity'] - x['allocated'], reverse=True)
+                                
+                                # Allocate to senior agents in batches to maximize capacity utilization
+                                for senior_agent in available_seniors:
+                                    if work_idx >= len(priority_work):
+                                        break
+                                    
+                                    available_capacity = senior_agent['capacity'] - senior_agent['allocated']
+                                    if available_capacity <= 0:
+                                        continue
+                                    
+                                    # Calculate how many rows to assign to this agent (use all available capacity)
+                                    remaining_work = len(priority_work) - work_idx
+                                    rows_to_assign = min(available_capacity, remaining_work)
+                                    
+                                    if rows_to_assign > 0:
+                                        # Allocate batch of rows to this senior agent
+                                        agent_name = senior_agent['name']
+                                        for i in range(rows_to_assign):
+                                            insurance_carrier, row_idx = priority_work[work_idx + i]
+                                            senior_agent['row_indices'].append(row_idx)
+                                            
+                                            # Track INS and Toolkit group allocations (case-insensitive)
+                                            if agent_name in ins_group_allocations:
+                                                insurance_carrier_upper = insurance_carrier.upper().strip()
+                                                if any(insurance_carrier_upper == ic.upper().strip() for ic in DD_INS_GROUP):
+                                                    ins_group_allocations[agent_name] += 1
+                                            if agent_name in toolkit_group_allocations:
+                                                insurance_carrier_upper = insurance_carrier.upper().strip()
+                                                if any(insurance_carrier_upper == ic.upper().strip() for ic in DD_TOOLKIT_GROUP):
+                                                    toolkit_group_allocations[agent_name] += 1
+                                        
+                                        senior_agent['allocated'] += rows_to_assign
+                                        work_idx += rows_to_assign
+                                        
+                                        # Log the allocation
+                                
+                                # Log progress
+                                if work_idx % 50 == 0 and work_idx < len(priority_work):
+                                    pass
+                            
+                        else:
+                            pass
+                        
+                        # Note: Second/Third Priority matched work will be allocated to non-seniors in Step 5
+                        senior_capacity_after = sum(a['capacity'] - a['allocated'] for a in senior_agents)
+                        
+                        # Step 4: Allocate unmatched insurance companies to senior agents (after First Priority matched work)
+                        if unmatched_insurance_companies and senior_agents:
+                            for insurance_carrier, priority_data in unmatched_data_by_priority.items():
+                                # Process by priority order
+                                for priority in ['First Priority', 'Second Priority', 'Third Priority']:
+                                    if priority in priority_data:
+                                        row_indices = priority_data[priority]
+                                        
+                                        # Only senior agents can handle unmatched insurance
+                                        available_senior_agents = [a for a in senior_agents if (a['capacity'] - a['allocated']) > 0]
+                                        
+                                        if available_senior_agents:
+                                            # Distribute unmatched insurance rows among senior agents by priority
+                                            # Sort by remaining capacity (highest first)
+                                            available_senior_agents.sort(key=lambda x: x['capacity'] - x['allocated'], reverse=True)
+                                            
+                                            # Allocate to senior agents up to their capacity
+                                            row_idx = 0
+                                            for senior_agent in available_senior_agents:
+                                                if row_idx >= len(row_indices):
+                                                    break
+                                                
+                                                available_capacity = senior_agent['capacity'] - senior_agent['allocated']
+                                                if available_capacity > 0:
+                                                    rows_to_assign = min(available_capacity, len(row_indices) - row_idx)
+                                                    if rows_to_assign > 0:
+                                                        agent_name = senior_agent['name']
+                                                        # Track INS and Toolkit group allocations (case-insensitive)
+                                                        insurance_carrier_upper = insurance_carrier.upper().strip()
+                                                        for assigned_idx in range(row_idx, row_idx + rows_to_assign):
+                                                            if agent_name in ins_group_allocations:
+                                                                if any(insurance_carrier_upper == ic.upper().strip() for ic in DD_INS_GROUP):
+                                                                    ins_group_allocations[agent_name] += 1
+                                                            if agent_name in toolkit_group_allocations:
+                                                                if any(insurance_carrier_upper == ic.upper().strip() for ic in DD_TOOLKIT_GROUP):
+                                                                    toolkit_group_allocations[agent_name] += 1
+                                                        
+                                                        senior_agent['row_indices'].extend(row_indices[row_idx:row_idx + rows_to_assign])
+                                                        senior_agent['allocated'] += rows_to_assign
+                                                        row_idx += rows_to_assign
+                                            
+                                            # If there are remaining unmatched rows that couldn't fit in senior capacity
+                                            # they will be handled later or logged
+                                            if row_idx < len(row_indices):
+                                                pass
+                        
+                        # Step 5: Allocate remaining matched insurance companies to capable agents (normal allocation)
+                        
+                        for insurance_carrier, priority_data in matched_data_by_insurance_priority.items():
                             # Process First Priority first (senior agents get priority)
                             for priority in ['First Priority', 'Second Priority', 'Third Priority']:
                                 if priority in priority_data:
                                     row_indices = priority_data[priority]
                                     
+                                    # Filter out already allocated rows
+                                    unallocated_row_indices = [idx for idx in row_indices if idx not in [i for ag in agent_allocations for i in ag['row_indices']]]
+                                    
+                                    if not unallocated_row_indices:
+                                        continue
+                                    
+                                    # For First Priority and Unknown insurance, ONLY consider senior agents
+                                    # For Second/Third Priority, EXCLUDE senior agents (they should only get First Priority)
+                                    if priority == 'First Priority' or insurance_carrier == 'Unknown':
+                                        # First Priority and Unknown: ONLY senior agents
+                                        agents_to_check = [a for a in agent_allocations if a['is_senior']]
+                                        if not agents_to_check:
+                                            continue
+                                    else:
+                                        # Second/Third Priority: EXCLUDE senior agents - they should only handle First Priority work
+                                        agents_to_check = [a for a in agent_allocations if not a['is_senior']]
+                                        if not agents_to_check:
+                                            continue
+                                    
                                     # Find agents who can work with this insurance company
                                     capable_agents = []
-                                    for agent in agent_allocations:
+                                    for agent in agents_to_check:
+                                        # Skip if agent is at capacity
+                                        if agent['capacity'] - agent['allocated'] <= 0:
+                                            continue
+                                        
                                         # Check if agent can work with this insurance company
                                         can_work = False
                                         
@@ -4137,15 +5177,19 @@ def process_allocation_files_with_dates(allocation_df, data_df, selected_dates, 
                                             capable_agents.append(agent)
                                     
                                     if capable_agents:
-                                        # For First Priority, prioritize senior agents
-                                        if priority == 'First Priority':
-                                            senior_agents = [a for a in capable_agents if a['is_senior']]
-                                            if senior_agents:
-                                                capable_agents = senior_agents
+                                        # For First Priority and Unknown, verify we only have seniors
+                                        if priority == 'First Priority' or insurance_carrier == 'Unknown':
+                                            # Double-check: filter to only seniors with capacity
+                                            available_senior = [a for a in capable_agents if a['is_senior'] and (a['capacity'] - a['allocated']) > 0]
+                                            if available_senior:
+                                                capable_agents = available_senior
+                                            else:
+                                                # No senior capacity available - skip allocation (keep unassigned)
+                                                continue
                                         
                                         # Distribute rows among capable agents
-                                        rows_per_agent = len(row_indices) // len(capable_agents)
-                                        remaining_rows = len(row_indices) % len(capable_agents)
+                                        rows_per_agent = len(unallocated_row_indices) // len(capable_agents)
+                                        remaining_rows = len(unallocated_row_indices) % len(capable_agents)
                                         
                                         row_idx = 0
                                         for i, agent in enumerate(capable_agents):
@@ -4156,12 +5200,25 @@ def process_allocation_files_with_dates(allocation_df, data_df, selected_dates, 
                                             
                                             # Ensure we don't exceed agent's capacity
                                             available_capacity = agent['capacity'] - agent['allocated']
-                                            actual_rows = min(agent_rows, available_capacity, len(row_indices) - row_idx)
+                                            actual_rows = min(agent_rows, available_capacity, len(unallocated_row_indices) - row_idx)
                                             
                                             if actual_rows > 0:
                                                 # Assign specific row indices to this agent
-                                                agent['row_indices'].extend(row_indices[row_idx:row_idx + actual_rows])
+                                                agent['row_indices'].extend(unallocated_row_indices[row_idx:row_idx + actual_rows])
                                                 agent['allocated'] += actual_rows
+                                                
+                                                # Track INS and Toolkit group allocations (case-insensitive)
+                                                agent_name = agent['name']
+                                                insurance_carrier_upper = insurance_carrier.upper().strip()
+                                                if agent_name in ins_group_allocations:
+                                                    # Check if this insurance carrier is in DD_INS_GROUP
+                                                    if any(insurance_carrier_upper == ic.upper().strip() for ic in DD_INS_GROUP):
+                                                        ins_group_allocations[agent_name] += actual_rows
+                                                if agent_name in toolkit_group_allocations:
+                                                    # Check if this insurance carrier is in DD_TOOLKIT_GROUP
+                                                    if any(insurance_carrier_upper == ic.upper().strip() for ic in DD_TOOLKIT_GROUP):
+                                                        toolkit_group_allocations[agent_name] += actual_rows
+                                                
                                                 row_idx += actual_rows
                     else:
                         # Fallback: if no insurance carrier column, use simple capacity-based allocation
@@ -4181,7 +5238,31 @@ def process_allocation_files_with_dates(allocation_df, data_df, selected_dates, 
                     
                     # Calculate total allocated rows
                     total_allocated = sum(agent['allocated'] for agent in agent_allocations)
-                    print(f"DEBUG: Total rows allocated: {total_allocated}, Total rows available: {total_rows}")
+                    
+                    # Print INS and Toolkit group allocation summary
+                    # Ensure dictionaries exist (they should be initialized earlier)
+                    if 'ins_group_allocations' not in locals():
+                        ins_group_allocations = {}
+                    if 'toolkit_group_allocations' not in locals():
+                        toolkit_group_allocations = {}
+                    
+                    if ins_group_allocations:
+                        total_ins = sum(ins_group_allocations.values())
+                        for agent_name, count in sorted(ins_group_allocations.items()):
+                            pass
+                        if total_ins == 0:
+                            pass
+                    else:
+                        pass
+                    
+                    if toolkit_group_allocations:
+                        total_toolkit = sum(toolkit_group_allocations.values())
+                        for agent_name, count in sorted(toolkit_group_allocations.items()):
+                            pass
+                        if total_toolkit == 0:
+                            pass
+                    else:
+                        pass
                     
                     # Add Agent Name column to processed_df based on allocation
                     # Initialize Agent Name column if it doesn't exist
@@ -4198,15 +5279,18 @@ def process_allocation_files_with_dates(allocation_df, data_df, selected_dates, 
                             if valid_indices:
                                 # Set agent name for all rows allocated to this agent
                                 processed_df.loc[valid_indices, 'Agent Name'] = agent_name
-                                print(f"DEBUG: Set Agent Name '{agent_name}' for {len(valid_indices)} rows (from {len(row_indices)} total indices)")
                     
                     # Store agent allocations data globally for individual downloads
                     agent_allocations_data = agent_allocations
-                    print(f"DEBUG: Set agent_allocations_data with {len(agent_allocations)} agents")
                     
                     # Calculate allocation statistics
                     total_allocated = sum(a['allocated'] for a in agent_allocations)
                     agents_with_work = len([a for a in agent_allocations if a['allocated'] > 0])
+                    
+                    # Get unmatched insurance companies info (if it exists from allocation process)
+                    unmatched_info = ""
+                    if insurance_carrier_col and unmatched_insurance_companies:
+                        unmatched_info = f"\n🔴 Unmatched Insurance Companies ({len(unmatched_insurance_companies)}): {', '.join(sorted(list(unmatched_insurance_companies))[:5])}{'...' if len(unmatched_insurance_companies) > 5 else ''}\n   ⚠️ These companies were assigned ONLY to senior agents with highest priority."
                     
                     agent_summary = f"""
 👥 Agent Allocation Summary (Capability-Based):
@@ -4216,6 +5300,7 @@ def process_allocation_files_with_dates(allocation_df, data_df, selected_dates, 
 - Total Allocated: {total_allocated}
 - Remaining Unallocated: {total_rows - total_allocated}
 - Insurance Matching: {'Enabled' if insurance_carrier_col else 'Disabled'}
+{unmatched_info}
 
 📋 Agent Allocation Details:
 """
@@ -4271,7 +5356,8 @@ def process_allocation_files_with_dates(allocation_df, data_df, selected_dates, 
                 # Add information about senior agents
                 senior_count = sum(1 for agent in agent_allocations if agent['is_senior'])
                 if senior_count > 0:
-                    agent_summary += f"\n👑 Senior agents detected: {senior_count} - Senior agents can work with any insurance company and get priority for First Priority cases."
+                    unmatched_note = f" Unmatched insurance companies ({len(unmatched_insurance_companies)}) are assigned ONLY to senior agents with highest priority." if unmatched_insurance_companies else ""
+                    agent_summary += f"\n👑 Senior agents detected: {senior_count} - Senior agents can work with any insurance company and get priority for First Priority cases.{unmatched_note}"
             except Exception as e:
                 agent_summary = f"\n⚠️ Error processing agent allocation: {str(e)}"
         
@@ -4320,7 +5406,6 @@ def index():
     if user and user.role == 'agent':
         agent_work_files = get_agent_work_files(user.id)
     
-    print(f"DEBUG: agent_allocations_data in index: {agent_allocations_data}")
     current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     
     # Load all agent work files for admin view
@@ -4474,7 +5559,6 @@ def callback():
         return redirect(url_for('dashboard'))
         
     except Exception as e:
-        print(f"OAuth callback error: {e}")
         flash('Authentication failed. Please try again.', 'error')
         return redirect(url_for('login'))
 
@@ -4517,6 +5601,49 @@ def upload_allocation_file():
         
         # Load Excel file
         allocation_data = pd.read_excel(filename, sheet_name=None)
+        
+        # Format insurance company names in "Insurance Working" column for better allocation matching
+        for sheet_name, df in allocation_data.items():
+            # Find the Insurance Working column (case-insensitive)
+            insurance_working_col = None
+            for col in df.columns:
+                if 'insurance' in col.lower() and 'working' in col.lower():
+                    insurance_working_col = col
+                    break
+            
+            if insurance_working_col:
+                # Format each value in Insurance Working column (which may contain multiple companies separated by ; or ,)
+                def format_insurance_list(value):
+                    if pd.isna(value):
+                        return value
+                    value_str = str(value)
+                    # Split by common delimiters
+                    companies = [comp.strip() for comp in re.split(r'[;,\|]', value_str) if comp.strip()]
+                    # Format each company name, but preserve "senior" keyword and group names for expansion
+                    formatted_companies = []
+                    for comp in companies:
+                        comp_lower = comp.lower()
+                        if 'senior' in comp_lower:
+                            formatted_companies.append(comp)  # Keep senior as-is
+                        elif (comp_lower == 'dd ins' or comp_lower == 'ins' or 
+                              comp_lower == 'dd toolkit' or comp_lower == 'dd toolkits' or 
+                              comp_lower == 'dd'):
+                            # Keep group names as-is for later expansion
+                            formatted_companies.append(comp)
+                        else:
+                            formatted = format_insurance_company_name(comp)
+                            formatted_companies.append(formatted)
+                    # Join back with semicolon
+                    return '; '.join(formatted_companies)
+                
+                # First format the insurance names
+                df[insurance_working_col] = df[insurance_working_col].apply(format_insurance_list)
+                
+                # Then expand insurance groups (DD INS/INS and DD Toolkit/Toolkits/DD)
+                df[insurance_working_col] = df[insurance_working_col].apply(expand_insurance_groups)
+                
+                allocation_data[sheet_name] = df
+        
         allocation_filename = filename
         
         processing_result = f"✅ Allocation file uploaded successfully! Loaded {len(allocation_data)} sheets: {', '.join(list(allocation_data.keys()))}"
@@ -4551,16 +5678,37 @@ def upload_data_file():
         return redirect('/')
     
     try:
+        # Reset tracking for new file
+        global _formatted_insurance_names, _formatted_insurance_details
+        _formatted_insurance_names = set()
+        _formatted_insurance_details = []
+        
         # Save uploaded file temporarily
         filename = secure_filename(file.filename)
         file.save(filename)
         
         # Load Excel file
         data_file_data = pd.read_excel(filename, sheet_name=None)
+        
+        # Format insurance company names in "Dental Primary Ins Carr" column for better allocation
+        for sheet_name, df in data_file_data.items():
+            # Find the insurance carrier column (case-insensitive)
+            insurance_col = None
+            for col in df.columns:
+                if 'dental' in col.lower() and 'primary' in col.lower() and 'ins' in col.lower() and 'carr' in col.lower():
+                    insurance_col = col
+                    break
+            
+            if insurance_col:
+                data_file_data[sheet_name] = format_insurance_column_in_dataframe(df.copy(), insurance_col)
+        
         data_filename = filename
         
         processing_result = f"✅ Data file uploaded successfully! Loaded {len(data_file_data)} sheets: {', '.join(list(data_file_data.keys()))}"
         flash(f'Data file uploaded successfully! Loaded {len(data_file_data)} sheets: {", ".join(list(data_file_data.keys()))}', 'success')
+        
+        # Print formatted insurance companies list
+        print_formatted_insurance_companies()
         
         # Clean up uploaded file
         if os.path.exists(filename):
@@ -5119,15 +6267,12 @@ def download_agent_file():
         # Create a subset of data for this agent using specific row indices
         if row_indices and len(row_indices) > 0 and len(processed_df) > max(row_indices):
             agent_df = processed_df.iloc[row_indices].copy()
-            print(f"DEBUG: Agent {agent_name} got {len(agent_df)} rows with indices: {row_indices[:5]}...")
         else:
             # Fallback: if row_indices not available, use first N rows
             if len(processed_df) >= agent_rows:
                 agent_df = processed_df.head(agent_rows).copy()
-                print(f"DEBUG: Agent {agent_name} got {len(agent_df)} rows using fallback method")
             else:
                 agent_df = processed_df.copy()
-                print(f"DEBUG: Agent {agent_name} got all {len(agent_df)} available rows")
         
         # Add agent information to the dataframe
         agent_df['Agent Name'] = agent_name
@@ -5201,8 +6346,21 @@ def send_approval_email():
         if not agent_email:
             return jsonify({'success': False, 'message': 'Agent email not found'})
         
+        # Get allocation summary
+        summary = get_allocation_summary(agent_name, agent_info)
+        
         # Create Excel file with agent's allocated data
         excel_buffer = create_agent_excel_file(agent_name, agent_info)
+        
+        # Format insurance companies list
+        insurance_list = ', '.join(sorted(summary['insurance_companies'])) if summary['insurance_companies'] else 'None'
+        
+        # Format first priority deadline
+        deadline_text = ''
+        if summary['first_priority_deadline']:
+            deadline_text = summary['first_priority_deadline'].strftime('%Y-%m-%d at %I:%M %p')
+        else:
+            deadline_text = 'N/A (No First Priority work assigned)'
         
         # Send email
         msg = Message(
@@ -5213,10 +6371,26 @@ Dear {agent_name},
 
 Your work allocation has been approved and is attached to this email.
 
-Allocation Details:
-- Total Allocated: {agent_info['allocated']} rows
-- Your Capacity: {agent_info['capacity']} rows
-- Allocation Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+📊 ALLOCATION SUMMARY:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+• Total Allocated: {summary['total_allocated']} rows
+• Your Capacity: {agent_info['capacity']} rows
+• Allocation Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+
+📋 PRIORITY BREAKDOWN:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+• First Priority: {summary['first_priority_count']} rows
+• Second Priority: {summary['second_priority_count']} rows
+• Third Priority: {summary['third_priority_count']} rows
+• Unknown/Other: {summary['unknown_priority_count']} rows
+
+🏥 INSURANCE COMPANIES ({len(summary['insurance_companies'])} unique):
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+{insurance_list}
+
+⏰ FIRST PRIORITY DEADLINE:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+{deadline_text}
 
 Please find your allocated data in the attached Excel file.
 
@@ -5228,12 +6402,35 @@ Allocation Management System
             <p>Dear <strong>{agent_name}</strong>,</p>
             <p>Your work allocation has been approved and is attached to this email.</p>
             
-            <h3>Allocation Details:</h3>
-            <ul>
-                <li><strong>Total Allocated:</strong> {agent_info['allocated']} rows</li>
+            <div style="background-color: #f5f5f5; padding: 15px; border-radius: 5px; margin: 20px 0;">
+                <h3 style="margin-top: 0; color: #333;">📊 Allocation Summary</h3>
+                <ul style="list-style: none; padding-left: 0;">
+                    <li><strong>Total Allocated:</strong> {summary['total_allocated']} rows</li>
                 <li><strong>Your Capacity:</strong> {agent_info['capacity']} rows</li>
                 <li><strong>Allocation Date:</strong> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</li>
             </ul>
+            </div>
+            
+            <div style="background-color: #e8f4f8; padding: 15px; border-radius: 5px; margin: 20px 0;">
+                <h3 style="margin-top: 0; color: #2c5282;">📋 Priority Breakdown</h3>
+                <ul style="list-style: none; padding-left: 0;">
+                    <li><strong>First Priority:</strong> {summary['first_priority_count']} rows</li>
+                    <li><strong>Second Priority:</strong> {summary['second_priority_count']} rows</li>
+                    <li><strong>Third Priority:</strong> {summary['third_priority_count']} rows</li>
+                    <li><strong>Unknown/Other:</strong> {summary['unknown_priority_count']} rows</li>
+                </ul>
+            </div>
+            
+            <div style="background-color: #fff3cd; padding: 15px; border-radius: 5px; margin: 20px 0;">
+                <h3 style="margin-top: 0; color: #856404;">🏥 Insurance Companies ({len(summary['insurance_companies'])} unique)</h3>
+                <p style="word-wrap: break-word;">{insurance_list}</p>
+            </div>
+            
+            <div style="background-color: #f8d7da; padding: 15px; border-radius: 5px; margin: 20px 0; border-left: 4px solid #dc3545;">
+                <h3 style="margin-top: 0; color: #721c24;">⏰ First Priority Completion Deadline</h3>
+                <p style="font-size: 18px; font-weight: bold; color: #721c24; margin: 10px 0;">{deadline_text}</p>
+                <p style="font-size: 12px; color: #856404;">Please ensure all First Priority work is completed by this deadline.</p>
+            </div>
             
             <p>Please find your allocated data in the attached Excel file.</p>
             
@@ -5283,8 +6480,21 @@ def approve_all_allocations():
                 continue
             
             try:
+                # Get allocation summary
+                summary = get_allocation_summary(agent_name, agent)
+                
                 # Create Excel file with agent's allocated data
                 excel_buffer = create_agent_excel_file(agent_name, agent)
+                
+                # Format insurance companies list
+                insurance_list = ', '.join(sorted(summary['insurance_companies'])) if summary['insurance_companies'] else 'None'
+                
+                # Format first priority deadline
+                deadline_text = ''
+                if summary['first_priority_deadline']:
+                    deadline_text = summary['first_priority_deadline'].strftime('%Y-%m-%d at %I:%M %p')
+                else:
+                    deadline_text = 'N/A (No First Priority work assigned)'
                 
                 # Send email
                 msg = Message(
@@ -5295,10 +6505,26 @@ Dear {agent_name},
 
 Your work allocation has been approved and is attached to this email.
 
-Allocation Details:
-- Total Allocated: {agent['allocated']} rows
-- Your Capacity: {agent['capacity']} rows
-- Allocation Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+📊 ALLOCATION SUMMARY:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+• Total Allocated: {summary['total_allocated']} rows
+• Your Capacity: {agent['capacity']} rows
+• Allocation Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+
+📋 PRIORITY BREAKDOWN:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+• First Priority: {summary['first_priority_count']} rows
+• Second Priority: {summary['second_priority_count']} rows
+• Third Priority: {summary['third_priority_count']} rows
+• Unknown/Other: {summary['unknown_priority_count']} rows
+
+🏥 INSURANCE COMPANIES ({len(summary['insurance_companies'])} unique):
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+{insurance_list}
+
+⏰ FIRST PRIORITY DEADLINE:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+{deadline_text}
 
 Please find your allocated data in the attached Excel file.
 
@@ -5310,12 +6536,35 @@ Allocation Management System
                     <p>Dear <strong>{agent_name}</strong>,</p>
                     <p>Your work allocation has been approved and is attached to this email.</p>
                     
-                    <h3>Allocation Details:</h3>
-                    <ul>
-                        <li><strong>Total Allocated:</strong> {agent['allocated']} rows</li>
-                        <li><strong>Your Capacity:</strong> {agent['capacity']} rows</li>
-                        <li><strong>Allocation Date:</strong> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</li>
-                    </ul>
+                    <div style="background-color: #f5f5f5; padding: 15px; border-radius: 5px; margin: 20px 0;">
+                        <h3 style="margin-top: 0; color: #333;">📊 Allocation Summary</h3>
+                        <ul style="list-style: none; padding-left: 0;">
+                            <li><strong>Total Allocated:</strong> {summary['total_allocated']} rows</li>
+                            <li><strong>Your Capacity:</strong> {agent['capacity']} rows</li>
+                            <li><strong>Allocation Date:</strong> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</li>
+                        </ul>
+                    </div>
+                    
+                    <div style="background-color: #e8f4f8; padding: 15px; border-radius: 5px; margin: 20px 0;">
+                        <h3 style="margin-top: 0; color: #2c5282;">📋 Priority Breakdown</h3>
+                        <ul style="list-style: none; padding-left: 0;">
+                            <li><strong>First Priority:</strong> {summary['first_priority_count']} rows</li>
+                            <li><strong>Second Priority:</strong> {summary['second_priority_count']} rows</li>
+                            <li><strong>Third Priority:</strong> {summary['third_priority_count']} rows</li>
+                            <li><strong>Unknown/Other:</strong> {summary['unknown_priority_count']} rows</li>
+                        </ul>
+                    </div>
+                    
+                    <div style="background-color: #fff3cd; padding: 15px; border-radius: 5px; margin: 20px 0;">
+                        <h3 style="margin-top: 0; color: #856404;">🏥 Insurance Companies ({len(summary['insurance_companies'])} unique)</h3>
+                        <p style="word-wrap: break-word;">{insurance_list}</p>
+                    </div>
+                    
+                    <div style="background-color: #f8d7da; padding: 15px; border-radius: 5px; margin: 20px 0; border-left: 4px solid #dc3545;">
+                        <h3 style="margin-top: 0; color: #721c24;">⏰ First Priority Completion Deadline</h3>
+                        <p style="font-size: 18px; font-weight: bold; color: #721c24; margin: 10px 0;">{deadline_text}</p>
+                        <p style="font-size: 12px; color: #856404;">Please ensure all First Priority work is completed by this deadline.</p>
+                    </div>
                     
                     <p>Please find your allocated data in the attached Excel file.</p>
                     
@@ -5366,6 +6615,65 @@ Allocation Management System
     except Exception as e:
         return jsonify({'success': False, 'message': f'Error approving all allocations: {str(e)}'})
 
+def get_allocation_summary(agent_name, agent_info):
+    """Get detailed allocation summary for an agent"""
+    global data_file_data
+    
+    summary = {
+        'total_allocated': agent_info.get('allocated', 0),
+        'capacity': agent_info.get('capacity', 0),
+        'first_priority_count': 0,
+        'second_priority_count': 0,
+        'third_priority_count': 0,
+        'unknown_priority_count': 0,
+        'insurance_companies': set(),
+        'first_priority_deadline': None
+    }
+    
+    # Get the agent's allocated rows
+    row_indices = agent_info.get('row_indices', [])
+    
+    if row_indices and data_file_data:
+        # Get the main data
+        if isinstance(data_file_data, dict):
+            first_sheet_name = list(data_file_data.keys())[0]
+            main_df = data_file_data[first_sheet_name]
+        else:
+            main_df = data_file_data
+        
+        if len(main_df) > 0:
+            # Get allocated rows
+            allocated_df = main_df.iloc[row_indices].copy()
+            
+            # Count by priority
+            if 'Priority Status' in allocated_df.columns:
+                summary['first_priority_count'] = len(allocated_df[allocated_df['Priority Status'] == 'First Priority'])
+                summary['second_priority_count'] = len(allocated_df[allocated_df['Priority Status'] == 'Second Priority'])
+                summary['third_priority_count'] = len(allocated_df[allocated_df['Priority Status'] == 'Third Priority'])
+                unknown_mask = allocated_df['Priority Status'].isin(['', 'Unknown', None]) | allocated_df['Priority Status'].isna()
+                summary['unknown_priority_count'] = len(allocated_df[unknown_mask])
+            
+            # Get unique insurance companies
+            insurance_col = None
+            for col in allocated_df.columns:
+                if 'dental' in col.lower() and 'primary' in col.lower() and 'ins' in col.lower():
+                    insurance_col = col
+                    break
+            
+            if insurance_col:
+                insurance_companies = allocated_df[insurance_col].dropna().unique()
+                summary['insurance_companies'] = set([str(ic).strip() for ic in insurance_companies if str(ic).strip() and str(ic).strip().lower() != 'unknown'])
+            
+            # Calculate First Priority deadline (2nd business day end of day)
+            if summary['first_priority_count'] > 0:
+                from datetime import datetime, time
+                today = datetime.now().date()
+                second_business_day = get_nth_business_day(today, 2)
+                # Set deadline to end of business day (5:00 PM) on 2nd business day
+                summary['first_priority_deadline'] = datetime.combine(second_business_day, time(17, 0))
+    
+    return summary
+
 def create_agent_excel_file(agent_name, agent_info):
     """Create Excel file with agent's allocated data"""
     try:
@@ -5410,7 +6718,6 @@ def create_agent_excel_file(agent_name, agent_info):
         return excel_buffer
         
     except Exception as e:
-        print(f"Error creating Excel file: {e}")
         # Return empty Excel file as fallback
         excel_buffer = io.BytesIO()
         empty_df = pd.DataFrame({'Message': ['No data available']})
@@ -5457,6 +6764,9 @@ if __name__ == '__main__':
     # Initialize database
     init_database()
     
+    # Load insurance name mapping at startup
+    load_insurance_name_mapping()
+    
     # Start session cleanup thread
     def cleanup_sessions_periodically():
         while True:
@@ -5465,7 +6775,6 @@ if __name__ == '__main__':
                     cleanup_expired_sessions()
                 time.sleep(3600)  # Clean up every hour
             except Exception as e:
-                print(f"Error in session cleanup: {e}")
                 time.sleep(3600)
     
     cleanup_thread = threading.Thread(target=cleanup_sessions_periodically, daemon=True)

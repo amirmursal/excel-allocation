@@ -4443,7 +4443,7 @@ def detect_and_assign_new_insurance_companies(data_df, agent_data, insurance_car
         if not new_insurance_companies:
             return agent_data, []
         
-        # Find senior agents (those with 'senior' in their Insurance Working column)
+        # Find senior agents (those with 'senior' in their Insurance List column)
         senior_agents = []
         for idx, row in agent_data.iterrows():
             if pd.notna(row[insurance_working_col]):
@@ -4749,44 +4749,70 @@ def process_allocation_files_with_dates(allocation_df, data_df, selected_dates, 
         agent_summary = ""
         if allocation_df is not None:
             try:
-                # Get the first sheet from allocation data
-                agent_df = list(allocation_df.values())[0]
+                # Get the "main" sheet from allocation data, fallback to first sheet if "main" doesn't exist
+                agent_df = None
+                if 'main' in allocation_df:
+                    agent_df = allocation_df['main']
+                elif len(allocation_df) > 0:
+                    agent_df = list(allocation_df.values())[0]
                 
-                # Find agent name, counts, insurance working, insurance needs training, and email columns
+                if agent_df is None:
+                    agent_summary = "\n⚠️ No sheets found in allocation file."
+                    return processed_df, agent_summary
+                
+                # Find agent name, ID, counts, insurance list, exceptions, email, and role columns
                 agent_name_col = None
+                agent_id_col = None
                 counts_col = None
                 insurance_working_col = None
                 insurance_needs_training_col = None
                 email_col = None
+                role_col = None
                 for col in agent_df.columns:
                     col_lower = col.lower()
                     if 'agent' in col_lower and 'name' in col_lower:
                         agent_name_col = col
-                    elif 'count' in col_lower:
+                    elif col_lower == 'id':
+                        agent_id_col = col
+                    elif col_lower == 'tfd':
                         counts_col = col
-                    elif 'insurance' in col_lower and 'working' in col_lower:
+                    elif 'insurance' in col_lower and 'list' in col_lower:
                         insurance_working_col = col
-                    elif 'insurance' in col_lower and 'needs' in col_lower and 'training' in col_lower:
+                    elif 'exception' in col_lower:
                         insurance_needs_training_col = col
-                    elif 'email' in col_lower and 'address' in col_lower:
+                    elif 'email' in col_lower and 'id' in col_lower:
                         email_col = col
+                    elif col_lower == 'role' or col_lower == 'job role' or col_lower == 'position' or ('role' in col_lower and 'type' in col_lower):
+                        role_col = col
                 
                 if agent_name_col and counts_col:
                     # Get agent data with their capacities and insurance capabilities
                     columns_to_select = [agent_name_col, counts_col]
+                    if agent_id_col:
+                        columns_to_select.append(agent_id_col)
                     if insurance_working_col:
                         columns_to_select.append(insurance_working_col)
                     if insurance_needs_training_col:
                         columns_to_select.append(insurance_needs_training_col)
                     if email_col:
                         columns_to_select.append(email_col)
+                    if role_col:
+                        columns_to_select.append(role_col)
                     
                     agent_data = agent_df[columns_to_select].dropna(subset=[agent_name_col, counts_col])
                     
+                    # Filter out "Auditor" and "caller" roles
+                    if role_col:
+                        # Filter based on role column (case-insensitive)
+                        agent_data = agent_data[~agent_data[role_col].astype(str).str.lower().str.strip().isin(['auditor', 'caller'])]
+                    else:
+                        # If no role column found, check if agent name column contains these roles (case-insensitive)
+                        agent_data = agent_data[~agent_data[agent_name_col].astype(str).str.lower().str.strip().isin(['auditor', 'caller'])]
+                    
                     # Add empty columns if not found
                     if not insurance_working_col:
-                        agent_data['Insurance Working'] = ''
-                        insurance_working_col = 'Insurance Working'
+                        agent_data['Insurance List'] = ''
+                        insurance_working_col = 'Insurance List'
                     
                     # Detect and assign new insurance companies to senior agents
                     if insurance_carrier_col and insurance_working_col:
@@ -4796,8 +4822,8 @@ def process_allocation_files_with_dates(allocation_df, data_df, selected_dates, 
                         if new_insurance_companies:
                             agent_summary += f"\n🆕 New insurance companies detected and assigned to senior agents: {', '.join(new_insurance_companies)}"
                     if not insurance_needs_training_col:
-                        agent_data['Insurance Needs Training'] = ''
-                        insurance_needs_training_col = 'Insurance Needs Training'
+                        agent_data['Exceptions'] = ''
+                        insurance_needs_training_col = 'Exceptions'
                     
                     total_agents = len(agent_data)
                     
@@ -4816,7 +4842,15 @@ def process_allocation_files_with_dates(allocation_df, data_df, selected_dates, 
                     
                     # First, prepare agent data with their capabilities
                     for _, row in agent_data.iterrows():
-                        agent_name = row[agent_name_col]
+                        agent_name = str(row[agent_name_col]).strip() if pd.notna(row[agent_name_col]) else 'Unknown'
+                        
+                        # Create unique agent_id: Use ID if available, otherwise use name + index as fallback
+                        if agent_id_col and pd.notna(row[agent_id_col]):
+                            agent_id = str(row[agent_id_col]).strip()
+                        else:
+                            # Fallback: Use name + row index to ensure uniqueness
+                            agent_id = f"{agent_name}_{row.name}"
+                        
                         # Handle different data types in counts column
                         try:
                             if pd.notna(row[counts_col]):
@@ -4856,7 +4890,8 @@ def process_allocation_files_with_dates(allocation_df, data_df, selected_dates, 
                             agent_email = str(row[email_col]).strip()
                         
                         agent_allocations.append({
-                            'name': agent_name,
+                            'id': agent_id,  # Unique identifier (ID column or name + index)
+                            'name': agent_name,  # Display name
                             'capacity': capacity,
                             'allocated': 0,
                             'email': agent_email,
@@ -4960,6 +4995,7 @@ def process_allocation_files_with_dates(allocation_df, data_df, selected_dates, 
                         
                         for agent in agent_allocations:
                             insurance_list = agent.get('insurance_companies', [])
+                            agent_id = agent.get('id', agent.get('name', 'Unknown'))
                             agent_name = agent.get('name', 'Unknown')
                             
                             if insurance_list:
@@ -4974,13 +5010,13 @@ def process_allocation_files_with_dates(allocation_df, data_df, selected_dates, 
                                 has_ins_group = bool(agent_insurance_set.intersection(ins_group_set))
                                 if has_ins_group:
                                     agents_with_ins.append(agent_name)
-                                    ins_group_allocations[agent_name] = 0
+                                    ins_group_allocations[agent_id] = 0
                                 
                                 # Check if agent has any DD_TOOLKIT_GROUP companies
                                 has_toolkit_group = bool(agent_insurance_set.intersection(toolkit_group_set))
                                 if has_toolkit_group:
                                     agents_with_toolkit.append(agent_name)
-                                    toolkit_group_allocations[agent_name] = 0
+                                    toolkit_group_allocations[agent_id] = 0
                             else:
                                 if len(agents_with_ins) + len(agents_with_toolkit) < 5:
                                     pass
@@ -5035,20 +5071,20 @@ def process_allocation_files_with_dates(allocation_df, data_df, selected_dates, 
                                     
                                     if rows_to_assign > 0:
                                         # Allocate batch of rows to this senior agent
-                                        agent_name = senior_agent['name']
+                                        agent_id = senior_agent.get('id', senior_agent.get('name', 'Unknown'))
                                         for i in range(rows_to_assign):
                                             insurance_carrier, row_idx = priority_work[work_idx + i]
                                             senior_agent['row_indices'].append(row_idx)
                                             
                                             # Track INS and Toolkit group allocations (case-insensitive)
-                                            if agent_name in ins_group_allocations:
+                                            if agent_id in ins_group_allocations:
                                                 insurance_carrier_upper = insurance_carrier.upper().strip()
                                                 if any(insurance_carrier_upper == ic.upper().strip() for ic in DD_INS_GROUP):
-                                                    ins_group_allocations[agent_name] += 1
-                                            if agent_name in toolkit_group_allocations:
+                                                    ins_group_allocations[agent_id] += 1
+                                            if agent_id in toolkit_group_allocations:
                                                 insurance_carrier_upper = insurance_carrier.upper().strip()
                                                 if any(insurance_carrier_upper == ic.upper().strip() for ic in DD_TOOLKIT_GROUP):
-                                                    toolkit_group_allocations[agent_name] += 1
+                                                    toolkit_group_allocations[agent_id] += 1
                                         
                                         senior_agent['allocated'] += rows_to_assign
                                         work_idx += rows_to_assign
@@ -5091,16 +5127,16 @@ def process_allocation_files_with_dates(allocation_df, data_df, selected_dates, 
                                                 if available_capacity > 0:
                                                     rows_to_assign = min(available_capacity, len(row_indices) - row_idx)
                                                     if rows_to_assign > 0:
-                                                        agent_name = senior_agent['name']
+                                                        agent_id = senior_agent.get('id', senior_agent.get('name', 'Unknown'))
                                                         # Track INS and Toolkit group allocations (case-insensitive)
                                                         insurance_carrier_upper = insurance_carrier.upper().strip()
                                                         for assigned_idx in range(row_idx, row_idx + rows_to_assign):
-                                                            if agent_name in ins_group_allocations:
+                                                            if agent_id in ins_group_allocations:
                                                                 if any(insurance_carrier_upper == ic.upper().strip() for ic in DD_INS_GROUP):
-                                                                    ins_group_allocations[agent_name] += 1
-                                                            if agent_name in toolkit_group_allocations:
+                                                                    ins_group_allocations[agent_id] += 1
+                                                            if agent_id in toolkit_group_allocations:
                                                                 if any(insurance_carrier_upper == ic.upper().strip() for ic in DD_TOOLKIT_GROUP):
-                                                                    toolkit_group_allocations[agent_name] += 1
+                                                                    toolkit_group_allocations[agent_id] += 1
                                                         
                                                         senior_agent['row_indices'].extend(row_indices[row_idx:row_idx + rows_to_assign])
                                                         senior_agent['allocated'] += rows_to_assign
@@ -5208,16 +5244,16 @@ def process_allocation_files_with_dates(allocation_df, data_df, selected_dates, 
                                                 agent['allocated'] += actual_rows
                                                 
                                                 # Track INS and Toolkit group allocations (case-insensitive)
-                                                agent_name = agent['name']
+                                                agent_id = agent.get('id', agent.get('name', 'Unknown'))
                                                 insurance_carrier_upper = insurance_carrier.upper().strip()
-                                                if agent_name in ins_group_allocations:
+                                                if agent_id in ins_group_allocations:
                                                     # Check if this insurance carrier is in DD_INS_GROUP
                                                     if any(insurance_carrier_upper == ic.upper().strip() for ic in DD_INS_GROUP):
-                                                        ins_group_allocations[agent_name] += actual_rows
-                                                if agent_name in toolkit_group_allocations:
+                                                        ins_group_allocations[agent_id] += actual_rows
+                                                if agent_id in toolkit_group_allocations:
                                                     # Check if this insurance carrier is in DD_TOOLKIT_GROUP
                                                     if any(insurance_carrier_upper == ic.upper().strip() for ic in DD_TOOLKIT_GROUP):
-                                                        toolkit_group_allocations[agent_name] += actual_rows
+                                                        toolkit_group_allocations[agent_id] += actual_rows
                                                 
                                                 row_idx += actual_rows
                     else:
@@ -5248,7 +5284,10 @@ def process_allocation_files_with_dates(allocation_df, data_df, selected_dates, 
                     
                     if ins_group_allocations:
                         total_ins = sum(ins_group_allocations.values())
-                        for agent_name, count in sorted(ins_group_allocations.items()):
+                        # Create mapping from agent_id to agent_name for display
+                        agent_id_to_name = {a.get('id', a.get('name')): a.get('name') for a in agent_allocations}
+                        for agent_id, count in sorted(ins_group_allocations.items()):
+                            agent_name = agent_id_to_name.get(agent_id, agent_id)
                             pass
                         if total_ins == 0:
                             pass
@@ -5257,7 +5296,10 @@ def process_allocation_files_with_dates(allocation_df, data_df, selected_dates, 
                     
                     if toolkit_group_allocations:
                         total_toolkit = sum(toolkit_group_allocations.values())
-                        for agent_name, count in sorted(toolkit_group_allocations.items()):
+                        # Create mapping from agent_id to agent_name for display
+                        agent_id_to_name = {a.get('id', a.get('name')): a.get('name') for a in agent_allocations}
+                        for agent_id, count in sorted(toolkit_group_allocations.items()):
+                            agent_name = agent_id_to_name.get(agent_id, agent_id)
                             pass
                         if total_toolkit == 0:
                             pass
@@ -5336,16 +5378,16 @@ def process_allocation_files_with_dates(allocation_df, data_df, selected_dates, 
                 elif not agent_name_col:
                     agent_summary = "\n⚠️ Agent Name column not found in allocation file."
                 elif not counts_col:
-                    agent_summary = "\n⚠️ Counts column not found in allocation file."
+                    agent_summary = "\n⚠️ TFD column not found in allocation file."
                 
                 # Add information about insurance matching
                 if insurance_carrier_col and insurance_working_col:
                     training_info = f" and '{insurance_needs_training_col}'" if insurance_needs_training_col else ""
                     agent_summary += f"\n✅ Insurance capability matching enabled using '{insurance_working_col}'{training_info} and '{insurance_carrier_col}' columns."
                 elif insurance_carrier_col and not insurance_working_col:
-                    agent_summary += f"\n⚠️ Insurance carrier column '{insurance_carrier_col}' found, but 'Insurance Working' column not found in allocation file."
+                    agent_summary += f"\n⚠️ Insurance carrier column '{insurance_carrier_col}' found, but 'Insurance List' column not found in allocation file."
                 elif not insurance_carrier_col and insurance_working_col:
-                    agent_summary += f"\n⚠️ 'Insurance Working' column found, but 'Dental Primary Ins Carr' column not found in data file."
+                    agent_summary += f"\n⚠️ 'Insurance List' column found, but 'Dental Primary Ins Carr' column not found in data file."
                 else:
                     agent_summary += f"\nℹ️ Insurance capability matching disabled - using simple capacity-based allocation."
                 
@@ -5602,17 +5644,24 @@ def upload_allocation_file():
         # Load Excel file
         allocation_data = pd.read_excel(filename, sheet_name=None)
         
-        # Format insurance company names in "Insurance Working" column for better allocation matching
-        for sheet_name, df in allocation_data.items():
-            # Find the Insurance Working column (case-insensitive)
+        # Focus on "main" sheet if it exists, otherwise use all sheets
+        sheets_to_process = {}
+        if 'main' in allocation_data:
+            sheets_to_process['main'] = allocation_data['main']
+        else:
+            sheets_to_process = allocation_data
+        
+        # Format insurance company names in "Insurance List" column for better allocation matching
+        for sheet_name, df in sheets_to_process.items():
+            # Find the Insurance List column (case-insensitive)
             insurance_working_col = None
             for col in df.columns:
-                if 'insurance' in col.lower() and 'working' in col.lower():
+                if 'insurance' in col.lower() and 'list' in col.lower():
                     insurance_working_col = col
                     break
             
             if insurance_working_col:
-                # Format each value in Insurance Working column (which may contain multiple companies separated by ; or ,)
+                # Format each value in Insurance List column (which may contain multiple companies separated by ; or ,)
                 def format_insurance_list(value):
                     if pd.isna(value):
                         return value
@@ -5642,12 +5691,19 @@ def upload_allocation_file():
                 # Then expand insurance groups (DD INS/INS and DD Toolkit/Toolkits/DD)
                 df[insurance_working_col] = df[insurance_working_col].apply(expand_insurance_groups)
                 
-                allocation_data[sheet_name] = df
+                if 'main' in allocation_data:
+                    allocation_data['main'] = df
+                else:
+                    allocation_data[sheet_name] = df
         
         allocation_filename = filename
         
-        processing_result = f"✅ Allocation file uploaded successfully! Loaded {len(allocation_data)} sheets: {', '.join(list(allocation_data.keys()))}"
-        flash(f'Allocation file uploaded successfully! Loaded {len(allocation_data)} sheets: {", ".join(list(allocation_data.keys()))}', 'success')
+        # Update allocation_data to only include processed sheets
+        if 'main' in allocation_data:
+            allocation_data = {'main': allocation_data['main']}
+        
+        processing_result = f"✅ Allocation file uploaded successfully! Loaded {len(allocation_data)} sheet(s): {', '.join(list(allocation_data.keys()))}"
+        flash(f'Allocation file uploaded successfully! Loaded {len(allocation_data)} sheet(s): {", ".join(list(allocation_data.keys()))}', 'success')
         
         # Clean up uploaded file
         if os.path.exists(filename):
@@ -6166,18 +6222,34 @@ def get_agent_allocation():
     if not data_file_data or not agent_allocations_data:
         return jsonify({'error': 'No data available'}), 400
     
+    agent_id = request.json.get('agent_id')
     agent_name = request.json.get('agent_name')
     
-    if not agent_name:
-        return jsonify({'error': 'No agent specified'}), 400
+    if not agent_id and not agent_name:
+        return jsonify({'error': 'No agent specified (agent_id or agent_name required)'}), 400
     
     try:
         # Find the agent in allocations data
         agent_info = None
-        for agent in agent_allocations_data:
-            if agent['name'] == agent_name:
-                agent_info = agent
-                break
+        
+        # First try to find by agent_id if provided (most reliable)
+        if agent_id:
+            for agent in agent_allocations_data:
+                if agent.get('id') == agent_id:
+                    agent_info = agent
+                    break
+        
+        # If not found by ID and name is provided, try by name
+        if not agent_info and agent_name:
+            matching_agents = [agent for agent in agent_allocations_data if agent.get('name') == agent_name]
+            if len(matching_agents) == 1:
+                agent_info = matching_agents[0]
+            elif len(matching_agents) > 1:
+                # Multiple agents with same name - require agent_id
+                return jsonify({
+                    'error': f'Multiple agents found with name "{agent_name}". Please use agent_id instead.',
+                    'agents': [{'id': a.get('id'), 'name': a.get('name')} for a in matching_agents]
+                }), 400
         
         if not agent_info:
             return jsonify({'error': 'Agent not found'}), 404
@@ -6214,7 +6286,8 @@ def get_agent_allocation():
         
         return jsonify({
             'success': True,
-            'agent_name': agent_name,
+            'agent_id': agent_info.get('id'),
+            'agent_name': agent_info.get('name'),
             'html_table': html_table,
             'stats': {
                 'total_rows': total_rows,
@@ -6236,10 +6309,33 @@ def download_agent_file():
     if not data_file_data or not agent_allocations_data:
         return jsonify({'error': 'No data available for download'}), 400
     
+    agent_id = request.form.get('agent_id')
     agent_name = request.form.get('agent_name')
     
-    if not agent_name:
-        return jsonify({'error': 'No agent specified'}), 400
+    if not agent_id and not agent_name:
+        return jsonify({'error': 'No agent specified (agent_id or agent_name required)'}), 400
+    
+    # Find the agent
+    agent_info = None
+    if agent_id:
+        for agent in agent_allocations_data:
+            if agent.get('id') == agent_id:
+                agent_info = agent
+                break
+    if not agent_info and agent_name:
+        matching_agents = [agent for agent in agent_allocations_data if agent.get('name') == agent_name]
+        if len(matching_agents) == 1:
+            agent_info = matching_agents[0]
+        elif len(matching_agents) > 1:
+            return jsonify({
+                'error': f'Multiple agents found with name "{agent_name}". Please use agent_id instead.',
+                'agents': [{'id': a.get('id'), 'name': a.get('name')} for a in matching_agents]
+            }), 400
+    
+    if not agent_info:
+        return jsonify({'error': 'Agent not found'}), 404
+    
+    agent_name = agent_info.get('name', 'Unknown')
     
     # Generate filename with agent name and today's date
     from datetime import datetime
@@ -6247,15 +6343,6 @@ def download_agent_file():
     filename = f"{agent_name}_{today}.xlsx"
     
     try:
-        # Find the agent in allocations data
-        agent_info = None
-        for agent in agent_allocations_data:
-            if agent['name'] == agent_name:
-                agent_info = agent
-                break
-        
-        if not agent_info:
-            return jsonify({'error': 'Agent not found'}), 404
         
         # Get the processed data
         processed_df = list(data_file_data.values())[0]
@@ -6326,17 +6413,29 @@ def download_agent_file():
 def send_approval_email():
     try:
         data = request.get_json()
+        agent_id = data.get('agent_id')
         agent_name = data.get('agent_name')
         
-        if not agent_name or not agent_allocations_data:
-            return jsonify({'success': False, 'message': 'Agent name or allocation data not found'})
+        if (not agent_id and not agent_name) or not agent_allocations_data:
+            return jsonify({'success': False, 'message': 'Agent ID or name required'})
         
         # Find the agent in the allocation data
         agent_info = None
-        for agent in agent_allocations_data:
-            if agent['name'] == agent_name:
-                agent_info = agent
-                break
+        if agent_id:
+            for agent in agent_allocations_data:
+                if agent.get('id') == agent_id:
+                    agent_info = agent
+                    break
+        if not agent_info and agent_name:
+            matching_agents = [agent for agent in agent_allocations_data if agent.get('name') == agent_name]
+            if len(matching_agents) == 1:
+                agent_info = matching_agents[0]
+            elif len(matching_agents) > 1:
+                return jsonify({
+                    'success': False,
+                    'message': f'Multiple agents found with name "{agent_name}". Please use agent_id instead.',
+                    'agents': [{'id': a.get('id'), 'name': a.get('name')} for a in matching_agents]
+                })
         
         if not agent_info:
             return jsonify({'success': False, 'message': 'Agent not found'})

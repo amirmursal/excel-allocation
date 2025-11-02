@@ -24,6 +24,10 @@ from dotenv import load_dotenv
 from google.auth.transport import requests
 from google.oauth2 import id_token
 import requests as req
+# Scheduler for reminder emails
+from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.triggers.interval import IntervalTrigger
+from apscheduler.triggers.cron import CronTrigger
 
 # Load environment variables
 load_dotenv()
@@ -59,6 +63,9 @@ app.config['MAIL_DEFAULT_SENDER'] = 'amirmursal@gmail.com'
 
 # Initialize Flask-Mail
 mail = Mail(app)
+
+# Global variable to store agent allocations data for reminders
+agent_allocations_for_reminders = None
 
 # Google OAuth Configuration
 GOOGLE_CLIENT_ID = os.environ.get('GOOGLE_CLIENT_ID')
@@ -1778,7 +1785,10 @@ HTML_TEMPLATE = """
                         <h3>👥 Agent Allocation Overview</h3>
                         <p>View and manage agent allocations. Each agent has been assigned specific rows based on their capacity and the allocation rules.</p>
                         
-                        <div style="margin-bottom: 15px; text-align: right;">
+                        <div style="margin-bottom: 15px; text-align: right; display: flex; gap: 10px; justify-content: flex-end;">
+                            <button type="button" class="process-btn" style="background: linear-gradient(135deg, #3498db, #2980b9); font-size: 14px; padding: 10px 20px; border: none; border-radius: 6px; color: white; cursor: pointer; transition: transform 0.2s; font-weight: 600;" onclick="viewShiftTimes()" id="view-shift-btn">
+                                <i class="fas fa-clock"></i> View Shift Times
+                            </button>
                             <button type="button" class="process-btn" style="background: linear-gradient(135deg, #27ae60, #2ecc71); font-size: 14px; padding: 10px 20px; border: none; border-radius: 6px; color: white; cursor: pointer; transition: transform 0.2s; font-weight: 600;" onclick="approveAllAllocations()" id="approve-all-btn">
                                 <i class="fas fa-check-double"></i> Approve All Allocations
                             </button>
@@ -1826,6 +1836,19 @@ HTML_TEMPLATE = """
                         </div>
                     </div>
                     {% endif %}
+                    
+                    <!-- Shift Times Modal -->
+                    <div id="shiftTimesModal" class="modal" style="display: none; position: fixed; z-index: 1000; left: 0; top: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.5);">
+                        <div class="modal-content" style="background-color: #fefefe; margin: 5% auto; padding: 0; border: none; border-radius: 10px; width: 90%; max-width: 1400px; max-height: 85vh; overflow: hidden; box-shadow: 0 10px 40px rgba(0,0,0,0.3);">
+                            <div style="background: linear-gradient(135deg, #3498db, #2980b9); color: white; padding: 20px; border-radius: 10px 10px 0 0; display: flex; justify-content: space-between; align-items: center;">
+                                <h2 style="margin: 0; font-size: 1.5em;"><i class="fas fa-clock"></i> Agent Shift Times</h2>
+                                <span class="close" onclick="document.getElementById('shiftTimesModal').style.display='none'" style="color: white; font-size: 28px; font-weight: bold; cursor: pointer; line-height: 1;">&times;</span>
+                            </div>
+                            <div style="padding: 20px; max-height: calc(85vh - 80px); overflow-y: auto;" id="shiftTimesContent">
+                                <!-- Content will be loaded here -->
+                            </div>
+                        </div>
+                    </div>
                     
                     <!-- Agent Allocation Modal -->
                     <div id="agentModal" class="modal" style="display: none; position: fixed; z-index: 1000; left: 0; top: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.5);">
@@ -2799,28 +2822,28 @@ HTML_TEMPLATE = """
                 if (typeof selectedSecondDates === 'undefined') {
                     selectedSecondDates = new Set();
                 }
-                
-                let html = `
-                    <div style="text-align: center; margin-bottom: 20px;">
-                        <p>Click on dates to select them for First Priority:</p>
-                    </div>
-                    <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 10px; max-height: 300px; overflow-y: auto;">
-                `;
-                
+            
+            let html = `
+                <div style="text-align: center; margin-bottom: 20px;">
+                    <p>Click on dates to select them for First Priority:</p>
+                </div>
+                <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 10px; max-height: 300px; overflow-y: auto;">
+            `;
+            
                 datesWithCounts.forEach((dateData, index) => {
                     const date = dateData.date;
                     const rowCount = dateData.row_count || 0;
-                    const dateObj = new Date(date);
-                    const dayName = dateObj.toLocaleDateString('en-US', { weekday: 'long' });
-                    const formattedDate = dateObj.toLocaleDateString('en-US', { 
-                        year: 'numeric', 
-                        month: 'short', 
-                        day: 'numeric' 
-                    });
-                    
-                    const isSelectedInFirst = selectedDates.has(date);
-                    const isSelectedInSecond = selectedSecondDates.has(date);
-                    const isDisabled = isSelectedInSecond;
+                const dateObj = new Date(date);
+                const dayName = dateObj.toLocaleDateString('en-US', { weekday: 'long' });
+                const formattedDate = dateObj.toLocaleDateString('en-US', { 
+                    year: 'numeric', 
+                    month: 'short', 
+                    day: 'numeric' 
+                });
+                
+                const isSelectedInFirst = selectedDates.has(date);
+                const isSelectedInSecond = selectedSecondDates.has(date);
+                const isDisabled = isSelectedInSecond;
                 
                 let itemStyle = 'display: flex; align-items: center; padding: 10px; border: 2px solid #e0e0e0; border-radius: 8px; background: #f9f9f9; cursor: pointer; transition: all 0.3s;';
                 let textStyle = 'font-weight: bold; font-size: 16px;';
@@ -2853,10 +2876,10 @@ HTML_TEMPLATE = """
                 `;
             });
             
-                html += '</div>';
-                calendarContainer.innerHTML = html;
-                // Sync checkboxes to current selection
-                syncFallbackCheckboxes();
+            html += '</div>';
+            calendarContainer.innerHTML = html;
+            // Sync checkboxes to current selection
+            syncFallbackCheckboxes();
             } catch (error) {
                 console.error('Error displaying dates (First Priority):', error);
                 console.error('Error details:', error.message, error.stack);
@@ -2886,28 +2909,28 @@ HTML_TEMPLATE = """
                 if (typeof selectedSecondDates === 'undefined') {
                     selectedSecondDates = new Set();
                 }
-                
-                let html = `
-                    <div style="text-align: center; margin-bottom: 20px;">
-                        <p>Click on dates to select them for Second Priority:</p>
-                    </div>
-                    <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 10px; max-height: 300px; overflow-y: auto;">
-                `;
+            
+            let html = `
+                <div style="text-align: center; margin-bottom: 20px;">
+                    <p>Click on dates to select them for Second Priority:</p>
+                </div>
+                <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 10px; max-height: 300px; overflow-y: auto;">
+            `;
             
                 datesWithCounts.forEach((dateData, index) => {
                     const date = dateData.date;
                     const rowCount = dateData.row_count || 0;
-                    const dateObj = new Date(date);
-                    const dayName = dateObj.toLocaleDateString('en-US', { weekday: 'long' });
-                    const formattedDate = dateObj.toLocaleDateString('en-US', { 
-                        year: 'numeric', 
-                        month: 'short', 
-                        day: 'numeric' 
-                    });
-                    
-                    const isSelectedInFirst = selectedDates.has(date);
-                    const isSelectedInSecond = selectedSecondDates.has(date);
-                    const isDisabled = isSelectedInFirst;
+                const dateObj = new Date(date);
+                const dayName = dateObj.toLocaleDateString('en-US', { weekday: 'long' });
+                const formattedDate = dateObj.toLocaleDateString('en-US', { 
+                    year: 'numeric', 
+                    month: 'short', 
+                    day: 'numeric' 
+                });
+                
+                const isSelectedInFirst = selectedDates.has(date);
+                const isSelectedInSecond = selectedSecondDates.has(date);
+                const isDisabled = isSelectedInFirst;
                 
                 let itemStyle = 'display: flex; align-items: center; padding: 10px; border: 2px solid #e0e0e0; border-radius: 8px; background: #f9f9f9; cursor: pointer; transition: all 0.3s;';
                 let textStyle = 'font-weight: bold; font-size: 16px;';
@@ -2940,10 +2963,10 @@ HTML_TEMPLATE = """
                 `;
             });
             
-                html += '</div>';
-                calendarContainer.innerHTML = html;
-                // Sync checkboxes to current selection
-                syncFallbackCheckboxesSecond();
+            html += '</div>';
+            calendarContainer.innerHTML = html;
+            // Sync checkboxes to current selection
+            syncFallbackCheckboxesSecond();
             } catch (error) {
                 console.error('Error displaying dates (Second Priority):', error);
                 console.error('Error details:', error.message, error.stack);
@@ -3439,6 +3462,74 @@ HTML_TEMPLATE = """
                     showErrorToast('Error', `Error approving allocations: ${error.message}`);
                 });
             }
+        }
+        
+        function viewShiftTimes() {
+            // Show modal
+            const modal = document.getElementById('shiftTimesModal');
+            if (!modal) {
+                showErrorToast('Error', 'Shift times modal not found');
+                return;
+            }
+            modal.style.display = 'block';
+            
+            // Show loading state
+            const modalContent = document.getElementById('shiftTimesContent');
+            modalContent.innerHTML = `
+                <div style="text-align: center; padding: 40px;">
+                    <i class="fas fa-spinner fa-spin" style="font-size: 2em; color: #667eea;"></i>
+                    <p style="margin-top: 15px; color: #666;">Loading shift information...</p>
+                </div>
+            `;
+            
+            // Fetch shift times
+            fetch('/view_shift_times', {
+                method: 'GET',
+                headers: {
+                    'Content-Type': 'application/json',
+                }
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    let html = `<h3 style="margin-top: 0; color: #333;">⏰ Shift Times Overview (${data.total_agents} agents)</h3>`;
+                    html += `<div style="overflow-x: auto; margin-top: 15px;">`;
+                    html += `<table class="modal-table" style="width: 100%; border-collapse: collapse;">`;
+                    html += `<thead><tr style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white;">`;
+                    html += `<th style="padding: 12px; text-align: center;">Sr No</th>`;
+                    html += `<th style="padding: 12px; text-align: left;">Agent Name</th>`;
+                    html += `<th style="padding: 12px; text-align: left;">Email</th>`;
+                    html += `<th style="padding: 12px; text-align: center;">Original Shift Time</th>`;
+                    html += `<th style="padding: 12px; text-align: center;">Parsed Start Time</th>`;
+                    html += `<th style="padding: 12px; text-align: center;">Shift Group</th>`;
+                    html += `<th style="padding: 12px; text-align: center;">Capacity</th>`;
+                    html += `<th style="padding: 12px; text-align: center;">Allocated</th>`;
+                    html += `</tr></thead><tbody>`;
+                    
+                    data.agents.forEach((agent, index) => {
+                        const rowColor = agent.shift_start_time_parsed === 'Not parsed' ? '#fff3cd' : 'white';
+                        html += `<tr style="background-color: ${rowColor}; border-bottom: 1px solid #e9ecef;">`;
+                        html += `<td style="padding: 10px; text-align: center; font-weight: 600; color: #667eea;">${index + 1}</td>`;
+                        html += `<td style="padding: 10px;"><strong>${agent.agent_name || 'N/A'}</strong><br><small style="color: #666;">ID: ${agent.agent_id || 'N/A'}</small></td>`;
+                        html += `<td style="padding: 10px;">${agent.email || 'Not set'}</td>`;
+                        html += `<td style="padding: 10px; text-align: center;"><code>${agent.shift_time_original || 'Not set'}</code></td>`;
+                        html += `<td style="padding: 10px; text-align: center;"><strong style="color: ${agent.shift_start_time_parsed === 'Not parsed' ? '#dc3545' : '#28a745'};">${agent.shift_start_time_display || 'Not parsed'}</strong></td>`;
+                        html += `<td style="padding: 10px; text-align: center;"><span style="background: ${agent.shift_group === 1 ? '#e3f2fd' : agent.shift_group === 2 ? '#fff3cd' : '#f3e5f5'}; padding: 5px 10px; border-radius: 4px; font-size: 12px;">${agent.shift_group_name || 'Not set'}</span></td>`;
+                        html += `<td style="padding: 10px; text-align: center;">${agent.capacity || 0}</td>`;
+                        html += `<td style="padding: 10px; text-align: center;">${agent.allocated || 0}</td>`;
+                        html += `</tr>`;
+                    });
+                    
+                    html += `</tbody></table></div>`;
+                    
+                    modalContent.innerHTML = html;
+                } else {
+                    modalContent.innerHTML = `<div style="padding: 20px; color: #dc3545;"><strong>Error:</strong> ${data.error || 'Failed to load shift times'}</div>`;
+                }
+            })
+            .catch(error => {
+                modalContent.innerHTML = `<div style="padding: 20px; color: #dc3545;"><strong>Error:</strong> ${error.message}</div>`;
+            });
         }
         
         function viewAgentAllocation(agentName) {
@@ -4760,7 +4851,7 @@ def process_allocation_files_with_dates(allocation_df, data_df, selected_dates, 
                     agent_summary = "\n⚠️ No sheets found in allocation file."
                     return processed_df, agent_summary
                 
-                # Find agent name, ID, counts, insurance list, exceptions, email, and role columns
+                # Find agent name, ID, counts, insurance list, exceptions, email, role, shift time, and shift group columns
                 agent_name_col = None
                 agent_id_col = None
                 counts_col = None
@@ -4768,6 +4859,8 @@ def process_allocation_files_with_dates(allocation_df, data_df, selected_dates, 
                 insurance_needs_training_col = None
                 email_col = None
                 role_col = None
+                shift_time_col = None
+                shift_group_col = None
                 for col in agent_df.columns:
                     col_lower = col.lower()
                     if 'agent' in col_lower and 'name' in col_lower:
@@ -4784,6 +4877,10 @@ def process_allocation_files_with_dates(allocation_df, data_df, selected_dates, 
                         email_col = col
                     elif col_lower == 'role' or col_lower == 'job role' or col_lower == 'position' or ('role' in col_lower and 'type' in col_lower):
                         role_col = col
+                    elif 'shift' in col_lower and 'time' in col_lower:
+                        shift_time_col = col
+                    elif 'shift' in col_lower and 'group' in col_lower:
+                        shift_group_col = col
                 
                 if agent_name_col and counts_col:
                     # Get agent data with their capacities and insurance capabilities
@@ -4798,6 +4895,10 @@ def process_allocation_files_with_dates(allocation_df, data_df, selected_dates, 
                         columns_to_select.append(email_col)
                     if role_col:
                         columns_to_select.append(role_col)
+                    if shift_time_col:
+                        columns_to_select.append(shift_time_col)
+                    if shift_group_col:
+                        columns_to_select.append(shift_group_col)
                     
                     agent_data = agent_df[columns_to_select].dropna(subset=[agent_name_col, counts_col])
                     
@@ -4889,6 +4990,160 @@ def process_allocation_files_with_dates(allocation_df, data_df, selected_dates, 
                         if email_col and pd.notna(row[email_col]):
                             agent_email = str(row[email_col]).strip()
                         
+                        # Get shift group (1=day, 2=afternoon, 3=night) to help parse ambiguous times
+                        shift_group = None
+                        if shift_group_col and pd.notna(row[shift_group_col]):
+                            try:
+                                shift_group = int(float(str(row[shift_group_col]).strip()))
+                            except (ValueError, TypeError):
+                                shift_group = None
+                        
+                        # Parse shift time (could be a range like "10-7pm", "1-10pm", "7-5 am")
+                        shift_start_time = None
+                        if shift_time_col and pd.notna(row[shift_time_col]):
+                            shift_time_str = str(row[shift_time_col]).strip()
+                            try:
+                                from datetime import time as dt_time
+                                import re
+                                
+                                # Try parsing various time formats
+                                if isinstance(row[shift_time_col], pd.Timestamp):
+                                    shift_start_time = row[shift_time_col].time()
+                                elif '-' in shift_time_str:
+                                    # Parse time range (e.g., "10-7pm", "1-10pm", "7-5 am", "10am-7pm")
+                                    # Extract start time (first part before the dash)
+                                    parts = shift_time_str.split('-')
+                                    if len(parts) >= 2:
+                                        start_time_str = parts[0].strip()
+                                        end_time_str = parts[1].strip()
+                                        
+                                        # Check if end time has AM/PM indicator
+                                        has_end_am = 'am' in end_time_str.lower()
+                                        has_end_pm = 'pm' in end_time_str.lower()
+                                        has_start_am = 'am' in start_time_str.lower()
+                                        has_start_pm = 'pm' in start_time_str.lower()
+                                        
+                                        # Extract start hour (could be just a number like "10" or "7")
+                                        start_match = re.search(r'(\d{1,2})', start_time_str)
+                                        if start_match:
+                                            hour = int(start_match.group(1))
+                                            minute = 0  # Default to 0 minutes if not specified
+                                            
+                                            # Check for explicit AM/PM in start time
+                                            if has_start_am:
+                                                if hour == 12:
+                                                    hour = 0  # 12 AM = 0
+                                            elif has_start_pm:
+                                                if hour != 12:
+                                                    hour += 12  # Convert to 24-hour format
+                                            else:
+                                                # No AM/PM in start time - infer from context using Shift Group if available
+                                                # Extract end hour for comparison
+                                                end_match = re.search(r'(\d{1,2})', end_time_str)
+                                                if end_match:
+                                                    end_hour_12 = int(end_match.group(1))  # 12-hour format
+                                                    
+                                                    # Use Shift Group to help determine AM/PM (1=day, 2=afternoon, 3=night)
+                                                    if shift_group == 1:
+                                                        # Day shift: typically starts in AM (morning, e.g., 8-5pm, 10-7pm)
+                                                        # If hour >= end_hour_12, it's likely AM (day shift starts morning)
+                                                        if hour >= end_hour_12:
+                                                            pass  # Keep as AM
+                                                        else:
+                                                            # If start < end, could still be AM for day shift
+                                                            pass  # Keep as AM
+                                                    elif shift_group == 2:
+                                                        # Afternoon shift: typically starts in PM (afternoon, e.g., 1-10pm, 3-6pm)
+                                                        # But can also start in late AM and extend into evening (e.g., 11-8pm = 11 AM to 8 PM)
+                                                        if hour >= end_hour_12:
+                                                            # Start >= end, likely AM (e.g., "11-8pm" = 11 AM to 8 PM)
+                                                            pass  # Keep as AM
+                                                        else:
+                                                            # Start < end, likely PM (e.g., "1-10pm" = 1 PM to 10 PM, "6-10pm" = 6 PM to 10 PM)
+                                                            if hour != 12:
+                                                                hour += 12  # Convert to PM
+                                                    elif shift_group == 3:
+                                                        # Night shift: can start in PM and go into AM (e.g., 7-5 am, 10-7am)
+                                                        if has_end_am:
+                                                            # End is AM - if start >= end, it's overnight (start is PM)
+                                                            if hour >= end_hour_12:
+                                                                if hour != 12:
+                                                                    hour += 12  # Overnight shift - start is PM
+                                                            else:
+                                                                # Start < end AM, likely same day AM
+                                                                if hour == 12:
+                                                                    hour = 0
+                                                        elif has_end_pm:
+                                                            # End is PM - night shift might start late PM
+                                                            if hour < end_hour_12:
+                                                                if hour != 12:
+                                                                    hour += 12  # Late PM start
+                                                            else:
+                                                                # Hour >= end, might be early AM (unusual but possible)
+                                                                pass  # Keep as AM
+                                                    
+                                                    # If no shift group, use original logic
+                                                    if shift_group is None:
+                                                        # Infer start time AM/PM using original heuristics
+                                                        if has_end_am:
+                                                            # End is AM (e.g., "7-5 am", "10-6 am")
+                                                            # If start hour >= end hour, it's likely an overnight shift (start is PM)
+                                                            # If start hour < end hour, it's likely same day (start is AM)
+                                                            if hour >= end_hour_12:
+                                                                # Overnight shift - start is PM (e.g., "7-5 am" = 7 PM to 5 AM)
+                                                                if hour != 12:
+                                                                    hour += 12  # Convert to PM (24-hour format)
+                                                                # If hour is 12, it's 12 PM (noon)
+                                                            else:
+                                                                # Same day shift - start is AM (e.g., "2-5 am" = 2 AM to 5 AM)
+                                                                if hour == 12:
+                                                                    hour = 0  # 12 AM
+                                                                # Otherwise keep hour as is (AM)
+                                                        elif has_end_pm:
+                                                            # End is PM
+                                                            # If start hour < end hour (both in 12-hour format), likely both PM (e.g., "1-10pm")
+                                                            # If start hour >= end hour, likely start AM and end PM (e.g., "10-7pm", "9-5pm")
+                                                            if hour >= end_hour_12 and hour < 12:
+                                                                # Start hour is >= end hour, likely AM (day shift)
+                                                                pass  # Keep as is (AM)
+                                                            elif hour < end_hour_12:
+                                                                # Start hour < end hour, likely PM (afternoon/evening shift)
+                                                                if hour != 12:
+                                                                    hour += 12
+                                                            elif hour == 12:
+                                                                # Start is 12, check if end is also 12 or less
+                                                                if end_hour_12 == 12:
+                                                                    hour = 12  # Noon to noon (unlikely but handle it)
+                                                                else:
+                                                                    hour = 12  # 12 PM (noon)
+                                            
+                                            # Check for minutes in start time (e.g., "10:30-7pm")
+                                            minute_match = re.search(r':(\d{2})', start_time_str)
+                                            if minute_match:
+                                                minute = int(minute_match.group(1))
+                                            
+                                            shift_start_time = dt_time(hour % 24, minute)
+                                        
+                                elif ':' in shift_time_str:
+                                    # Parse single time string (e.g., "09:00", "9:00 AM", "09:00:00")
+                                    time_match = re.search(r'(\d{1,2}):(\d{2})', shift_time_str)
+                                    if time_match:
+                                        hour = int(time_match.group(1))
+                                        minute = int(time_match.group(2))
+                                        # Check for AM/PM
+                                        if 'pm' in shift_time_str.lower() and hour != 12:
+                                            hour += 12
+                                        elif 'am' in shift_time_str.lower() and hour == 12:
+                                            hour = 0
+                                        shift_start_time = dt_time(hour, minute)
+                            except Exception as e:
+                                shift_start_time = None
+                        
+                        # Store original shift time for admin review
+                        original_shift_time = None
+                        if shift_time_col and pd.notna(row[shift_time_col]):
+                            original_shift_time = str(row[shift_time_col]).strip()
+                        
                         agent_allocations.append({
                             'id': agent_id,  # Unique identifier (ID column or name + index)
                             'name': agent_name,  # Display name
@@ -4898,6 +5153,9 @@ def process_allocation_files_with_dates(allocation_df, data_df, selected_dates, 
                             'insurance_companies': insurance_companies,
                             'insurance_needs_training': insurance_needs_training,
                             'is_senior': is_senior,
+                            'shift_start_time': shift_start_time.strftime('%H:%M') if shift_start_time else None,  # Store as HH:MM string
+                            'shift_time_original': original_shift_time,  # Original shift time value from Excel
+                            'shift_group': shift_group,  # Shift group (1=day, 2=afternoon, 3=night)
                             'row_indices': []
                         })
                     
@@ -5324,6 +5582,10 @@ def process_allocation_files_with_dates(allocation_df, data_df, selected_dates, 
                     
                     # Store agent allocations data globally for individual downloads
                     agent_allocations_data = agent_allocations
+                    
+                    # Also store for reminder system
+                    global agent_allocations_for_reminders
+                    agent_allocations_for_reminders = agent_allocations
                     
                     # Calculate allocation statistics
                     total_allocated = sum(a['allocated'] for a in agent_allocations)
@@ -6331,10 +6593,10 @@ def download_agent_file():
                 'error': f'Multiple agents found with name "{agent_name}". Please use agent_id instead.',
                 'agents': [{'id': a.get('id'), 'name': a.get('name')} for a in matching_agents]
             }), 400
-    
-    if not agent_info:
-        return jsonify({'error': 'Agent not found'}), 404
-    
+        
+        if not agent_info:
+            return jsonify({'error': 'Agent not found'}), 404
+        
     agent_name = agent_info.get('name', 'Unknown')
     
     # Generate filename with agent name and today's date
@@ -6343,7 +6605,6 @@ def download_agent_file():
     filename = f"{agent_name}_{today}.xlsx"
     
     try:
-        
         # Get the processed data
         processed_df = list(data_file_data.values())[0]
         
@@ -6714,6 +6975,425 @@ Allocation Management System
     except Exception as e:
         return jsonify({'success': False, 'message': f'Error approving all allocations: {str(e)}'})
 
+@app.route('/view_shift_times', methods=['GET'])
+@admin_required
+def view_shift_times():
+    """Admin endpoint to view all agents' shift information for verification"""
+    global agent_allocations_data, allocation_data
+    
+    shift_info = []
+    
+    # First try to get from agent_allocations_data (after processing)
+    if agent_allocations_data:
+        try:
+            for agent in agent_allocations_data:
+                shift_start = agent.get('shift_start_time', 'Not set')
+                shift_original = agent.get('shift_time_original', 'Not set')
+                shift_group = agent.get('shift_group')
+                
+                # Format shift group name
+                group_name = 'Not set'
+                if shift_group == 1:
+                    group_name = 'Day Shift'
+                elif shift_group == 2:
+                    group_name = 'Afternoon Shift'
+                elif shift_group == 3:
+                    group_name = 'Night Shift'
+                
+                # Format shift start time for display
+                start_time_display = shift_start if shift_start else 'Not parsed'
+                if shift_start:
+                    try:
+                        hour, minute = map(int, shift_start.split(':'))
+                        if hour < 12:
+                            start_time_display = f"{shift_start} ({hour}:{minute:02d} AM)"
+                        elif hour == 12:
+                            start_time_display = f"{shift_start} (12:00 PM)"
+                        else:
+                            start_time_display = f"{shift_start} ({hour-12}:{minute:02d} PM)"
+                    except:
+                        pass
+                
+                shift_info.append({
+                    'agent_id': agent.get('id'),
+                    'agent_name': agent.get('name'),
+                    'email': agent.get('email', 'Not set'),
+                    'shift_time_original': shift_original,
+                    'shift_start_time_parsed': shift_start,
+                    'shift_start_time_display': start_time_display,
+                    'shift_group': shift_group,
+                    'shift_group_name': group_name,
+                    'capacity': agent.get('capacity', 0),
+                    'allocated': agent.get('allocated', 0)
+                })
+            
+            # Sort by shift start time
+            shift_info.sort(key=lambda x: (
+                x['shift_start_time_parsed'] if x['shift_start_time_parsed'] and x['shift_start_time_parsed'] != 'Not parsed' else '99:99',
+                x['agent_name']
+            ))
+            
+            return jsonify({
+                'success': True,
+                'total_agents': len(shift_info),
+                'agents': shift_info,
+                'source': 'processed'
+            })
+        except Exception as e:
+            return jsonify({'error': f'Error retrieving shift information: {str(e)}'}), 500
+    
+    # If no processed data, try to extract from raw allocation_data
+    if allocation_data:
+        try:
+            # Get the main sheet
+            agent_df = None
+            if 'main' in allocation_data:
+                agent_df = allocation_data['main']
+            elif len(allocation_data) > 0:
+                agent_df = list(allocation_data.values())[0]
+            
+            if agent_df is not None:
+                # Find columns
+                agent_name_col = None
+                agent_id_col = None
+                shift_time_col = None
+                shift_group_col = None
+                email_col = None
+                counts_col = None
+                
+                for col in agent_df.columns:
+                    col_lower = col.lower()
+                    if 'agent' in col_lower and 'name' in col_lower:
+                        agent_name_col = col
+                    elif col_lower == 'id':
+                        agent_id_col = col
+                    elif 'shift' in col_lower and 'time' in col_lower:
+                        shift_time_col = col
+                    elif 'shift' in col_lower and 'group' in col_lower:
+                        shift_group_col = col
+                    elif 'email' in col_lower and 'id' in col_lower:
+                        email_col = col
+                    elif col_lower == 'tfd':
+                        counts_col = col
+                
+                if agent_name_col:
+                    # Parse shift times from raw data
+                    for _, row in agent_df.iterrows():
+                        agent_name = str(row[agent_name_col]).strip() if pd.notna(row[agent_name_col]) else 'Unknown'
+                        
+                        # Get agent ID
+                        if agent_id_col and pd.notna(row[agent_id_col]):
+                            agent_id = str(row[agent_id_col]).strip()
+                        else:
+                            agent_id = f"{agent_name}_{row.name}"
+                        
+                        # Get shift time
+                        shift_original = None
+                        if shift_time_col and pd.notna(row[shift_time_col]):
+                            shift_original = str(row[shift_time_col]).strip()
+                        
+                        # Get shift group
+                        shift_group = None
+                        if shift_group_col and pd.notna(row[shift_group_col]):
+                            try:
+                                shift_group = int(float(str(row[shift_group_col]).strip()))
+                            except:
+                                pass
+                        
+                        # Parse shift start time (using same logic as in process_allocation_files_with_dates)
+                        shift_start = None
+                        shift_start_display = 'Not parsed'
+                        
+                        if shift_original:
+                            try:
+                                from datetime import time as dt_time
+                                import re
+                                
+                                if '-' in shift_original:
+                                    parts = shift_original.split('-')
+                                    if len(parts) >= 2:
+                                        start_time_str = parts[0].strip()
+                                        end_time_str = parts[1].strip()
+                                        
+                                        has_end_am = 'am' in end_time_str.lower()
+                                        has_end_pm = 'pm' in end_time_str.lower()
+                                        has_start_am = 'am' in start_time_str.lower()
+                                        has_start_pm = 'pm' in start_time_str.lower()
+                                        
+                                        start_match = re.search(r'(\d{1,2})', start_time_str)
+                                        if start_match:
+                                            hour = int(start_match.group(1))
+                                            minute = 0
+                                            
+                                            if has_start_am:
+                                                if hour == 12:
+                                                    hour = 0
+                                            elif has_start_pm:
+                                                if hour != 12:
+                                                    hour += 12
+                                            else:
+                                                end_match = re.search(r'(\d{1,2})', end_time_str)
+                                                if end_match:
+                                                    end_hour_12 = int(end_match.group(1))
+                                                    
+                                                    if shift_group == 1:
+                                                        pass  # Keep as AM
+                                                    elif shift_group == 2:
+                                                        if hour >= end_hour_12:
+                                                            pass
+                                                        else:
+                                                            if hour != 12:
+                                                                hour += 12
+                                                    elif shift_group == 3:
+                                                        if has_end_am:
+                                                            if hour >= end_hour_12:
+                                                                if hour != 12:
+                                                                    hour += 12
+                                                            else:
+                                                                if hour == 12:
+                                                                    hour = 0
+                                                    else:
+                                                        if has_end_am:
+                                                            if hour >= end_hour_12:
+                                                                if hour != 12:
+                                                                    hour += 12
+                                                            else:
+                                                                if hour == 12:
+                                                                    hour = 0
+                                                        elif has_end_pm:
+                                                            if hour >= end_hour_12 and hour < 12:
+                                                                pass
+                                                            elif hour < end_hour_12:
+                                                                if hour != 12:
+                                                                    hour += 12
+                                            
+                                            minute_match = re.search(r':(\d{2})', start_time_str)
+                                            if minute_match:
+                                                minute = int(minute_match.group(1))
+                                            
+                                            shift_start = dt_time(hour % 24, minute)
+                                            shift_start_str = shift_start.strftime('%H:%M')
+                                            
+                                            # Format display
+                                            if hour < 12:
+                                                shift_start_display = f"{shift_start_str} ({hour}:{minute:02d} AM)"
+                                            elif hour == 12:
+                                                shift_start_display = f"{shift_start_str} (12:00 PM)"
+                                            else:
+                                                shift_start_display = f"{shift_start_str} ({(hour-12)}:{minute:02d} PM)"
+                            except Exception as e:
+                                pass
+                        
+                        # Format shift group name
+                        group_name = 'Not set'
+                        if shift_group == 1:
+                            group_name = 'Day Shift'
+                        elif shift_group == 2:
+                            group_name = 'Afternoon Shift'
+                        elif shift_group == 3:
+                            group_name = 'Night Shift'
+                        
+                        # Get other info
+                        agent_email = ''
+                        if email_col and pd.notna(row[email_col]):
+                            agent_email = str(row[email_col]).strip()
+                        
+                        capacity = 0
+                        if counts_col and pd.notna(row[counts_col]):
+                            try:
+                                capacity = int(float(str(row[counts_col]).replace(',', '')))
+                            except:
+                                pass
+                        
+                        shift_info.append({
+                            'agent_id': agent_id,
+                            'agent_name': agent_name,
+                            'email': agent_email or 'Not set',
+                            'shift_time_original': shift_original or 'Not set',
+                            'shift_start_time_parsed': shift_start.strftime('%H:%M') if shift_start else 'Not parsed',
+                            'shift_start_time_display': shift_start_display,
+                            'shift_group': shift_group,
+                            'shift_group_name': group_name,
+                            'capacity': capacity,
+                            'allocated': 0
+                        })
+                
+                # Sort by shift start time
+                shift_info.sort(key=lambda x: (
+                    x['shift_start_time_parsed'] if x['shift_start_time_parsed'] and x['shift_start_time_parsed'] != 'Not parsed' else '99:99',
+                    x['agent_name']
+                ))
+                
+                return jsonify({
+                    'success': True,
+                    'total_agents': len(shift_info),
+                    'agents': shift_info,
+                    'source': 'raw_upload',
+                    'message': 'Showing shift times from uploaded staff details (file not yet processed)'
+                })
+        except Exception as e:
+            return jsonify({'error': f'Error extracting shift information from uploaded file: {str(e)}'}), 500
+    
+    return jsonify({'error': 'No allocation data available. Please upload staff details file first.'}), 400
+
+def send_reminder_email(agent_info):
+    """Send a reminder email to an agent prompting them to upload their work"""
+    try:
+        agent_name = agent_info.get('name', 'Agent')
+        agent_email = agent_info.get('email')
+        allocated = agent_info.get('allocated', 0)
+        
+        if not agent_email:
+            return False, "No email address"
+        
+        if allocated == 0:
+            return False, "No allocated work to remind about"
+        
+        # Get allocation summary
+        summary = get_allocation_summary(agent_name, agent_info)
+        
+        # Format insurance companies list
+        insurance_list = ', '.join(sorted(summary['insurance_companies'])) if summary['insurance_companies'] else 'None'
+        
+        # Send reminder email
+        msg = Message(
+            subject=f'Reminder: Please Upload Your Work - {agent_name}',
+            recipients=[agent_email],
+            body=f'''
+Dear {agent_name},
+
+This is a friendly reminder to upload your completed work.
+
+📊 YOUR CURRENT ALLOCATION:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+• Total Allocated: {summary['total_allocated']} rows
+• First Priority: {summary['first_priority_count']} rows
+• Second Priority: {summary['second_priority_count']} rows
+• Third Priority: {summary['third_priority_count']} rows
+
+🏥 INSURANCE COMPANIES:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+{insurance_list}
+
+⏰ Please log into the system and upload your completed work.
+
+Best regards,
+Allocation Management System
+            ''',
+            html=f'''
+            <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+                <h2 style="color: #333;">📧 Work Upload Reminder</h2>
+                <p>Dear <strong>{agent_name}</strong>,</p>
+                <p>This is a friendly reminder to upload your completed work.</p>
+                
+                <div style="background-color: #e7f3ff; padding: 15px; border-radius: 5px; margin: 20px 0;">
+                    <h3 style="margin-top: 0; color: #0056b3;">📊 Your Current Allocation</h3>
+                    <ul style="margin: 10px 0; padding-left: 20px;">
+                        <li>Total Allocated: <strong>{summary['total_allocated']} rows</strong></li>
+                        <li>First Priority: <strong>{summary['first_priority_count']} rows</strong></li>
+                        <li>Second Priority: <strong>{summary['second_priority_count']} rows</strong></li>
+                        <li>Third Priority: <strong>{summary['third_priority_count']} rows</strong></li>
+                    </ul>
+                </div>
+                
+                <div style="background-color: #fff3cd; padding: 15px; border-radius: 5px; margin: 20px 0;">
+                    <h3 style="margin-top: 0; color: #856404;">🏥 Insurance Companies</h3>
+                    <p style="word-wrap: break-word;">{insurance_list}</p>
+                </div>
+                
+                <div style="background-color: #d4edda; padding: 15px; border-radius: 5px; margin: 20px 0; border-left: 4px solid #28a745;">
+                    <p style="font-size: 16px; font-weight: bold; color: #155724; margin: 10px 0;">⏰ Please log into the system and upload your completed work.</p>
+                </div>
+                
+                <p>Best regards,<br>
+                Allocation Management System</p>
+            </div>
+            '''
+        )
+        
+        mail.send(msg)
+        return True, f"Reminder sent to {agent_email}"
+        
+    except Exception as e:
+        return False, str(e)
+
+def check_and_send_reminders():
+    """Check which agents need reminders and send them every 2 hours from shift start time"""
+    global agent_allocations_for_reminders
+    
+    if not agent_allocations_for_reminders:
+        return
+    
+    current_time = datetime.now()
+    current_hour = current_time.hour
+    current_minute = current_time.minute
+    
+    successful_reminders = []
+    failed_reminders = []
+    
+    for agent in agent_allocations_for_reminders:
+        shift_start_time_str = agent.get('shift_start_time')
+        agent_email = agent.get('email')
+        allocated = agent.get('allocated', 0)
+        
+        # Skip if no shift start time, email, or allocated work
+        if not shift_start_time_str or not agent_email or allocated == 0:
+            continue
+        
+        try:
+            # Parse shift start time (format: HH:MM)
+            shift_hour, shift_minute = map(int, shift_start_time_str.split(':'))
+            shift_start_today = current_time.replace(hour=shift_hour, minute=shift_minute, second=0, microsecond=0)
+            
+            # If shift hasn't started yet today, skip
+            if shift_start_today > current_time:
+                continue
+            
+            # Calculate hours since shift started today
+            hours_since_start = (current_time - shift_start_today).total_seconds() / 3600
+            
+            # Calculate which reminder interval we're at (0, 2, 4, 6, 8, etc. hours)
+            reminder_interval = 2  # hours
+            interval_number = int(hours_since_start // reminder_interval)
+            next_interval_time = shift_start_today + timedelta(hours=interval_number * reminder_interval)
+            next_interval_time_plus_one = next_interval_time + timedelta(hours=reminder_interval)
+            
+            # Check if current time is within 5 minutes before or after a reminder interval
+            tolerance_minutes = 5
+            time_diff = abs((current_time - next_interval_time).total_seconds() / 60)
+            
+            if time_diff <= tolerance_minutes:
+                # We're at a reminder interval. Check if we haven't sent one recently
+                last_reminder_key = f"last_reminder_{agent.get('id')}"
+                if not hasattr(app, '_reminder_tracker'):
+                    app._reminder_tracker = {}
+                
+                last_reminder_time = app._reminder_tracker.get(last_reminder_key)
+                
+                if last_reminder_time:
+                    minutes_since_last = (current_time - last_reminder_time).total_seconds() / 60
+                    if minutes_since_last < 100:  # Don't send if sent within last 100 minutes
+                        continue
+                
+                # Send reminder
+                success, message = send_reminder_email(agent)
+                if success:
+                    successful_reminders.append(f"{agent.get('name')} ({agent_email})")
+                    if not hasattr(app, '_reminder_tracker'):
+                        app._reminder_tracker = {}
+                    app._reminder_tracker[last_reminder_key] = current_time
+                else:
+                    failed_reminders.append(f"{agent.get('name')}: {message}")
+        
+        except Exception as e:
+            failed_reminders.append(f"{agent.get('name')}: {str(e)}")
+    
+    # Log reminder results (optional - you can remove this if you don't want logging)
+    if successful_reminders or failed_reminders:
+        print(f"[Reminder System] Sent {len(successful_reminders)} reminders, {len(failed_reminders)} failed")
+        if failed_reminders:
+            print(f"[Reminder System] Failed: {', '.join(failed_reminders[:5])}")  # Show first 5 failures
+
 def get_allocation_summary(agent_name, agent_info):
     """Get detailed allocation summary for an agent"""
     global data_file_data
@@ -6879,8 +7559,25 @@ if __name__ == '__main__':
     cleanup_thread = threading.Thread(target=cleanup_sessions_periodically, daemon=True)
     cleanup_thread.start()
     
+    # Set up scheduler for reminder emails
+    scheduler = BackgroundScheduler()
+    scheduler.add_job(
+        func=lambda: check_and_send_reminders(),
+        trigger=IntervalTrigger(hours=2),
+        id='reminder_check',
+        name='Check and send reminder emails every 2 hours',
+        replace_existing=True
+    )
+    scheduler.start()
+    print("✅ Reminder email scheduler started - checking every 2 hours")
+    
     port = int(os.environ.get('PORT', 5003))
     # Always enable debug + auto-reload for local dev unless explicitly disabled
     debug = True if os.environ.get('DISABLE_DEBUG') != '1' else False
     
-    app.run(debug=debug, host='0.0.0.0', port=port, use_reloader=debug)
+    try:
+        app.run(debug=debug, host='0.0.0.0', port=port, use_reloader=debug)
+    finally:
+        # Shutdown scheduler when app stops
+        if scheduler.running:
+            scheduler.shutdown()

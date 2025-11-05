@@ -80,6 +80,29 @@ The scheduler will automatically convert IST 6 PM to UTC 12:30 PM.
 - Set `CLEANUP_TIMEZONE=UTC`
 - Set `CLEANUP_HOUR=18` (for 6 PM UTC)
 
+### Reminder Email System
+
+The system automatically sends reminder emails to agents every 2 hours from their shift start time.
+
+**How it works:**
+
+1. After processing allocation files, the system extracts each agent's shift start time
+2. Every 2 hours, the system checks if it's time to send reminders
+3. Reminders are sent at 2-hour intervals from shift start (e.g., if shift starts at 8 AM, reminders at 8 AM, 10 AM, 12 PM, 2 PM, etc.)
+4. Each reminder includes the agent's allocation details and insurance companies
+
+**Timezone Configuration:**
+
+- `REMINDER_TIMEZONE`: Timezone for shift times (default: `Asia/Kolkata` for IST)
+- Shift times are stored in the specified timezone
+- The system automatically converts times correctly on Railway (UTC servers)
+
+**Example:**
+
+- Agent shift starts at 8:00 AM IST
+- Reminders sent at: 8:00 AM, 10:00 AM, 12:00 PM, 2:00 PM, 4:00 PM, 6:00 PM IST
+- On Railway (UTC), these automatically convert to the correct UTC times
+
 ## Technology Stack
 
 - **Backend**: Flask (Python web framework)

@@ -7371,7 +7371,14 @@ def check_and_send_reminders():
     if not agent_allocations_for_reminders:
         return
     
-    current_time = datetime.now()
+    # Get timezone from environment (default: IST for local, UTC for Railway)
+    # Shift times are stored in IST, so we need to work in IST timezone
+    reminder_timezone_str = os.environ.get('REMINDER_TIMEZONE', 'Asia/Kolkata')  # Default to IST
+    reminder_timezone = pytz.timezone(reminder_timezone_str)
+    
+    # Get current time in the specified timezone
+    current_time_utc = datetime.now(pytz.UTC)
+    current_time = current_time_utc.astimezone(reminder_timezone)
     current_hour = current_time.hour
     current_minute = current_time.minute
     
@@ -7388,9 +7395,12 @@ def check_and_send_reminders():
             continue
         
         try:
-            # Parse shift start time (format: HH:MM)
+            # Parse shift start time (format: HH:MM) - shift times are in local timezone
             shift_hour, shift_minute = map(int, shift_start_time_str.split(':'))
-            shift_start_today = current_time.replace(hour=shift_hour, minute=shift_minute, second=0, microsecond=0)
+            # Create shift start time in the reminder timezone
+            shift_start_today = reminder_timezone.localize(
+                current_time.replace(hour=shift_hour, minute=shift_minute, second=0, microsecond=0)
+            )
             
             # If shift hasn't started yet today, skip
             if shift_start_today > current_time:
@@ -7403,7 +7413,6 @@ def check_and_send_reminders():
             reminder_interval = 2  # hours
             interval_number = int(hours_since_start // reminder_interval)
             next_interval_time = shift_start_today + timedelta(hours=interval_number * reminder_interval)
-            next_interval_time_plus_one = next_interval_time + timedelta(hours=reminder_interval)
             
             # Check if current time is within 5 minutes before or after a reminder interval
             tolerance_minutes = 5
@@ -7418,6 +7427,9 @@ def check_and_send_reminders():
                 last_reminder_time = app._reminder_tracker.get(last_reminder_key)
                 
                 if last_reminder_time:
+                    # Convert last reminder time to timezone-aware for comparison
+                    if isinstance(last_reminder_time, datetime) and last_reminder_time.tzinfo is None:
+                        last_reminder_time = reminder_timezone.localize(last_reminder_time)
                     minutes_since_last = (current_time - last_reminder_time).total_seconds() / 60
                     if minutes_since_last < 100:  # Don't send if sent within last 100 minutes
                         continue
@@ -7428,6 +7440,7 @@ def check_and_send_reminders():
                     successful_reminders.append(f"{agent.get('name')} ({agent_email})")
                     if not hasattr(app, '_reminder_tracker'):
                         app._reminder_tracker = {}
+                    # Store as timezone-aware datetime
                     app._reminder_tracker[last_reminder_key] = current_time
                 else:
                     failed_reminders.append(f"{agent.get('name')}: {message}")
@@ -7435,9 +7448,9 @@ def check_and_send_reminders():
         except Exception as e:
             failed_reminders.append(f"{agent.get('name')}: {str(e)}")
     
-    # Log reminder results (optional - you can remove this if you don't want logging)
+    # Log reminder results
     if successful_reminders or failed_reminders:
-        print(f"[Reminder System] Sent {len(successful_reminders)} reminders, {len(failed_reminders)} failed")
+        print(f"[Reminder System] Sent {len(successful_reminders)} reminders, {len(failed_reminders)} failed at {current_time.strftime('%Y-%m-%d %H:%M:%S %Z')}")
         if failed_reminders:
             print(f"[Reminder System] Failed: {', '.join(failed_reminders[:5])}")  # Show first 5 failures
 

@@ -4841,7 +4841,7 @@ def process_allocation_files_with_dates(allocation_df, data_df, selected_dates, 
                 if 'main' in allocation_df:
                     agent_df = allocation_df['main']
                 elif len(allocation_df) > 0:
-                agent_df = list(allocation_df.values())[0]
+                    agent_df = list(allocation_df.values())[0]
                 
                 if agent_df is None:
                     agent_summary = "\n⚠️ No sheets found in allocation file."
@@ -6331,7 +6331,7 @@ def consolidate_agent_files():
             if all_agent_data:
                 combined_df = pd.concat(all_agent_data, ignore_index=True)
                 combined_df.to_excel(writer, sheet_name='All Agent Data', index=False)
-                    else:
+            else:
                 # Fallback if no data found
                 simple_df = pd.DataFrame([{'Message': 'No data available from any agent'}])
                 simple_df.to_excel(writer, sheet_name='All Agent Data', index=False)
@@ -6511,10 +6511,10 @@ def get_agent_allocation():
         
         # First try to find by agent_id if provided (most reliable)
         if agent_id:
-        for agent in agent_allocations_data:
+            for agent in agent_allocations_data:
                 if agent.get('id') == agent_id:
-                agent_info = agent
-                break
+                    agent_info = agent
+                    break
         
         # If not found by ID and name is provided, try by name
         if not agent_info and agent_name:
@@ -6698,10 +6698,10 @@ def send_approval_email():
         # Find the agent in the allocation data
         agent_info = None
         if agent_id:
-        for agent in agent_allocations_data:
+            for agent in agent_allocations_data:
                 if agent.get('id') == agent_id:
-                agent_info = agent
-                break
+                    agent_info = agent
+                    break
         if not agent_info and agent_name:
             matching_agents = [agent for agent in agent_allocations_data if agent.get('name') == agent_name]
             if len(matching_agents) == 1:
@@ -7591,7 +7591,7 @@ if __name__ == '__main__':
     debug = True if os.environ.get('DISABLE_DEBUG') != '1' else False
     
     try:
-    app.run(debug=debug, host='0.0.0.0', port=port, use_reloader=debug)
+        app.run(debug=debug, host='0.0.0.0', port=port, use_reloader=debug)
     finally:
         # Shutdown scheduler when app stops
         if scheduler.running:

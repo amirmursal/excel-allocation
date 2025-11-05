@@ -3347,10 +3347,12 @@ HTML_TEMPLATE = """
                 body: formData
             })
             .then(response => {
-                if (!response.ok) {
-                    throw new Error(`HTTP error! status: ${response.status}`);
-                }
-                return response.json();
+                return response.json().then(data => {
+                    if (!response.ok) {
+                        throw {data: data, status: response.status};
+                    }
+                    return data;
+                });
             })
             .then(data => {
                 if (data.success) {
@@ -3366,7 +3368,22 @@ HTML_TEMPLATE = """
                 }
             })
             .catch(error => {
-                showErrorToast('Upload Error', 'Error uploading file. Please try again.');
+                // Handle validation errors with missing columns
+                if (error.data && error.data.missing_columns) {
+                    let errorMessage = error.data.message || 'File validation failed.';
+                    if (error.data.missing_columns.length > 0) {
+                        errorMessage += '<br><br><strong>Missing Columns:</strong><ul style="margin: 10px 0; padding-left: 20px;">';
+                        error.data.missing_columns.forEach(col => {
+                            errorMessage += `<li>${col}</li>`;
+                        });
+                        errorMessage += '</ul>';
+                    }
+                    showErrorToast('File Validation Error', errorMessage);
+                } else if (error.data && error.data.message) {
+                    showErrorToast('Upload Failed', error.data.message);
+                } else {
+                    showErrorToast('Upload Error', 'Error uploading file. Please try again.');
+                }
             })
             .finally(() => {
                 // Reset button state
@@ -6169,6 +6186,75 @@ def download_result():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
+def validate_agent_work_file_columns(file_data):
+    """Validate that the uploaded file contains all required columns"""
+    # Required columns list
+    required_columns = [
+        'Office Name',
+        'Appointment Date',
+        'Appointment Time',
+        'Patient ID',
+        'Patient Name',
+        'Chart#',
+        'Dental Primary Ins Carr',
+        'Dental Secondary Ins Carr',
+        'Provider Name',
+        'Received date',
+        'Type',
+        'Status Code',
+        'Comment',
+        'Group Number',
+        'Category',
+        'Agent Name',
+        'Work Date',
+        'Remark',
+        'Priority Status',
+        'QC Agent',
+        'QC Status',
+        'QC Comments',
+        'QC Date'
+    ]
+    
+    # Check each sheet in the file
+    if not file_data:
+        return False, ['No data found in file']
+    
+    # Collect all column names from all sheets (case-insensitive)
+    all_columns_found = set()
+    
+    for sheet_name, df in file_data.items():
+        if df.empty:
+            continue
+            
+        # Get actual column names from the DataFrame
+        actual_columns = [str(col).strip() for col in df.columns]
+        
+        # Add all columns (normalized to lowercase for comparison)
+        for col in actual_columns:
+            all_columns_found.add(col.strip().lower())
+    
+    # Check which required columns are missing
+    missing_columns = []
+    
+    for required_col in required_columns:
+        found = False
+        required_col_lower = required_col.strip().lower()
+        
+        # Check if column exists (case-insensitive)
+        for found_col_lower in all_columns_found:
+            if found_col_lower == required_col_lower:
+                found = True
+                break
+        
+        if not found:
+            missing_columns.append(required_col)
+    
+    # Return True if all columns are found
+    if not missing_columns:
+        return True, []
+    
+    return False, missing_columns
+
 @app.route('/upload_work_file', methods=['POST'])
 @agent_required
 def upload_work_file():
@@ -6207,6 +6293,26 @@ def upload_work_file():
         # Load and process Excel file
         try:
             file_data = pd.read_excel(filename, sheet_name=None)
+            
+            # Validate required columns
+            is_valid, missing_columns = validate_agent_work_file_columns(file_data)
+            
+            if not is_valid:
+                # Clean up uploaded file
+                if os.path.exists(filename):
+                    os.remove(filename)
+                
+                # Format error message
+                if len(missing_columns) == 1:
+                    error_message = f'Missing required column: {missing_columns[0]}'
+                else:
+                    error_message = f'Missing required columns: {", ".join(missing_columns)}'
+                
+                return jsonify({
+                    'success': False, 
+                    'message': error_message,
+                    'missing_columns': missing_columns
+                }), 400
             
             # Clear all existing agent work files before saving new one
             existing_files = AgentWorkFile.query.filter_by(agent_id=user.id).all()

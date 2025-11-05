@@ -1919,15 +1919,6 @@ HTML_TEMPLATE = """
                 
                 <!-- System Settings Tab -->
                 <div id="system-settings-tab" class="admin-tab-content">
-                    <!-- Test Cleanup Section -->
-                    <div class="section" style="margin-bottom: 30px;">
-                        <h3>🧪 Test Cleanup</h3>
-                        <p>Manually trigger the cleanup job to delete all agent work files (for testing purposes).</p>
-                        <form action="/test_cleanup" method="post" onsubmit="return confirm('Are you sure you want to delete all agent work files? This will remove all files from the Agent Consolidation tab.')">
-                            <button type="submit" class="reset-btn" style="background: linear-gradient(135deg, #f39c12, #e67e22);">🧹 Test Cleanup (Delete All Agent Files)</button>
-                        </form>
-                    </div>
-                    
                     <!-- Reset Section -->
                     <div class="section">
                         <h3>🔄 Reset Application</h3>
@@ -6710,12 +6701,13 @@ def download_agent_file():
         return jsonify({'error': 'No agent specified (agent_id or agent_name required)'}), 400
     
     # Find the agent
-        agent_info = None
+    agent_info = None
     if agent_id:
         for agent in agent_allocations_data:
             if agent.get('id') == agent_id:
                 agent_info = agent
                 break
+    
     if not agent_info and agent_name:
         matching_agents = [agent for agent in agent_allocations_data if agent.get('name') == agent_name]
         if len(matching_agents) == 1:
@@ -6725,10 +6717,10 @@ def download_agent_file():
                 'error': f'Multiple agents found with name "{agent_name}". Please use agent_id instead.',
                 'agents': [{'id': a.get('id'), 'name': a.get('name')} for a in matching_agents]
             }), 400
-        
-        if not agent_info:
-            return jsonify({'error': 'Agent not found'}), 404
-        
+    
+    if not agent_info:
+        return jsonify({'error': 'Agent not found'}), 404
+    
     agent_name = agent_info.get('name', 'Unknown')
     
     # Generate filename with agent name and today's date
@@ -7669,20 +7661,6 @@ def create_agent_excel_file(agent_name, agent_info):
         empty_df.to_excel(excel_buffer, index=False)
         excel_buffer.seek(0)
         return excel_buffer
-
-@app.route('/test_cleanup', methods=['POST'])
-@admin_required
-def test_cleanup():
-    """Manually trigger cleanup of agent files for testing"""
-    try:
-        result, file_count = cleanup_all_agent_files()
-        if result:
-            flash(f'✅ Cleanup completed successfully! Deleted {file_count} agent work file(s).', 'success')
-        else:
-            flash(f'❌ Error during cleanup: {file_count}', 'error')
-    except Exception as e:
-        flash(f'❌ Error triggering cleanup: {str(e)}', 'error')
-    return redirect('/')
 
 @app.route('/reset_app', methods=['POST'])
 @admin_required

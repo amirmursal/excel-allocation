@@ -534,8 +534,9 @@ def get_agent_work_files(agent_id=None):
     return AgentWorkFile.query.order_by(AgentWorkFile.upload_date.desc()).all()
 
 def get_all_agent_work_files():
-    """Get all agent work files for consolidation"""
-    return AgentWorkFile.query.filter_by(status='uploaded').order_by(AgentWorkFile.upload_date.desc()).all()
+    """Get all agent work files for consolidation (admin view)"""
+    # Return all files regardless of status so admin can see all uploaded files
+    return AgentWorkFile.query.order_by(AgentWorkFile.upload_date.desc()).all()
 
 # Google OAuth helper functions
 def get_google_provider_cfg():
@@ -6237,8 +6238,8 @@ def upload_status_file():
 def consolidate_agent_files():
     """Consolidate all agent work files into one Excel file"""
     try:
-        # Get all agent work files
-        work_files = get_all_agent_work_files()
+        # Get all agent work files (only uploaded ones for consolidation)
+        work_files = AgentWorkFile.query.filter_by(status='uploaded').order_by(AgentWorkFile.upload_date.desc()).all()
         
         if not work_files:
             flash('No agent work files found to consolidate', 'warning')
@@ -7332,6 +7333,27 @@ Allocation Management System
     except Exception as e:
         return False, str(e)
 
+def cleanup_all_agent_files():
+    """Delete all agent work files daily at 4 AM to save server space"""
+    try:
+        with app.app_context():
+            # Get all agent work files
+            all_files = AgentWorkFile.query.all()
+            file_count = len(all_files)
+            
+            # Delete all files
+            for work_file in all_files:
+                db.session.delete(work_file)
+            
+            db.session.commit()
+            
+            print(f"✅ Daily cleanup completed: Deleted {file_count} agent work file(s) at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+            return True, file_count
+    except Exception as e:
+        print(f"❌ Error during daily cleanup: {str(e)}")
+        db.session.rollback()
+        return False, str(e)
+
 def check_and_send_reminders():
     """Check which agents need reminders and send them every 2 hours from shift start time"""
     global agent_allocations_for_reminders
@@ -7574,8 +7596,10 @@ if __name__ == '__main__':
     cleanup_thread = threading.Thread(target=cleanup_sessions_periodically, daemon=True)
     cleanup_thread.start()
     
-    # Set up scheduler for reminder emails
+    # Set up scheduler for reminder emails and daily cleanup
     scheduler = BackgroundScheduler()
+    
+    # Reminder emails - every 2 hours
     scheduler.add_job(
         func=lambda: check_and_send_reminders(),
         trigger=IntervalTrigger(hours=2),
@@ -7583,8 +7607,19 @@ if __name__ == '__main__':
         name='Check and send reminder emails every 2 hours',
         replace_existing=True
     )
+    
+    # Daily cleanup - every day at 4:00 AM
+    scheduler.add_job(
+        func=lambda: cleanup_all_agent_files(),
+        trigger=CronTrigger(hour=4, minute=0),
+        id='daily_cleanup',
+        name='Daily cleanup of agent work files at 4 AM',
+        replace_existing=True
+    )
+    
     scheduler.start()
     print("✅ Reminder email scheduler started - checking every 2 hours")
+    print("✅ Daily cleanup scheduler started - runs every day at 4:00 AM")
     
     port = int(os.environ.get('PORT', 5003))
     # Always enable debug + auto-reload for local dev unless explicitly disabled

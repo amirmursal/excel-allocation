@@ -37,6 +37,17 @@ app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max file size
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'your-secret-key-change-in-production')
 
+# Configure Flask to trust proxy headers (required for Railway/Heroku HTTPS detection)
+# This allows Flask to detect HTTPS from X-Forwarded-Proto header
+if os.environ.get('DATABASE_URL') or os.environ.get('RAILWAY_ENVIRONMENT'):
+    # Production environment - trust proxy headers
+    from werkzeug.middleware.proxy_fix import ProxyFix
+    app.wsgi_app = ProxyFix(
+        app.wsgi_app,
+        x_proto=1,
+        x_host=1
+    )
+
 # Database configuration
 DATABASE_URL = os.environ.get('DATABASE_URL')
 if DATABASE_URL:
@@ -869,7 +880,7 @@ LOGIN_TEMPLATE = """
             <strong>Google OAuth not configured</strong><br>
             <small>Contact administrator to set up Google OAuth for agent login</small>
         </div>
-        {% endif %}
+            {% endif %}
     </div>
 </body>
 </html>
@@ -4830,7 +4841,7 @@ def process_allocation_files_with_dates(allocation_df, data_df, selected_dates, 
                 if 'main' in allocation_df:
                     agent_df = allocation_df['main']
                 elif len(allocation_df) > 0:
-                    agent_df = list(allocation_df.values())[0]
+                agent_df = list(allocation_df.values())[0]
                 
                 if agent_df is None:
                     agent_summary = "\n⚠️ No sheets found in allocation file."
@@ -5764,6 +5775,12 @@ def google_login():
     # Get the exact callback URL using url_for to ensure consistency
     callback_url = url_for('callback', _external=True)
     
+    # Force HTTPS for production (Railway/Heroku)
+    if os.environ.get('DATABASE_URL') or os.environ.get('RAILWAY_ENVIRONMENT'):
+        # Ensure callback URL uses HTTPS in production
+        if callback_url.startswith('http://'):
+            callback_url = callback_url.replace('http://', 'https://', 1)
+    
     # Create request URI with properly URL-encoded redirect_uri
     redirect_uri_encoded = quote(callback_url, safe='')
     request_uri = f"{authorization_endpoint}?client_id={GOOGLE_CLIENT_ID}&redirect_uri={redirect_uri_encoded}&scope=openid email profile&response_type=code"
@@ -5794,6 +5811,12 @@ def callback():
         
         # Get the exact callback URL using url_for to match what was sent initially
         callback_url = url_for('callback', _external=True)
+        
+        # Force HTTPS for production (Railway/Heroku) - must match what was sent in initial request
+        if os.environ.get('DATABASE_URL') or os.environ.get('RAILWAY_ENVIRONMENT'):
+            # Ensure callback URL uses HTTPS in production
+            if callback_url.startswith('http://'):
+                callback_url = callback_url.replace('http://', 'https://', 1)
         
         # Exchange code for token
         token_data = {
@@ -6308,7 +6331,7 @@ def consolidate_agent_files():
             if all_agent_data:
                 combined_df = pd.concat(all_agent_data, ignore_index=True)
                 combined_df.to_excel(writer, sheet_name='All Agent Data', index=False)
-            else:
+                    else:
                 # Fallback if no data found
                 simple_df = pd.DataFrame([{'Message': 'No data available from any agent'}])
                 simple_df.to_excel(writer, sheet_name='All Agent Data', index=False)
@@ -6488,10 +6511,10 @@ def get_agent_allocation():
         
         # First try to find by agent_id if provided (most reliable)
         if agent_id:
-            for agent in agent_allocations_data:
+        for agent in agent_allocations_data:
                 if agent.get('id') == agent_id:
-                    agent_info = agent
-                    break
+                agent_info = agent
+                break
         
         # If not found by ID and name is provided, try by name
         if not agent_info and agent_name:
@@ -6570,7 +6593,7 @@ def download_agent_file():
         return jsonify({'error': 'No agent specified (agent_id or agent_name required)'}), 400
     
     # Find the agent
-    agent_info = None
+        agent_info = None
     if agent_id:
         for agent in agent_allocations_data:
             if agent.get('id') == agent_id:
@@ -6675,10 +6698,10 @@ def send_approval_email():
         # Find the agent in the allocation data
         agent_info = None
         if agent_id:
-            for agent in agent_allocations_data:
+        for agent in agent_allocations_data:
                 if agent.get('id') == agent_id:
-                    agent_info = agent
-                    break
+                agent_info = agent
+                break
         if not agent_info and agent_name:
             matching_agents = [agent for agent in agent_allocations_data if agent.get('name') == agent_name]
             if len(matching_agents) == 1:
@@ -7568,7 +7591,7 @@ if __name__ == '__main__':
     debug = True if os.environ.get('DISABLE_DEBUG') != '1' else False
     
     try:
-        app.run(debug=debug, host='0.0.0.0', port=port, use_reloader=debug)
+    app.run(debug=debug, host='0.0.0.0', port=port, use_reloader=debug)
     finally:
         # Shutdown scheduler when app stops
         if scheduler.running:

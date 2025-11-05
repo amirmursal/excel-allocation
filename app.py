@@ -869,22 +869,6 @@ LOGIN_TEMPLATE = """
             <small>Contact administrator to set up Google OAuth for agent login</small>
         </div>
         {% endif %}
-        
-        <div class="demo-credentials">
-            <h4><i class="fas fa-info-circle"></i> Login Options</h4>
-            <p><strong>Admin:</strong> Use username/password (admin / admin123)</p>
-            {% if GOOGLE_CLIENT_ID %}
-            <p><strong>Agents:</strong> Use "Login with Google" button above</p>
-            <p style="color: #666; font-size: 12px; margin-top: 10px;">
-                <i class="fas fa-info-circle"></i> Agents with Gmail accounts can login instantly with Google OAuth
-            </p>
-            {% else %}
-            <p><strong>Agents:</strong> Google OAuth not configured - contact administrator</p>
-            <p style="color: #e74c3c; font-size: 12px; margin-top: 10px;">
-                <i class="fas fa-exclamation-triangle"></i> No static agent credentials available - Google OAuth required
-            </p>
-            {% endif %}
-        </div>
     </div>
 </body>
 </html>

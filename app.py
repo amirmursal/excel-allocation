@@ -19,6 +19,7 @@ import io
 import uuid
 import json
 from functools import wraps
+from urllib.parse import quote
 from dotenv import load_dotenv
 # Google OAuth imports
 from google.auth.transport import requests
@@ -5760,8 +5761,12 @@ def google_login():
     
     authorization_endpoint = google_provider_cfg["authorization_endpoint"]
     
-    # Create request URI
-    request_uri = f"{authorization_endpoint}?client_id={GOOGLE_CLIENT_ID}&redirect_uri={request.url_root}callback&scope=openid email profile&response_type=code"
+    # Get the exact callback URL using url_for to ensure consistency
+    callback_url = url_for('callback', _external=True)
+    
+    # Create request URI with properly URL-encoded redirect_uri
+    redirect_uri_encoded = quote(callback_url, safe='')
+    request_uri = f"{authorization_endpoint}?client_id={GOOGLE_CLIENT_ID}&redirect_uri={redirect_uri_encoded}&scope=openid email profile&response_type=code"
     
     return redirect(request_uri)
 
@@ -5787,12 +5792,15 @@ def callback():
         
         token_endpoint = google_provider_cfg["token_endpoint"]
         
+        # Get the exact callback URL using url_for to match what was sent initially
+        callback_url = url_for('callback', _external=True)
+        
         # Exchange code for token
         token_data = {
             'code': code,
             'client_id': GOOGLE_CLIENT_ID,
             'client_secret': GOOGLE_CLIENT_SECRET,
-            'redirect_uri': request.base_url,
+            'redirect_uri': callback_url,
             'grant_type': 'authorization_code'
         }
         

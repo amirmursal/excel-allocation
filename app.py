@@ -29,6 +29,7 @@ import requests as req
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 from apscheduler.triggers.cron import CronTrigger
+import pytz
 
 # Load environment variables
 load_dotenv()
@@ -1918,6 +1919,15 @@ HTML_TEMPLATE = """
                 
                 <!-- System Settings Tab -->
                 <div id="system-settings-tab" class="admin-tab-content">
+                    <!-- Test Cleanup Section -->
+                    <div class="section" style="margin-bottom: 30px;">
+                        <h3>🧪 Test Cleanup</h3>
+                        <p>Manually trigger the cleanup job to delete all agent work files (for testing purposes).</p>
+                        <form action="/test_cleanup" method="post" onsubmit="return confirm('Are you sure you want to delete all agent work files? This will remove all files from the Agent Consolidation tab.')">
+                            <button type="submit" class="reset-btn" style="background: linear-gradient(135deg, #f39c12, #e67e22);">🧹 Test Cleanup (Delete All Agent Files)</button>
+                        </form>
+                    </div>
+                    
                     <!-- Reset Section -->
                     <div class="section">
                         <h3>🔄 Reset Application</h3>
@@ -7541,6 +7551,20 @@ def create_agent_excel_file(agent_name, agent_info):
         excel_buffer.seek(0)
         return excel_buffer
 
+@app.route('/test_cleanup', methods=['POST'])
+@admin_required
+def test_cleanup():
+    """Manually trigger cleanup of agent files for testing"""
+    try:
+        result, file_count = cleanup_all_agent_files()
+        if result:
+            flash(f'✅ Cleanup completed successfully! Deleted {file_count} agent work file(s).', 'success')
+        else:
+            flash(f'❌ Error during cleanup: {file_count}', 'error')
+    except Exception as e:
+        flash(f'❌ Error triggering cleanup: {str(e)}', 'error')
+    return redirect('/')
+
 @app.route('/reset_app', methods=['POST'])
 @admin_required
 def reset_app():
@@ -7608,18 +7632,31 @@ if __name__ == '__main__':
         replace_existing=True
     )
     
-    # Daily cleanup - every day at 4:00 AM
+    # Cleanup - every day at 6:00 PM (timezone-aware)
+    # Get timezone from environment variable (default: IST for local, UTC for Railway)
+    # Railway servers run in UTC, so we need to convert local time to UTC
+    # IST is UTC+5:30, so 6 PM IST = 12:30 PM UTC
+    cleanup_timezone_str = os.environ.get('CLEANUP_TIMEZONE', 'Asia/Kolkata')  # Default to IST
+    cleanup_timezone = pytz.timezone(cleanup_timezone_str)
+    
+    # Schedule time in local timezone (6 PM = 18:00)
+    cleanup_hour = int(os.environ.get('CLEANUP_HOUR', '18'))  # 6 PM
+    cleanup_minute = int(os.environ.get('CLEANUP_MINUTE', '0'))
+    
     scheduler.add_job(
         func=lambda: cleanup_all_agent_files(),
-        trigger=CronTrigger(hour=4, minute=0),
+        trigger=CronTrigger(hour=cleanup_hour, minute=cleanup_minute, timezone=cleanup_timezone),
         id='daily_cleanup',
-        name='Daily cleanup of agent work files at 4 AM',
+        name=f'Daily cleanup of agent work files at {cleanup_hour:02d}:{cleanup_minute:02d} {cleanup_timezone_str}',
         replace_existing=True
     )
     
     scheduler.start()
     print("✅ Reminder email scheduler started - checking every 2 hours")
-    print("✅ Daily cleanup scheduler started - runs every day at 4:00 AM")
+    # Calculate UTC equivalent for display
+    local_time = cleanup_timezone.localize(datetime(2025, 1, 1, cleanup_hour, cleanup_minute))
+    utc_time = local_time.astimezone(pytz.UTC)
+    print(f"✅ Cleanup scheduler started - runs every day at {cleanup_hour:02d}:{cleanup_minute:02d} {cleanup_timezone_str} (UTC: {utc_time.strftime('%H:%M')})")
     
     port = int(os.environ.get('PORT', 5003))
     # Always enable debug + auto-reload for local dev unless explicitly disabled

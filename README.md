@@ -50,11 +50,35 @@ A web-based application for processing Excel allocation and data files with role
 
 ## Deployment
 
-The application is configured for deployment on platforms like Heroku with:
+The application is configured for deployment on platforms like Heroku/Railway with:
 
 - `Procfile` for web process definition
 - `runtime.txt` for Python version specification
 - `requirements.txt` for dependency management
+
+### Timezone Configuration for Railway/Production
+
+Railway servers run in **UTC timezone**. The cleanup cron job is timezone-aware and can be configured via environment variables:
+
+**Environment Variables:**
+
+- `CLEANUP_TIMEZONE`: Timezone for cleanup schedule (default: `Asia/Kolkata` for IST)
+- `CLEANUP_HOUR`: Hour in 24-hour format (default: `18` for 6 PM)
+- `CLEANUP_MINUTE`: Minute (default: `0`)
+
+**Example for Railway:**
+To run cleanup at 6 PM IST (which is 12:30 PM UTC):
+
+- Set `CLEANUP_TIMEZONE=Asia/Kolkata`
+- Set `CLEANUP_HOUR=18`
+- Set `CLEANUP_MINUTE=0`
+
+The scheduler will automatically convert IST 6 PM to UTC 12:30 PM.
+
+**For UTC timezone:**
+
+- Set `CLEANUP_TIMEZONE=UTC`
+- Set `CLEANUP_HOUR=18` (for 6 PM UTC)
 
 ## Technology Stack
 

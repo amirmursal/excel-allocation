@@ -6183,10 +6183,8 @@ def validate_agent_work_file_columns(file_data):
     required_columns = [
         'Office Name',
         'Appointment Date',
-        'Appointment Time',
         'Patient ID',
         'Patient Name',
-        'Chart#',
         'Dental Primary Ins Carr',
         'Dental Secondary Ins Carr',
         'Provider Name',
@@ -7729,15 +7727,15 @@ if __name__ == '__main__':
         replace_existing=True
     )
     
-    # Cleanup - every day at 6:00 PM (timezone-aware)
+    # Cleanup - every day at 7:00 AM (timezone-aware)
     # Get timezone from environment variable (default: IST for local, UTC for Railway)
     # Railway servers run in UTC, so we need to convert local time to UTC
-    # IST is UTC+5:30, so 6 PM IST = 12:30 PM UTC
+    # IST is UTC+5:30, so 7 AM IST = 1:30 AM UTC
     cleanup_timezone_str = os.environ.get('CLEANUP_TIMEZONE', 'Asia/Kolkata')  # Default to IST
     cleanup_timezone = pytz.timezone(cleanup_timezone_str)
     
-    # Schedule time in local timezone (6 PM = 18:00)
-    cleanup_hour = int(os.environ.get('CLEANUP_HOUR', '18'))  # 6 PM
+    # Schedule time in local timezone (7 AM = 07:00)
+    cleanup_hour = int(os.environ.get('CLEANUP_HOUR', '7'))  # 7 AM
     cleanup_minute = int(os.environ.get('CLEANUP_MINUTE', '0'))
     
     scheduler.add_job(

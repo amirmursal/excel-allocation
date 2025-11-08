@@ -70,9 +70,9 @@ migrate = Migrate(app, db)
 app.config['MAIL_SERVER'] = 'smtp.gmail.com'
 app.config['MAIL_PORT'] = 587
 app.config['MAIL_USE_TLS'] = True
-app.config['MAIL_USERNAME'] = 'amirmursal@gmail.com'
-app.config['MAIL_PASSWORD'] = 'wgps wdsn ycly rnqt'    
-app.config['MAIL_DEFAULT_SENDER'] = 'amirmursal@gmail.com'
+app.config['MAIL_USERNAME'] = 'imagen.tracker.mnc@gmail.com'
+app.config['MAIL_PASSWORD'] = 'ldpw ahsv cdyu amid'    
+app.config['MAIL_DEFAULT_SENDER'] = 'imagen.tracker.mnc@gmail.com'
 
 # Initialize Flask-Mail
 mail = Mail(app)
@@ -1922,8 +1922,8 @@ HTML_TEMPLATE = """
                     <!-- Reset Section -->
                     <div class="section">
                         <h3>🔄 Reset Application</h3>
-                        <p>Clear all uploaded files, agent consolidation files, and reset the application to start fresh.</p>
-                        <form action="/reset_app" method="post" onsubmit="return confirm('Are you sure you want to reset the application? This will clear all uploaded files, agent consolidation files, and data.')">
+                        <p>Clear all uploaded files and reset the application to start fresh. All agent work files will be preserved.</p>
+                        <form action="/reset_app" method="post" onsubmit="return confirm('Are you sure you want to reset the application? This will clear all uploaded files and data. All agent work files will be preserved.')">
                             <button type="submit" class="reset-btn">🗑️ Reset Application</button>
                         </form>
                     </div>
@@ -7667,8 +7667,7 @@ def reset_app():
     global agent_allocations_data
     
     try:
-        # Clear all agent work files from database
-        AgentWorkFile.query.delete()
+        # Do NOT clear agent work files - preserve all agent files (both uploaded and consolidated)
         
         # Clear all allocations from database
         Allocation.query.delete()
@@ -7678,7 +7677,7 @@ def reset_app():
         data_file_data = None
         allocation_filename = None
         data_filename = None
-        processing_result = "🔄 Application reset successfully! All files, data, and agent consolidation files have been cleared."
+        processing_result = "🔄 Application reset successfully! All uploaded files and data have been cleared. All agent work files have been preserved."
         agent_allocations_data = None
         
         # Commit database changes

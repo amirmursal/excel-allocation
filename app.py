@@ -21,6 +21,7 @@ import json
 from functools import wraps
 from urllib.parse import quote
 from dotenv import load_dotenv
+import base64
 # Google OAuth imports
 from google.auth.transport import requests
 from google.oauth2 import id_token
@@ -30,6 +31,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 from apscheduler.triggers.cron import CronTrigger
 import pytz
+import resend
 
 # Load environment variables
 load_dotenv()
@@ -76,6 +78,9 @@ app.config['MAIL_DEFAULT_SENDER'] = 'imagen.tracker.mnc@gmail.com'
 
 # Initialize Flask-Mail
 mail = Mail(app)
+
+# Resend email configuration
+resend.api_key = os.environ.get('RESEND_API_KEY', 're_KVjn4UNT_JLmkx8DG7psRxVuoAAWzcwT2')
 
 # Global variable to store agent allocations data for reminders
 agent_allocations_for_reminders = None
@@ -680,6 +685,64 @@ def agent_required(f):
             return redirect(url_for('dashboard'))
         return f(*args, **kwargs)
     return decorated_function
+
+# Email helper function using Resend
+def send_email_with_resend(to_email, subject, html_content, text_content=None, attachment_data=None, attachment_filename=None):
+    """
+    Send email using Resend API
+    
+    Args:
+        to_email: Recipient email address
+        subject: Email subject
+        html_content: HTML email content
+        text_content: Plain text email content (optional)
+        attachment_data: BytesIO or bytes object for attachment (optional)
+        attachment_filename: Filename for attachment (optional)
+    
+    Returns:
+        tuple: (success: bool, message: str)
+    """
+    try:
+        email_data = {
+            "from": os.environ.get('RESEND_FROM_EMAIL', 'onboarding@resend.dev'),
+            "to": to_email,
+            "subject": subject,
+            "html": html_content
+        }
+        
+        # Add text content if provided
+        if text_content:
+            email_data["text"] = text_content
+        
+        # Add attachment if provided
+        if attachment_data and attachment_filename:
+            # Convert BytesIO to bytes if needed
+            if isinstance(attachment_data, io.BytesIO):
+                attachment_bytes = attachment_data.getvalue()
+            else:
+                attachment_bytes = attachment_data
+            
+            # Encode to base64
+            attachment_base64 = base64.b64encode(attachment_bytes).decode('utf-8')
+            
+            email_data["attachments"] = [{
+                "filename": attachment_filename,
+                "content": attachment_base64
+            }]
+        
+        r = resend.Emails.send(email_data)
+        
+        # Check if email was sent successfully
+        # Resend API returns an object with 'id' field on success
+        if isinstance(r, dict) and 'id' in r:
+            return True, f"Email sent successfully to {to_email}"
+        elif hasattr(r, 'id'):
+            return True, f"Email sent successfully to {to_email}"
+        else:
+            return False, f"Failed to send email: {str(r)}"
+            
+    except Exception as e:
+        return False, f"Error sending email: {str(e)}"
 
 # Login Template
 LOGIN_TEMPLATE = """
@@ -6844,11 +6907,8 @@ def send_approval_email():
         else:
             deadline_text = 'N/A (No First Priority work assigned)'
         
-        # Send email
-        msg = Message(
-            subject=f'Your Work Allocation - {agent_name}',
-            recipients=[agent_email],
-            body=f'''
+        # Prepare email content
+        text_content = f'''
 Dear {agent_name},
 
 Your work allocation has been approved and is attached to this email.
@@ -6878,8 +6938,9 @@ Please find your allocated data in the attached Excel file.
 
 Best regards,
 Allocation Management System
-            ''',
-            html=f'''
+        '''
+        
+        html_content = f'''
             <h2>Work Allocation Approved</h2>
             <p>Dear <strong>{agent_name}</strong>,</p>
             <p>Your work allocation has been approved and is attached to this email.</p>
@@ -6918,19 +6979,23 @@ Allocation Management System
             
             <p>Best regards,<br>
             Allocation Management System</p>
-            '''
+        '''
+        
+        # Send email using Resend
+        attachment_filename = f'{agent_name}_allocation_{datetime.now().strftime("%Y%m%d")}.xlsx'
+        success, message = send_email_with_resend(
+            to_email=agent_email,
+            subject=f'Your Work Allocation - {agent_name}',
+            html_content=html_content,
+            text_content=text_content,
+            attachment_data=excel_buffer,
+            attachment_filename=attachment_filename
         )
         
-        # Attach Excel file
-        msg.attach(
-            filename=f'{agent_name}_allocation_{datetime.now().strftime("%Y%m%d")}.xlsx',
-            content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-            data=excel_buffer.getvalue()
-        )
-        
-        mail.send(msg)
-        
-        return jsonify({'success': True, 'message': f'Approval email sent to {agent_email}'})
+        if success:
+            return jsonify({'success': True, 'message': f'Approval email sent to {agent_email}'})
+        else:
+            return jsonify({'success': False, 'message': f'Error sending email: {message}'})
         
     except Exception as e:
         return jsonify({'success': False, 'message': f'Error sending email: {str(e)}'})
@@ -6978,11 +7043,8 @@ def approve_all_allocations():
                 else:
                     deadline_text = 'N/A (No First Priority work assigned)'
                 
-                # Send email
-                msg = Message(
-                    subject=f'Your Work Allocation - {agent_name}',
-                    recipients=[agent_email],
-                    body=f'''
+                # Prepare email content
+                text_content = f'''
 Dear {agent_name},
 
 Your work allocation has been approved and is attached to this email.
@@ -7012,8 +7074,9 @@ Please find your allocated data in the attached Excel file.
 
 Best regards,
 Allocation Management System
-                    ''',
-                    html=f'''
+                '''
+                
+                html_content = f'''
                     <h2>Work Allocation Approved</h2>
                     <p>Dear <strong>{agent_name}</strong>,</p>
                     <p>Your work allocation has been approved and is attached to this email.</p>
@@ -7052,18 +7115,23 @@ Allocation Management System
                     
                     <p>Best regards,<br>
                     Allocation Management System</p>
-                    '''
+                '''
+                
+                # Send email using Resend
+                attachment_filename = f'{agent_name}_allocation_{datetime.now().strftime("%Y%m%d")}.xlsx'
+                success, message = send_email_with_resend(
+                    to_email=agent_email,
+                    subject=f'Your Work Allocation - {agent_name}',
+                    html_content=html_content,
+                    text_content=text_content,
+                    attachment_data=excel_buffer,
+                    attachment_filename=attachment_filename
                 )
                 
-                # Attach Excel file
-                msg.attach(
-                    filename=f'{agent_name}_allocation_{datetime.now().strftime("%Y%m%d")}.xlsx',
-                    content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-                    data=excel_buffer.getvalue()
-                )
-                
-                mail.send(msg)
-                successful_sends.append(f"{agent_name} ({agent_email})")
+                if success:
+                    successful_sends.append(f"{agent_name} ({agent_email})")
+                else:
+                    failed_sends.append(f"{agent_name}: {message}")
                 
             except Exception as e:
                 failed_sends.append(f"{agent_name}: {str(e)}")
@@ -7377,11 +7445,8 @@ def send_reminder_email(agent_info):
         # Format insurance companies list
         insurance_list = ', '.join(sorted(summary['insurance_companies'])) if summary['insurance_companies'] else 'None'
         
-        # Send reminder email
-        msg = Message(
-            subject=f'Reminder: Please Upload Your Work - {agent_name}',
-            recipients=[agent_email],
-            body=f'''
+        # Prepare email content
+        text_content = f'''
 Dear {agent_name},
 
 This is a friendly reminder to upload your completed work.
@@ -7401,8 +7466,9 @@ This is a friendly reminder to upload your completed work.
 
 Best regards,
 Allocation Management System
-            ''',
-            html=f'''
+        '''
+        
+        html_content = f'''
             <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
                 <h2 style="color: #333;">📧 Work Upload Reminder</h2>
                 <p>Dear <strong>{agent_name}</strong>,</p>
@@ -7430,11 +7496,20 @@ Allocation Management System
                 <p>Best regards,<br>
                 Allocation Management System</p>
             </div>
-            '''
+        '''
+        
+        # Send reminder email using Resend
+        success, message = send_email_with_resend(
+            to_email=agent_email,
+            subject=f'Reminder: Please Upload Your Work - {agent_name}',
+            html_content=html_content,
+            text_content=text_content
         )
         
-        mail.send(msg)
-        return True, f"Reminder sent to {agent_email}"
+        if success:
+            return True, f"Reminder sent to {agent_email}"
+        else:
+            return False, message
         
     except Exception as e:
         return False, str(e)

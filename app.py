@@ -6416,13 +6416,108 @@ def consolidate_agent_files():
         # Create Excel buffer
         excel_buffer = io.BytesIO()
         
+        # Helper function to find remark column
+        def find_remark_column(df):
+            """Find the remark column (case-insensitive)"""
+            for col in df.columns:
+                if col.lower() in ['remark', 'remarks']:
+                    return col
+            return None
+        
         with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
-            # Create summary sheet with updated columns
-            summary_data = []
+            # First pass: Collect all unique remark statuses across all agents
+            all_remark_statuses = set()
+            agent_remarks_data = {}  # Store remarks data per agent
+            
             for work_file in work_files:
                 file_data = work_file.get_file_data()
+                agent_name = work_file.agent.name
+                remarks_dict = {}  # Dictionary to store all remarks with counts for this agent
+                
+                if file_data:
+                    if isinstance(file_data, dict):
+                        # Multiple sheets - process all sheets except Summary
+                        for sheet_name, sheet_data in file_data.items():
+                            # Skip Summary sheet
+                            if sheet_name.lower() == 'summary':
+                                continue
+                                
+                            if isinstance(sheet_data, pd.DataFrame):
+                                # Get remark column
+                                remark_col = find_remark_column(sheet_data)
+                                
+                                if remark_col:
+                                    # Get all remarks (including NaN)
+                                    remark_data = sheet_data[remark_col]
+                                    
+                                    # Count all non-empty remarks by status
+                                    non_empty_remarks = remark_data.dropna()
+                                    for remark in non_empty_remarks:
+                                        # Normalize remark (strip whitespace, handle case)
+                                        remark_normalized = str(remark).strip()
+                                        if remark_normalized:
+                                            remark_lower = remark_normalized.lower()
+                                            # Use original case for display, but normalize for counting
+                                            if remark_lower in remarks_dict:
+                                                remarks_dict[remark_lower] = {
+                                                    'count': remarks_dict[remark_lower]['count'] + 1,
+                                                    'display': remarks_dict[remark_lower]['display']  # Keep first seen case
+                                                }
+                                            else:
+                                                remarks_dict[remark_lower] = {
+                                                    'count': 1,
+                                                    'display': remark_normalized  # Keep original case
+                                                }
+                    elif isinstance(file_data, pd.DataFrame):
+                        # Single DataFrame
+                        # Get remark column
+                        remark_col = find_remark_column(file_data)
+                        
+                        if remark_col:
+                            # Get all remarks (including NaN)
+                            remark_data = file_data[remark_col]
+                            
+                            # Count all non-empty remarks by status
+                            non_empty_remarks = remark_data.dropna()
+                            for remark in non_empty_remarks:
+                                # Normalize remark (strip whitespace, handle case)
+                                remark_normalized = str(remark).strip()
+                                if remark_normalized:
+                                    remark_lower = remark_normalized.lower()
+                                    # Use original case for display, but normalize for counting
+                                    if remark_lower in remarks_dict:
+                                        remarks_dict[remark_lower] = {
+                                            'count': remarks_dict[remark_lower]['count'] + 1,
+                                            'display': remarks_dict[remark_lower]['display']  # Keep first seen case
+                                        }
+                                    else:
+                                        remarks_dict[remark_lower] = {
+                                            'count': 1,
+                                            'display': remark_normalized  # Keep original case
+                                        }
+                
+                # Store remarks data for this agent
+                agent_remarks_data[agent_name] = remarks_dict
+                
+                # Collect all unique remark statuses (using display name)
+                for remark_info in remarks_dict.values():
+                    all_remark_statuses.add(remark_info['display'])
+            
+            # Add empty remarks as a status if needed
+            all_remark_statuses.add('(Empty/No Remark)')
+            
+            # Sort remark statuses alphabetically for consistent column order
+            sorted_remark_statuses = sorted(all_remark_statuses)
+            
+            # Second pass: Create summary data with all remark statuses as columns
+            summary_data = []
+            
+            for work_file in work_files:
+                file_data = work_file.get_file_data()
+                agent_name = work_file.agent.name
                 total_assigned_count = 0
                 completed_count = 0
+                empty_remarks_count = 0
                 
                 # Calculate counts from file data
                 if file_data:
@@ -6437,39 +6532,66 @@ def consolidate_agent_files():
                                 # Total assigned count = all rows (excluding header)
                                 total_assigned_count += len(sheet_data)
                                 
-                                # Count completed (non-Workable remarks)
-                                if 'Remark' in sheet_data.columns:
-                                    # Filter out NaN values and count non-Workable entries
-                                    remark_data = sheet_data['Remark'].dropna()
-                                    completed_count += len(remark_data[remark_data.str.lower() != 'workable'])
-                                elif 'remark' in sheet_data.columns:
-                                    remark_data = sheet_data['remark'].dropna()
-                                    completed_count += len(remark_data[remark_data.str.lower() != 'workable'])
-                                elif 'remarks' in sheet_data.columns:
-                                    remark_data = sheet_data['remarks'].dropna()
-                                    completed_count += len(remark_data[remark_data.str.lower() != 'workable'])
+                                # Get remark column
+                                remark_col = find_remark_column(sheet_data)
+                                
+                                if remark_col:
+                                    # Get all remarks (including NaN)
+                                    remark_data = sheet_data[remark_col]
+                                    
+                                    # Count empty/NaN remarks
+                                    empty_remarks_count += remark_data.isna().sum()
+                                    
+                                    # Count completed (non-Workable remarks)
+                                    non_empty_remarks = remark_data.dropna()
+                                    completed_count += len(non_empty_remarks[non_empty_remarks.str.lower() != 'workable'])
                     elif isinstance(file_data, pd.DataFrame):
                         # Single DataFrame
                         # Total assigned count = all rows (excluding header)
                         total_assigned_count = len(file_data)
                         
-                        # Count completed (non-Workable remarks)
-                        if 'Remark' in file_data.columns:
-                            remark_data = file_data['Remark'].dropna()
-                            completed_count = len(remark_data[remark_data.str.lower() != 'workable'])
-                        elif 'remark' in file_data.columns:
-                            remark_data = file_data['remark'].dropna()
-                            completed_count = len(remark_data[remark_data.str.lower() != 'workable'])
-                        elif 'remarks' in file_data.columns:
-                            remark_data = file_data['remarks'].dropna()
-                            completed_count = len(remark_data[remark_data.str.lower() != 'workable'])
+                        # Get remark column
+                        remark_col = find_remark_column(file_data)
+                        
+                        if remark_col:
+                            # Get all remarks (including NaN)
+                            remark_data = file_data[remark_col]
+                            
+                            # Count empty/NaN remarks
+                            empty_remarks_count = remark_data.isna().sum()
+                            
+                            # Count completed (non-Workable remarks)
+                            non_empty_remarks = remark_data.dropna()
+                            completed_count = len(non_empty_remarks[non_empty_remarks.str.lower() != 'workable'])
                 
-                summary_data.append({
-                    'Agent': work_file.agent.name,
+                # Create row data for this agent
+                row_data = {
+                    'Agent': agent_name,
                     'Total Assigned Count': total_assigned_count,
-                    'Completed Count': completed_count
-                })
+                    'Completed Count': completed_count,
+                    'Empty Remarks Count': empty_remarks_count
+                }
+                
+                # Get remarks data for this agent
+                agent_remarks = agent_remarks_data.get(agent_name, {})
+                
+                # Add count for each remark status column
+                for remark_status in sorted_remark_statuses:
+                    if remark_status == '(Empty/No Remark)':
+                        # Use the empty_remarks_count
+                        row_data[remark_status] = empty_remarks_count
+                    else:
+                        # Find matching remark in agent's remarks (case-insensitive)
+                        count = 0
+                        for remark_lower, remark_info in agent_remarks.items():
+                            if remark_info['display'] == remark_status:
+                                count = remark_info['count']
+                                break
+                        row_data[remark_status] = count
+                
+                summary_data.append(row_data)
             
+            # Create summary DataFrame
             summary_df = pd.DataFrame(summary_data)
             summary_df.to_excel(writer, sheet_name='Summary', index=False)
             

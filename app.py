@@ -80,7 +80,7 @@ app.config['MAIL_DEFAULT_SENDER'] = 'imagen.tracker.mnc@gmail.com'
 mail = Mail(app)
 
 # Resend email configuration
-resend.api_key = os.environ.get('RESEND_API_KEY', 're_KVjn4UNT_JLmkx8DG7psRxVuoAAWzcwT2')
+resend.api_key = os.environ.get('RESEND_API_KEY')
 
 # Global variable to store agent allocations data for reminders
 agent_allocations_for_reminders = None

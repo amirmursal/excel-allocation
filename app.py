@@ -6394,8 +6394,8 @@ def upload_status_file():
 def consolidate_agent_files():
     """Consolidate all agent work files into one Excel file"""
     try:
-        # Get all agent work files (only uploaded ones for consolidation)
-        work_files = AgentWorkFile.query.filter_by(status='uploaded').order_by(AgentWorkFile.upload_date.desc()).all()
+        # Get all agent work files (all files regardless of status - includes previously consolidated and newly uploaded)
+        work_files = AgentWorkFile.query.order_by(AgentWorkFile.upload_date.desc()).all()
         
         if not work_files:
             flash('No agent work files found to consolidate', 'warning')

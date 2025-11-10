@@ -5,7 +5,6 @@ Admin can upload allocation and data files, Agent can upload status files
 """
 
 from flask import Flask, render_template_string, request, jsonify, send_file, redirect, session, url_for, flash
-from flask_mail import Mail, Message
 from flask_sqlalchemy import SQLAlchemy
 from flask_migrate import Migrate
 import pandas as pd
@@ -67,17 +66,6 @@ app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 # Initialize database
 db = SQLAlchemy(app)
 migrate = Migrate(app, db)
-
-# Email configuration
-app.config['MAIL_SERVER'] = 'smtp.gmail.com'
-app.config['MAIL_PORT'] = 587
-app.config['MAIL_USE_TLS'] = True
-app.config['MAIL_USERNAME'] = 'imagen.tracker.mnc@gmail.com'
-app.config['MAIL_PASSWORD'] = 'ldpw ahsv cdyu amid'    
-app.config['MAIL_DEFAULT_SENDER'] = 'imagen.tracker.mnc@gmail.com'
-
-# Initialize Flask-Mail
-mail = Mail(app)
 
 # Resend email configuration
 resend.api_key = os.environ.get('RESEND_API_KEY')

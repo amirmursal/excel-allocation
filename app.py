@@ -532,6 +532,23 @@ def get_all_agent_work_files():
     # Return all files regardless of status so admin can see all uploaded files
     return AgentWorkFile.query.order_by(AgentWorkFile.upload_date.desc()).all()
 
+# Template filter to convert datetime to IST
+@app.template_filter('to_ist')
+def to_ist_filter(dt):
+    """Convert datetime to IST (Asia/Kolkata) timezone"""
+    if dt is None:
+        return None
+    
+    # If datetime is naive (no timezone info), assume it's UTC
+    if dt.tzinfo is None:
+        dt = pytz.UTC.localize(dt)
+    
+    # Convert to IST
+    ist_timezone = pytz.timezone('Asia/Kolkata')
+    ist_time = dt.astimezone(ist_timezone)
+    
+    return ist_time
+
 # Google OAuth helper functions
 def get_google_provider_cfg():
     """Get Google OAuth provider configuration"""
@@ -1942,7 +1959,7 @@ HTML_TEMPLATE = """
                                 <strong>{{ work_file.agent.name }}</strong> - {{ work_file.filename }}
                                 <br>
                                 <small style="color: #666;">
-                                    Uploaded: {{ work_file.upload_date.strftime('%Y-%m-%d %H:%M') }}
+                                    Uploaded: {{ (work_file.upload_date | to_ist).strftime('%Y-%m-%d %I:%M %p') }} IST
                                     | Status: <span style="color: {% if work_file.status == 'uploaded' %}#28a745{% elif work_file.status == 'consolidated' %}#007bff{% else %}#6c757d{% endif %}">{{ work_file.status.title() }}</span>
                                 </small>
                                 {% if work_file.notes %}
@@ -2013,7 +2030,7 @@ HTML_TEMPLATE = """
                                     <strong>{{ work_file.filename }}</strong>
                                     <br>
                                     <small style="color: #666;">
-                                        Uploaded: {{ work_file.upload_date.strftime('%Y-%m-%d %H:%M') }}
+                                        Uploaded: {{ (work_file.upload_date | to_ist).strftime('%Y-%m-%d %I:%M %p') }} IST
                                         | Status: <span style="color: {% if work_file.status == 'uploaded' %}#28a745{% elif work_file.status == 'consolidated' %}#007bff{% else %}#6c757d{% endif %}">{{ work_file.status.title() }}</span>
                                     </small>
                                     {% if work_file.notes %}

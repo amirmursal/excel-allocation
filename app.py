@@ -6641,6 +6641,21 @@ def consolidate_agent_files():
             # Create combined sheet with all agent data
             if all_agent_data:
                 combined_df = pd.concat(all_agent_data, ignore_index=True)
+                
+                # Format all date columns to MM/DD/YYYY format
+                for col in combined_df.columns:
+                    if 'date' in col.lower():
+                        try:
+                            # Convert to datetime if not already
+                            combined_df[col] = pd.to_datetime(combined_df[col], errors='coerce')
+                            # Format as MM/DD/YYYY, handling NaT (Not a Time) values
+                            combined_df[col] = combined_df[col].apply(
+                                lambda x: x.strftime('%m/%d/%Y') if pd.notna(x) else ''
+                            )
+                        except Exception:
+                            # If conversion fails, leave column as is
+                            pass
+                
                 combined_df.to_excel(writer, sheet_name='All Agent Data', index=False)
             else:
                 # Fallback if no data found

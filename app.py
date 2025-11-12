@@ -1969,11 +1969,18 @@ HTML_TEMPLATE = """
                             </div>
                             {% endfor %}
                         </div>
-                        <form action="/consolidate_agent_files" method="post">
-                            <button type="submit" class="process-btn" style="background: linear-gradient(135deg, #e74c3c, #c0392b);">
-                                <i class="fas fa-compress-arrows-alt"></i> Consolidate All Agent Files
-                            </button>
-                        </form>
+                        <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+                            <form action="/consolidate_agent_files" method="post" style="margin: 0;">
+                                <button type="submit" class="process-btn" style="background: linear-gradient(135deg, #28a745, #20c997);">
+                                    <i class="fas fa-compress-arrows-alt"></i> Consolidate All Agent Files
+                                </button>
+                            </form>
+                            <form action="/clear_all_agent_files" method="post" style="margin: 0;" onsubmit="return confirm('Are you sure you want to delete all files? This action cannot be undone.');">
+                                <button type="submit" class="process-btn" style="background: linear-gradient(135deg, #dc3545, #c82333);">
+                                    <i class="fas fa-trash-alt"></i> Clear all files
+                                </button>
+                            </form>
+                        </div>
                     </div>
                     {% else %}
                     <div class="section">
@@ -6549,7 +6556,10 @@ def consolidate_agent_files():
                                     
                                     # Count completed (non-Workable remarks)
                                     non_empty_remarks = remark_data.dropna()
-                                    completed_count += len(non_empty_remarks[non_empty_remarks.str.lower() != 'workable'])
+                                    # Convert to string first to handle mixed types
+                                    if len(non_empty_remarks) > 0:
+                                        non_empty_remarks_str = non_empty_remarks.astype(str).str.lower()
+                                        completed_count += len(non_empty_remarks_str[non_empty_remarks_str != 'workable'])
                     elif isinstance(file_data, pd.DataFrame):
                         # Single DataFrame
                         # Total assigned count = all rows (excluding header)
@@ -6567,7 +6577,12 @@ def consolidate_agent_files():
                             
                             # Count completed (non-Workable remarks)
                             non_empty_remarks = remark_data.dropna()
-                            completed_count = len(non_empty_remarks[non_empty_remarks.str.lower() != 'workable'])
+                            # Convert to string first to handle mixed types
+                            if len(non_empty_remarks) > 0:
+                                non_empty_remarks_str = non_empty_remarks.astype(str).str.lower()
+                                completed_count = len(non_empty_remarks_str[non_empty_remarks_str != 'workable'])
+                            else:
+                                completed_count = 0
                 
                 # Create row data for this agent
                 row_data = {
@@ -6650,6 +6665,30 @@ def consolidate_agent_files():
         
     except Exception as e:
         flash(f'Error consolidating agent files: {str(e)}', 'error')
+        return redirect('/')
+
+@app.route('/clear_all_agent_files', methods=['POST'])
+@admin_required
+def clear_all_agent_files():
+    """Clear all agent work files from the database"""
+    try:
+        # Get all agent work files
+        all_files = AgentWorkFile.query.all()
+        file_count = len(all_files)
+        
+        if file_count > 0:
+            for work_file in all_files:
+                db.session.delete(work_file)
+            db.session.commit()
+            flash(f'✅ Successfully cleared {file_count} file(s)', 'success')
+        else:
+            flash('ℹ️ No files found to clear', 'info')
+        
+        return redirect('/')
+        
+    except Exception as e:
+        db.session.rollback()
+        flash(f'❌ Error clearing files: {str(e)}', 'error')
         return redirect('/')
 
 @app.route('/get_appointment_dates')

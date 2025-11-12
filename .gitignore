@@ -26,6 +26,12 @@ wheels/
 *.egg
 MANIFEST
 
+# Virtual Environment
+venv/
+env/
+ENV/
+.venv/
+
 # Flask
 instance/
 .webassets-cache

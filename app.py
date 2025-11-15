@@ -4670,6 +4670,139 @@ def detect_and_assign_new_insurance_companies(data_df, agent_data, insurance_car
     except Exception as e:
         return agent_data, []
 
+def parse_excel_date(value):
+    """
+    Robustly parse dates from Excel that works consistently across Windows and Mac.
+    Handles:
+    - Excel serial numbers (days since 1899-12-30)
+    - String dates
+    - Already parsed datetime objects
+    - Filters out invalid dates (like Excel's 1900 leap year bug artifacts)
+    """
+    from datetime import datetime, timedelta, date
+    import pandas as pd
+    
+    if pd.isna(value):
+        return None
+    
+    # If it's already a date object (not datetime), return it
+    if isinstance(value, date) and not isinstance(value, datetime):
+        # Validate the date is in a reasonable range
+        if 2000 <= value.year <= 2100:
+            return value
+        return None
+    
+    # If it's already a datetime object, extract date
+    if isinstance(value, datetime):
+        if 2000 <= value.year <= 2100:
+            return value.date()
+        return None
+    
+    # If it has a date() method (like pandas Timestamp), use it
+    if hasattr(value, 'date') and callable(value.date):
+        try:
+            date_obj = value.date()
+            if isinstance(date_obj, date) and 2000 <= date_obj.year <= 2100:
+                return date_obj
+        except (AttributeError, ValueError):
+            pass
+    
+    # Try to parse as Excel serial number (common on Windows)
+    # Excel stores dates as days since 1899-12-30 (with a bug treating 1900 as leap year)
+    try:
+        if isinstance(value, (int, float)):
+            # Excel serial number: days since 1899-12-30
+            excel_epoch = datetime(1899, 12, 30)
+            days = float(value)
+            
+            # Only process if it looks like a reasonable Excel date serial number
+            # Excel dates typically range from ~1 (1900-01-01) to ~73050 (2099-12-31)
+            # But we only want dates from 2000 onwards to avoid false positives
+            # 2000-01-01 is approximately serial number 36526
+            if 36526 <= days <= 73050:
+                parsed_date = excel_epoch + timedelta(days=int(days))
+                # Additional validation: check if year is reasonable (2000-2100)
+                if 2000 <= parsed_date.year <= 2100:
+                    return parsed_date.date()
+    except (ValueError, TypeError, OverflowError, OSError):
+        pass
+    
+    # Try to parse string dates with explicit MM/DD/YYYY format first
+    # This handles formats like "11/17/2025 12:00:00 AM" or "11/17/2025"
+    if isinstance(value, str):
+        value_str = str(value).strip()
+        
+        # Try MM/DD/YYYY format (US format)
+        # Handle formats like:
+        # - "11/17/2025"
+        # - "11/17/2025 12:00:00 AM"
+        # - "11/17/2025 12:00:00"
+        try:
+            # Remove time component if present
+            date_part = value_str.split()[0] if ' ' in value_str else value_str
+            
+            # Try MM/DD/YYYY format (US format)
+            if '/' in date_part:
+                parts = date_part.split('/')
+                if len(parts) == 3:
+                    first, second, year = parts
+                    first_int = int(first)
+                    second_int = int(second)
+                    year_int = int(year)
+                    
+                    # Determine if it's MM/DD/YYYY or DD/MM/YYYY
+                    # If first > 12, it must be DD/MM/YYYY (month can't be > 12 in MM/DD)
+                    # If second > 12, it must be MM/DD/YYYY (day can't be > 12 in DD/MM)
+                    # Otherwise, prefer MM/DD/YYYY as user specified
+                    if first_int > 12:
+                        # Must be DD/MM/YYYY (first=day, second=month)
+                        try:
+                            parsed_date = datetime(year_int, second_int, first_int)
+                            if 2000 <= parsed_date.year <= 2100:
+                                return parsed_date.date()
+                        except ValueError:
+                            pass
+                    elif second_int > 12:
+                        # Must be MM/DD/YYYY (first=month, second=day)
+                        try:
+                            parsed_date = datetime(year_int, first_int, second_int)
+                            if 2000 <= parsed_date.year <= 2100:
+                                return parsed_date.date()
+                        except ValueError:
+                            pass
+                    else:
+                        # Ambiguous (both <= 12) - try MM/DD/YYYY first (as user specified)
+                        # Try as MM/DD/YYYY: first=month, second=day
+                        try:
+                            parsed_date = datetime(year_int, first_int, second_int)
+                            if 2000 <= parsed_date.year <= 2100:
+                                return parsed_date.date()
+                        except ValueError:
+                            # If MM/DD fails, try DD/MM as fallback
+                            try:
+                                parsed_date = datetime(year_int, second_int, first_int)
+                                if 2000 <= parsed_date.year <= 2100:
+                                    return parsed_date.date()
+                            except ValueError:
+                                pass
+        except (ValueError, TypeError, IndexError):
+            pass
+    
+    # Try pandas to_datetime with dayfirst=False to prefer MM/DD/YYYY format
+    try:
+        # Use dayfirst=False (default) to prefer MM/DD/YYYY over DD/MM/YYYY
+        parsed = pd.to_datetime(value, errors='coerce', dayfirst=False)
+        if pd.notna(parsed):
+            parsed_date = parsed.to_pydatetime()
+            # Filter out invalid dates (before 2000 or after 2100)
+            if 2000 <= parsed_date.year <= 2100:
+                return parsed_date.date()
+    except (ValueError, TypeError, OverflowError, OSError):
+        pass
+    
+    # If all parsing fails, return None
+    return None
+
 def get_nth_business_day(start_date, n):
     """Get the nth business day from start_date"""
     from datetime import timedelta
@@ -4705,8 +4838,9 @@ def process_allocation_files(allocation_df, data_df):
             return f"❌ Error: 'Appointment Date' column not found in data file.\nAvailable columns: {list(processed_df.columns)}", None
         
         # Convert appointment date column to datetime and remove time component
+        # Use robust date parsing that works consistently across Windows and Mac
         try:
-            processed_df[appointment_date_col] = pd.to_datetime(processed_df[appointment_date_col], errors='coerce').dt.date
+            processed_df[appointment_date_col] = processed_df[appointment_date_col].apply(parse_excel_date)
         except Exception as e:
             return f"❌ Error converting appointment dates: {str(e)}", None
         
@@ -4814,10 +4948,19 @@ def process_allocation_files_with_dates(allocation_df, data_df, selected_dates, 
             return f"❌ Error: 'Appointment Date' column not found in data file.\nAvailable columns: {list(processed_df.columns)}", None
         
         # Convert appointment date column to datetime and remove time component
+        # Use robust date parsing that works consistently across Windows and Mac
         try:
-            processed_df[appointment_date_col] = pd.to_datetime(processed_df[appointment_date_col], errors='coerce').dt.date
+            processed_df[appointment_date_col] = processed_df[appointment_date_col].apply(parse_excel_date)
         except Exception as e:
             return f"❌ Error converting appointment dates: {str(e)}", None
+        
+        # Parse receive date column if it exists (using robust date parsing)
+        if receive_date_col and receive_date_col in processed_df.columns:
+            try:
+                processed_df[receive_date_col] = processed_df[receive_date_col].apply(parse_excel_date)
+            except Exception as e:
+                # If receive date parsing fails, log but don't fail the whole process
+                print(f"Warning: Error parsing receive dates: {str(e)}")
         
         # Check if Priority Status column exists, if not create it
         if 'Priority Status' not in processed_df.columns:
@@ -4885,11 +5028,9 @@ def process_allocation_files_with_dates(allocation_df, data_df, selected_dates, 
                 should_include = True
                 if receive_dates and receive_date_col and receive_date_col in processed_df.columns:
                     receive_date = row[receive_date_col]
-                    if not pd.isna(receive_date):
-                        # Convert receive date to string format
-                        receive_date_str = str(receive_date)
-                        if ' ' in receive_date_str:
-                            receive_date_str = receive_date_str.split(' ')[0]
+                    if not pd.isna(receive_date) and receive_date is not None:
+                        # Convert receive date to string format for comparison
+                        receive_date_str = receive_date.strftime('%Y-%m-%d') if hasattr(receive_date, 'strftime') else str(receive_date)
                         
                         # Convert receive dates to YYYY-MM-DD format for comparison
                         receive_dates_yyyy_mm_dd = set()
@@ -6013,7 +6154,8 @@ def upload_allocation_file():
         file.save(filename)
         
         # Load Excel file
-        allocation_data = pd.read_excel(filename, sheet_name=None)
+        # Use parse_dates=False to prevent automatic date parsing that differs between Windows and Mac
+        allocation_data = pd.read_excel(filename, sheet_name=None, parse_dates=False)
         
         # Focus on "main" sheet if it exists, otherwise use all sheets
         sheets_to_process = {}
@@ -6115,7 +6257,8 @@ def upload_data_file():
         file.save(filename)
         
         # Load Excel file
-        data_file_data = pd.read_excel(filename, sheet_name=None)
+        # Use parse_dates=False to prevent automatic date parsing that differs between Windows and Mac
+        data_file_data = pd.read_excel(filename, sheet_name=None, parse_dates=False)
         
         # Format insurance company names in "Dental Primary Ins Carr" column for better allocation
         for sheet_name, df in data_file_data.items():
@@ -6356,7 +6499,8 @@ def upload_work_file():
         
         # Load and process Excel file
         try:
-            file_data = pd.read_excel(filename, sheet_name=None)
+            # Use parse_dates=False to prevent automatic date parsing that differs between Windows and Mac
+            file_data = pd.read_excel(filename, sheet_name=None, parse_dates=False)
             
             # Validate required columns
             is_valid, missing_columns = validate_agent_work_file_columns(file_data)
@@ -6728,22 +6872,21 @@ def get_appointment_dates():
         if appointment_date_col is None:
             return jsonify({'error': 'Appointment Date column not found'}), 400
         
-        # Get unique appointment dates with row counts
-        appointment_dates = data_df[appointment_date_col].dropna().unique()
+        # Parse dates using robust date parsing that works consistently across Windows and Mac
+        parsed_dates = data_df[appointment_date_col].apply(parse_excel_date)
+        
+        # Get unique valid appointment dates (filter out None/invalid dates)
+        valid_dates = parsed_dates.dropna().unique()
         
         # Convert to string format and count rows for each date
         date_data = []
-        for date in appointment_dates:
-            if hasattr(date, 'date'):
-                date_str = date.date().strftime('%Y-%m-%d')
-            else:
-                date_str = str(date)
+        for date_obj in valid_dates:
+            if date_obj is None:
+                continue
+            date_str = date_obj.strftime('%Y-%m-%d')
             
             # Count rows for this specific date
-            if hasattr(date, 'date'):
-                row_count = len(data_df[data_df[appointment_date_col].dt.date == date.date()])
-            else:
-                row_count = len(data_df[data_df[appointment_date_col] == date])
+            row_count = len(data_df[parsed_dates == date_obj])
             
             date_data.append({
                 'date': date_str,
@@ -6800,32 +6943,35 @@ def get_receive_dates():
                     break
             
             if appointment_date_col:
-                # Convert appointment dates to the same format as in the dataframe
+                # Parse appointment dates using robust date parsing
+                parsed_appointment_dates = data_df[appointment_date_col].apply(parse_excel_date)
+                
+                # Convert selected appointment dates to date objects for comparison
                 appointment_dates_formatted = []
                 for date_str in appointment_dates:
                     try:
-                        # Try to parse the date string and convert to the format used in dataframe
                         from datetime import datetime
                         parsed_date = datetime.strptime(date_str, '%Y-%m-%d').date()
                         appointment_dates_formatted.append(parsed_date)
                     except:
-                        # If parsing fails, try to match as string
-                        appointment_dates_formatted.append(date_str)
+                        pass  # Skip invalid dates
                 
-                # Filter rows where appointment date matches any of the selected dates
-                mask = data_df[appointment_date_col].isin(appointment_dates_formatted)
+                # Filter rows where parsed appointment date matches any of the selected dates
+                mask = parsed_appointment_dates.isin(appointment_dates_formatted)
                 filtered_df = data_df[mask]
         
-        # Get unique receive dates from filtered data
-        receive_dates = filtered_df[receive_date_col].dropna().unique()
+        # Parse receive dates using robust date parsing that works consistently across Windows and Mac
+        parsed_receive_dates = filtered_df[receive_date_col].apply(parse_excel_date)
+        
+        # Get unique valid receive dates (filter out None/invalid dates)
+        valid_receive_dates = parsed_receive_dates.dropna().unique()
         
         # Convert to string format and sort
         date_strings = []
-        for date in receive_dates:
-            if hasattr(date, 'date'):
-                date_str = date.date().strftime('%Y-%m-%d')
-            else:
-                date_str = str(date)
+        for date_obj in valid_receive_dates:
+            if date_obj is None:
+                continue
+            date_str = date_obj.strftime('%Y-%m-%d')
             date_strings.append(date_str)
         
         date_strings.sort()

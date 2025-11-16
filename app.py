@@ -5554,39 +5554,94 @@ def process_allocation_files_with_dates(allocation_df, data_df, selected_dates, 
                             pass
                             
                             # Allocate all First Priority matched work to senior agents, maximizing capacity utilization
+                            # But apply Domain/Remark rule: NTBP rows only to PB agents, PB agents only get NTBP rows
+                            
+                            # Separate priority work into NTBP and non-NTBP
+                            ntbp_priority_work = []
+                            non_ntbp_priority_work = []
+                            
+                            if remark_col and remark_col in processed_df.columns:
+                                for insurance_carrier, row_idx in priority_work:
+                                    row_remark = None
+                                    if pd.notna(processed_df.at[row_idx, remark_col]):
+                                        row_remark = str(processed_df.at[row_idx, remark_col]).strip().upper()
+                                    
+                                    if row_remark == 'NTBP':
+                                        ntbp_priority_work.append((insurance_carrier, row_idx))
+                                    else:
+                                        non_ntbp_priority_work.append((insurance_carrier, row_idx))
+                            else:
+                                # If no remark column, all rows are non-NTBP
+                                non_ntbp_priority_work = priority_work.copy()
+                            
+                            # Separate senior agents into PB and non-PB
+                            pb_senior_agents = [a for a in senior_agents if a.get('domain') and str(a.get('domain')).strip().upper() == 'PB']
+                            non_pb_senior_agents = [a for a in senior_agents if not (a.get('domain') and str(a.get('domain')).strip().upper() == 'PB')]
+                            
+                            # Allocate NTBP priority work only to PB senior agents
                             work_idx = 0
-                            while work_idx < len(priority_work):
-                                # Check if any senior agent has capacity
-                                available_seniors = [a for a in senior_agents if (a['capacity'] - a['allocated']) > 0]
-                                if not available_seniors:
-                                    # No more senior capacity for First Priority
-                                    remaining = len(priority_work) - work_idx
+                            while work_idx < len(ntbp_priority_work):
+                                available_pb_seniors = [a for a in pb_senior_agents if (a['capacity'] - a['allocated']) > 0]
+                                if not available_pb_seniors:
                                     break
                                 
-                                # Sort by remaining capacity (highest first) to fill largest capacity first
-                                available_seniors.sort(key=lambda x: x['capacity'] - x['allocated'], reverse=True)
+                                available_pb_seniors.sort(key=lambda x: x['capacity'] - x['allocated'], reverse=True)
                                 
-                                # Allocate to senior agents in batches to maximize capacity utilization
-                                for senior_agent in available_seniors:
-                                    if work_idx >= len(priority_work):
+                                for senior_agent in available_pb_seniors:
+                                    if work_idx >= len(ntbp_priority_work):
                                         break
                                     
                                     available_capacity = senior_agent['capacity'] - senior_agent['allocated']
                                     if available_capacity <= 0:
                                         continue
                                     
-                                    # Calculate how many rows to assign to this agent (use all available capacity)
-                                    remaining_work = len(priority_work) - work_idx
+                                    remaining_work = len(ntbp_priority_work) - work_idx
                                     rows_to_assign = min(available_capacity, remaining_work)
                                     
                                     if rows_to_assign > 0:
-                                        # Allocate batch of rows to this senior agent
                                         agent_id = senior_agent.get('id', senior_agent.get('name', 'Unknown'))
                                         for i in range(rows_to_assign):
-                                            insurance_carrier, row_idx = priority_work[work_idx + i]
+                                            insurance_carrier, row_idx = ntbp_priority_work[work_idx + i]
                                             senior_agent['row_indices'].append(row_idx)
                                             
-                                            # Track INS and Toolkit group allocations (case-insensitive)
+                                            if agent_id in ins_group_allocations:
+                                                insurance_carrier_upper = insurance_carrier.upper().strip()
+                                                if any(insurance_carrier_upper == ic.upper().strip() for ic in DD_INS_GROUP):
+                                                    ins_group_allocations[agent_id] += 1
+                                            if agent_id in toolkit_group_allocations:
+                                                insurance_carrier_upper = insurance_carrier.upper().strip()
+                                                if any(insurance_carrier_upper == ic.upper().strip() for ic in DD_TOOLKIT_GROUP):
+                                                    toolkit_group_allocations[agent_id] += 1
+                                        
+                                        senior_agent['allocated'] += rows_to_assign
+                                        work_idx += rows_to_assign
+                            
+                            # Allocate non-NTBP priority work only to non-PB senior agents
+                            work_idx = 0
+                            while work_idx < len(non_ntbp_priority_work):
+                                available_non_pb_seniors = [a for a in non_pb_senior_agents if (a['capacity'] - a['allocated']) > 0]
+                                if not available_non_pb_seniors:
+                                    break
+                                
+                                available_non_pb_seniors.sort(key=lambda x: x['capacity'] - x['allocated'], reverse=True)
+                                
+                                for senior_agent in available_non_pb_seniors:
+                                    if work_idx >= len(non_ntbp_priority_work):
+                                        break
+                                    
+                                    available_capacity = senior_agent['capacity'] - senior_agent['allocated']
+                                    if available_capacity <= 0:
+                                        continue
+                                    
+                                    remaining_work = len(non_ntbp_priority_work) - work_idx
+                                    rows_to_assign = min(available_capacity, remaining_work)
+                                    
+                                    if rows_to_assign > 0:
+                                        agent_id = senior_agent.get('id', senior_agent.get('name', 'Unknown'))
+                                        for i in range(rows_to_assign):
+                                            insurance_carrier, row_idx = non_ntbp_priority_work[work_idx + i]
+                                            senior_agent['row_indices'].append(row_idx)
+                                            
                                             if agent_id in ins_group_allocations:
                                                 insurance_carrier_upper = insurance_carrier.upper().strip()
                                                 if any(insurance_carrier_upper == ic.upper().strip() for ic in DD_INS_GROUP):
@@ -5602,7 +5657,7 @@ def process_allocation_files_with_dates(allocation_df, data_df, selected_dates, 
                                         # Log the allocation
                                 
                                 # Log progress
-                                if work_idx % 50 == 0 and work_idx < len(priority_work):
+                                if work_idx % 50 == 0 and work_idx < len(non_ntbp_priority_work):
                                     pass
                             
                         else:
@@ -5665,9 +5720,14 @@ def process_allocation_files_with_dates(allocation_df, data_df, selected_dates, 
                                                         
                                                         row_is_ntbp = (row_remark == 'NTBP')
                                                         
-                                                        # Rule: NTBP rows only go to PB agents, and PB agents only get NTBP rows
-                                                        if (row_is_ntbp and agent_is_pb) or (not row_is_ntbp and not agent_is_pb):
+                                                        # Rule: NTBP rows only go to PB agents, and PB agents only get NTBP rows (irrespective of priority)
+                                                        if row_is_ntbp and agent_is_pb:
+                                                            # NTBP row and PB agent - match
                                                             matching_rows.append(actual_row_idx)
+                                                        elif not row_is_ntbp and not agent_is_pb:
+                                                            # Non-NTBP row and non-PB agent - match
+                                                            matching_rows.append(actual_row_idx)
+                                                        # Otherwise: NTBP row with non-PB agent, or non-NTBP row with PB agent - no match
                                                     
                                                     rows_to_assign = len(matching_rows)
                                                     if rows_to_assign > 0:
@@ -5752,34 +5812,9 @@ def process_allocation_files_with_dates(allocation_df, data_df, selected_dates, 
                                                     needs_training = True
                                                     break
                                         
-                                        # Check Domain and Remark rule: 
-                                        # - If row has Remark="NTBP", only assign to agents with Domain="PB"
-                                        # - If agent has Domain="PB", only assign rows with Remark="NTBP"
-                                        domain_remark_match = True
-                                        agent_domain = agent.get('domain')
-                                        agent_is_pb = (agent_domain is not None and agent_domain.upper() == 'PB')
-                                        
-                                        if remark_col and remark_col in processed_df.columns:
-                                            # Check all rows in this batch
-                                            for row_idx in unallocated_row_indices:
-                                                row_remark = None
-                                                if pd.notna(processed_df.at[row_idx, remark_col]):
-                                                    row_remark = str(processed_df.at[row_idx, remark_col]).strip().upper()
-                                                
-                                                row_is_ntbp = (row_remark == 'NTBP')
-                                                
-                                                # Rule: NTBP rows only go to PB agents, and PB agents only get NTBP rows
-                                                if row_is_ntbp and not agent_is_pb:
-                                                    # Row is NTBP but agent is not PB - don't assign
-                                                    domain_remark_match = False
-                                                    break
-                                                elif not row_is_ntbp and agent_is_pb:
-                                                    # Row is not NTBP but agent is PB - don't assign
-                                                    domain_remark_match = False
-                                                    break
-                                        
-                                        # Agent is capable only if they can work AND don't need training AND match domain/remark rule
-                                        if can_work and not needs_training and domain_remark_match:
+                                        # Agent is capable if they can work AND don't need training
+                                        # Domain/Remark filtering will happen when assigning rows
+                                        if can_work and not needs_training:
                                             capable_agents.append(agent)
                                     
                                     if capable_agents:
@@ -5794,50 +5829,135 @@ def process_allocation_files_with_dates(allocation_df, data_df, selected_dates, 
                                                 continue
                                         
                                         # Distribute rows among capable agents
-                                        rows_per_agent = len(unallocated_row_indices) // len(capable_agents)
-                                        remaining_rows = len(unallocated_row_indices) % len(capable_agents)
+                                        # First, separate rows into NTBP and non-NTBP based on Domain/Remark rule
+                                        ntbp_rows = []
+                                        non_ntbp_rows = []
                                         
-                                        row_idx = 0
-                                        for i, agent in enumerate(capable_agents):
-                                            # Calculate how many rows this agent should get
-                                            agent_rows = rows_per_agent
-                                            if i < remaining_rows:
-                                                agent_rows += 1
-                                            
-                                            # Ensure we don't exceed agent's capacity
-                                            available_capacity = agent['capacity'] - agent['allocated']
-                                            actual_rows = min(agent_rows, available_capacity, len(unallocated_row_indices) - row_idx)
-                                            
-                                            if actual_rows > 0:
-                                                # Assign specific row indices to this agent
-                                                agent['row_indices'].extend(unallocated_row_indices[row_idx:row_idx + actual_rows])
-                                                agent['allocated'] += actual_rows
+                                        if remark_col and remark_col in processed_df.columns:
+                                            for row_idx in unallocated_row_indices:
+                                                row_remark = None
+                                                if pd.notna(processed_df.at[row_idx, remark_col]):
+                                                    row_remark = str(processed_df.at[row_idx, remark_col]).strip().upper()
                                                 
-                                                # Track INS and Toolkit group allocations (case-insensitive)
-                                                agent_id = agent.get('id', agent.get('name', 'Unknown'))
-                                                insurance_carrier_upper = insurance_carrier.upper().strip()
-                                                if agent_id in ins_group_allocations:
-                                                    # Check if this insurance carrier is in DD_INS_GROUP
-                                                    if any(insurance_carrier_upper == ic.upper().strip() for ic in DD_INS_GROUP):
-                                                        ins_group_allocations[agent_id] += actual_rows
-                                                if agent_id in toolkit_group_allocations:
-                                                    # Check if this insurance carrier is in DD_TOOLKIT_GROUP
-                                                    if any(insurance_carrier_upper == ic.upper().strip() for ic in DD_TOOLKIT_GROUP):
-                                                        toolkit_group_allocations[agent_id] += actual_rows
+                                                if row_remark == 'NTBP':
+                                                    ntbp_rows.append(row_idx)
+                                                else:
+                                                    non_ntbp_rows.append(row_idx)
+                                        else:
+                                            # If no remark column, all rows are non-NTBP
+                                            non_ntbp_rows = unallocated_row_indices.copy()
+                                        
+                                        # Separate agents into PB and non-PB
+                                        pb_agents = [a for a in capable_agents if a.get('domain') and str(a.get('domain')).strip().upper() == 'PB']
+                                        non_pb_agents = [a for a in capable_agents if not (a.get('domain') and str(a.get('domain')).strip().upper() == 'PB')]
+                                        
+                                        # Allocate NTBP rows only to PB agents
+                                        if ntbp_rows and pb_agents:
+                                            rows_per_pb_agent = len(ntbp_rows) // len(pb_agents)
+                                            remaining_ntbp_rows = len(ntbp_rows) % len(pb_agents)
+                                            
+                                            row_idx = 0
+                                            for i, agent in enumerate(pb_agents):
+                                                agent_rows = rows_per_pb_agent
+                                                if i < remaining_ntbp_rows:
+                                                    agent_rows += 1
                                                 
-                                                row_idx += actual_rows
+                                                available_capacity = agent['capacity'] - agent['allocated']
+                                                actual_rows = min(agent_rows, available_capacity, len(ntbp_rows) - row_idx)
+                                                
+                                                if actual_rows > 0:
+                                                    agent['row_indices'].extend(ntbp_rows[row_idx:row_idx + actual_rows])
+                                                    agent['allocated'] += actual_rows
+                                                    
+                                                    # Track INS and Toolkit group allocations
+                                                    agent_id = agent.get('id', agent.get('name', 'Unknown'))
+                                                    insurance_carrier_upper = insurance_carrier.upper().strip()
+                                                    if agent_id in ins_group_allocations:
+                                                        if any(insurance_carrier_upper == ic.upper().strip() for ic in DD_INS_GROUP):
+                                                            ins_group_allocations[agent_id] += actual_rows
+                                                    if agent_id in toolkit_group_allocations:
+                                                        if any(insurance_carrier_upper == ic.upper().strip() for ic in DD_TOOLKIT_GROUP):
+                                                            toolkit_group_allocations[agent_id] += actual_rows
+                                                    
+                                                    row_idx += actual_rows
+                                        
+                                        # Allocate non-NTBP rows only to non-PB agents
+                                        if non_ntbp_rows and non_pb_agents:
+                                            rows_per_non_pb_agent = len(non_ntbp_rows) // len(non_pb_agents)
+                                            remaining_non_ntbp_rows = len(non_ntbp_rows) % len(non_pb_agents)
+                                            
+                                            row_idx = 0
+                                            for i, agent in enumerate(non_pb_agents):
+                                                agent_rows = rows_per_non_pb_agent
+                                                if i < remaining_non_ntbp_rows:
+                                                    agent_rows += 1
+                                                
+                                                available_capacity = agent['capacity'] - agent['allocated']
+                                                actual_rows = min(agent_rows, available_capacity, len(non_ntbp_rows) - row_idx)
+                                                
+                                                if actual_rows > 0:
+                                                    agent['row_indices'].extend(non_ntbp_rows[row_idx:row_idx + actual_rows])
+                                                    agent['allocated'] += actual_rows
+                                                    
+                                                    # Track INS and Toolkit group allocations
+                                                    agent_id = agent.get('id', agent.get('name', 'Unknown'))
+                                                    insurance_carrier_upper = insurance_carrier.upper().strip()
+                                                    if agent_id in ins_group_allocations:
+                                                        if any(insurance_carrier_upper == ic.upper().strip() for ic in DD_INS_GROUP):
+                                                            ins_group_allocations[agent_id] += actual_rows
+                                                    if agent_id in toolkit_group_allocations:
+                                                        if any(insurance_carrier_upper == ic.upper().strip() for ic in DD_TOOLKIT_GROUP):
+                                                            toolkit_group_allocations[agent_id] += actual_rows
+                                                    
+                                                    row_idx += actual_rows
                     else:
                         # Fallback: if no insurance carrier column, use simple capacity-based allocation
-                        row_index = 0
-                        for agent in agent_allocations:
-                            if row_index >= total_rows:
+                        # But still apply Domain/Remark rule
+                        # Separate rows into NTBP and non-NTBP
+                        ntbp_rows = []
+                        non_ntbp_rows = []
+                        
+                        if remark_col and remark_col in processed_df.columns:
+                            for idx in range(total_rows):
+                                row_remark = None
+                                if pd.notna(processed_df.at[idx, remark_col]):
+                                    row_remark = str(processed_df.at[idx, remark_col]).strip().upper()
+                                
+                                if row_remark == 'NTBP':
+                                    ntbp_rows.append(idx)
+                                else:
+                                    non_ntbp_rows.append(idx)
+                        else:
+                            # If no remark column, all rows are non-NTBP
+                            non_ntbp_rows = list(range(total_rows))
+                        
+                        # Separate agents into PB and non-PB
+                        pb_agents = [a for a in agent_allocations if a.get('domain') and str(a.get('domain')).strip().upper() == 'PB']
+                        non_pb_agents = [a for a in agent_allocations if not (a.get('domain') and str(a.get('domain')).strip().upper() == 'PB')]
+                        
+                        # Allocate NTBP rows only to PB agents
+                        row_idx = 0
+                        for agent in pb_agents:
+                            if row_idx >= len(ntbp_rows):
                                 break
                             available_capacity = agent['capacity']
-                            actual_allocation = min(available_capacity, total_rows - row_index)
+                            actual_allocation = min(available_capacity, len(ntbp_rows) - row_idx)
                             if actual_allocation > 0:
-                                agent['row_indices'] = list(range(row_index, row_index + actual_allocation))
+                                agent['row_indices'] = ntbp_rows[row_idx:row_idx + actual_allocation]
                                 agent['allocated'] = actual_allocation
-                                row_index += actual_allocation
+                                row_idx += actual_allocation
+                        
+                        # Allocate non-NTBP rows only to non-PB agents
+                        row_idx = 0
+                        for agent in non_pb_agents:
+                            if row_idx >= len(non_ntbp_rows):
+                                break
+                            available_capacity = agent['capacity']
+                            actual_allocation = min(available_capacity, len(non_ntbp_rows) - row_idx)
+                            if actual_allocation > 0:
+                                agent['row_indices'] = non_ntbp_rows[row_idx:row_idx + actual_allocation]
+                                agent['allocated'] = actual_allocation
+                                row_idx += actual_allocation
                     
                     # Sort agents by name for display
                     agent_allocations.sort(key=lambda x: x['name'])

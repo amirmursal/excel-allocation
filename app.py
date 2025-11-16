@@ -6376,11 +6376,11 @@ def download_result():
                     # Create a copy of the dataframe to avoid modifying the original
                     df_copy = df.copy()
                     
-                    # Find appointment date columns and ensure they're formatted as dates without time
+                    # Find appointment date and received date columns and format them as MM/DD/YYYY
                     for col in df_copy.columns:
-                        if 'appointment' in col.lower() and 'date' in col.lower():
-                            # Convert to datetime and then format as date string
-                            df_copy[col] = pd.to_datetime(df_copy[col], errors='coerce').dt.strftime('%Y-%m-%d')
+                        if ('appointment' in col.lower() and 'date' in col.lower()) or ('receive' in col.lower() and 'date' in col.lower()):
+                            # Convert to datetime and then format as MM/DD/YYYY (no time)
+                            df_copy[col] = pd.to_datetime(df_copy[col], errors='coerce').dt.strftime('%m/%d/%Y')
                     
                     df_copy.to_excel(writer, sheet_name=sheet_name, index=False)
             
@@ -7147,11 +7147,11 @@ def download_agent_file():
                 # Create a copy of the dataframe to avoid modifying the original
                 agent_df_copy = agent_df.copy()
                 
-                # Find appointment date columns and ensure they're formatted as dates without time
+                # Find appointment date and received date columns and format them as MM/DD/YYYY
                 for col in agent_df_copy.columns:
-                    if 'appointment' in col.lower() and 'date' in col.lower():
-                        # Convert to datetime and then format as date string
-                        agent_df_copy[col] = pd.to_datetime(agent_df_copy[col], errors='coerce').dt.strftime('%Y-%m-%d')
+                    if ('appointment' in col.lower() and 'date' in col.lower()) or ('receive' in col.lower() and 'date' in col.lower()):
+                        # Convert to datetime and then format as MM/DD/YYYY (no time)
+                        agent_df_copy[col] = pd.to_datetime(agent_df_copy[col], errors='coerce').dt.strftime('%m/%d/%Y')
                 
                 agent_df_copy.to_excel(writer, sheet_name=f'{agent_name}_Allocation', index=False)
                 

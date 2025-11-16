@@ -4939,10 +4939,11 @@ def process_allocation_files_with_dates(allocation_df, data_df, selected_dates, 
         # Use data_df as the main file to process
         processed_df = data_df.copy()
         
-        # Find the appointment date column, receive date column, and insurance carrier column
+        # Find the appointment date column, receive date column, insurance carrier column, and remark column
         appointment_date_col = None
         receive_date_col = None
         insurance_carrier_col = None
+        remark_col = None
         for col in processed_df.columns:
             if 'appointment' in col.lower() and 'date' in col.lower():
                 appointment_date_col = col
@@ -4950,6 +4951,8 @@ def process_allocation_files_with_dates(allocation_df, data_df, selected_dates, 
                 receive_date_col = col
             elif 'dental' in col.lower() and 'primary' in col.lower() and 'ins' in col.lower() and 'carr' in col.lower():
                 insurance_carrier_col = col
+            elif col.lower() in ['remark', 'remarks']:
+                remark_col = col
         
         if appointment_date_col is None:
             return f"❌ Error: 'Appointment Date' column not found in data file.\nAvailable columns: {list(processed_df.columns)}", None
@@ -5089,7 +5092,7 @@ def process_allocation_files_with_dates(allocation_df, data_df, selected_dates, 
                     agent_summary = "\n⚠️ No sheets found in allocation file."
                     return processed_df, agent_summary
                 
-                # Find agent name, ID, counts, insurance list, exceptions, email, role, shift time, and shift group columns
+                # Find agent name, ID, counts, insurance list, exceptions, email, role, shift time, shift group, and domain columns
                 agent_name_col = None
                 agent_id_col = None
                 counts_col = None
@@ -5099,6 +5102,7 @@ def process_allocation_files_with_dates(allocation_df, data_df, selected_dates, 
                 role_col = None
                 shift_time_col = None
                 shift_group_col = None
+                domain_col = None
                 for col in agent_df.columns:
                     col_lower = col.lower()
                     if 'agent' in col_lower and 'name' in col_lower:
@@ -5119,6 +5123,8 @@ def process_allocation_files_with_dates(allocation_df, data_df, selected_dates, 
                         shift_time_col = col
                     elif 'shift' in col_lower and 'group' in col_lower:
                         shift_group_col = col
+                    elif col_lower == 'domain':
+                        domain_col = col
                 
                 if agent_name_col and counts_col:
                     # Get agent data with their capacities and insurance capabilities
@@ -5137,6 +5143,8 @@ def process_allocation_files_with_dates(allocation_df, data_df, selected_dates, 
                         columns_to_select.append(shift_time_col)
                     if shift_group_col:
                         columns_to_select.append(shift_group_col)
+                    if domain_col:
+                        columns_to_select.append(domain_col)
                     
                     agent_data = agent_df[columns_to_select].dropna(subset=[agent_name_col, counts_col])
                     
@@ -5227,6 +5235,11 @@ def process_allocation_files_with_dates(allocation_df, data_df, selected_dates, 
                         agent_email = ''
                         if email_col and pd.notna(row[email_col]):
                             agent_email = str(row[email_col]).strip()
+                        
+                        # Get domain value
+                        agent_domain = None
+                        if domain_col and pd.notna(row[domain_col]):
+                            agent_domain = str(row[domain_col]).strip().upper()
                         
                         # Get shift group (1=day, 2=afternoon, 3=night) to help parse ambiguous times
                         shift_group = None
@@ -5394,6 +5407,7 @@ def process_allocation_files_with_dates(allocation_df, data_df, selected_dates, 
                             'shift_start_time': shift_start_time.strftime('%H:%M') if shift_start_time else None,  # Store as HH:MM string
                             'shift_time_original': original_shift_time,  # Original shift time value from Excel
                             'shift_group': shift_group,  # Shift group (1=day, 2=afternoon, 3=night)
+                            'domain': agent_domain,  # Domain value (e.g., 'PB')
                             'row_indices': []
                         })
                     
@@ -5608,7 +5622,23 @@ def process_allocation_files_with_dates(allocation_df, data_df, selected_dates, 
                                         # Only senior agents can handle unmatched insurance
                                         available_senior_agents = [a for a in senior_agents if (a['capacity'] - a['allocated']) > 0]
                                         
-                                        if available_senior_agents:
+                                        # Filter row indices based on Domain/Remark rule: NTBP rows only go to PB agents
+                                        filtered_row_indices = []
+                                        if remark_col and remark_col in processed_df.columns:
+                                            for row_idx in row_indices:
+                                                row_remark = None
+                                                if pd.notna(processed_df.at[row_idx, remark_col]):
+                                                    row_remark = str(processed_df.at[row_idx, remark_col]).strip().upper()
+                                                
+                                                row_is_ntbp = (row_remark == 'NTBP')
+                                                
+                                                # For unmatched insurance, we'll filter agents later, but keep all rows for now
+                                                # The actual filtering will happen when assigning to specific agents
+                                                filtered_row_indices.append(row_idx)
+                                        else:
+                                            filtered_row_indices = row_indices
+                                        
+                                        if available_senior_agents and filtered_row_indices:
                                             # Distribute unmatched insurance rows among senior agents by priority
                                             # Sort by remaining capacity (highest first)
                                             available_senior_agents.sort(key=lambda x: x['capacity'] - x['allocated'], reverse=True)
@@ -5616,17 +5646,35 @@ def process_allocation_files_with_dates(allocation_df, data_df, selected_dates, 
                                             # Allocate to senior agents up to their capacity
                                             row_idx = 0
                                             for senior_agent in available_senior_agents:
-                                                if row_idx >= len(row_indices):
+                                                if row_idx >= len(filtered_row_indices):
                                                     break
                                                 
                                                 available_capacity = senior_agent['capacity'] - senior_agent['allocated']
                                                 if available_capacity > 0:
-                                                    rows_to_assign = min(available_capacity, len(row_indices) - row_idx)
+                                                    # Filter rows based on Domain/Remark rule for this specific agent
+                                                    agent_domain = senior_agent.get('domain')
+                                                    agent_is_pb = (agent_domain is not None and agent_domain.upper() == 'PB')
+                                                    
+                                                    # Collect rows that match this agent's domain requirement
+                                                    matching_rows = []
+                                                    for check_idx in range(row_idx, min(row_idx + available_capacity, len(filtered_row_indices))):
+                                                        actual_row_idx = filtered_row_indices[check_idx]
+                                                        row_remark = None
+                                                        if remark_col and remark_col in processed_df.columns and pd.notna(processed_df.at[actual_row_idx, remark_col]):
+                                                            row_remark = str(processed_df.at[actual_row_idx, remark_col]).strip().upper()
+                                                        
+                                                        row_is_ntbp = (row_remark == 'NTBP')
+                                                        
+                                                        # Rule: NTBP rows only go to PB agents, and PB agents only get NTBP rows
+                                                        if (row_is_ntbp and agent_is_pb) or (not row_is_ntbp and not agent_is_pb):
+                                                            matching_rows.append(actual_row_idx)
+                                                    
+                                                    rows_to_assign = len(matching_rows)
                                                     if rows_to_assign > 0:
                                                         agent_id = senior_agent.get('id', senior_agent.get('name', 'Unknown'))
                                                         # Track INS and Toolkit group allocations (case-insensitive)
                                                         insurance_carrier_upper = insurance_carrier.upper().strip()
-                                                        for assigned_idx in range(row_idx, row_idx + rows_to_assign):
+                                                        for assigned_row_idx in matching_rows:
                                                             if agent_id in ins_group_allocations:
                                                                 if any(insurance_carrier_upper == ic.upper().strip() for ic in DD_INS_GROUP):
                                                                     ins_group_allocations[agent_id] += 1
@@ -5634,9 +5682,9 @@ def process_allocation_files_with_dates(allocation_df, data_df, selected_dates, 
                                                                 if any(insurance_carrier_upper == ic.upper().strip() for ic in DD_TOOLKIT_GROUP):
                                                                     toolkit_group_allocations[agent_id] += 1
                                                         
-                                                        senior_agent['row_indices'].extend(row_indices[row_idx:row_idx + rows_to_assign])
+                                                        senior_agent['row_indices'].extend(matching_rows)
                                                         senior_agent['allocated'] += rows_to_assign
-                                                        row_idx += rows_to_assign
+                                                        row_idx += len(matching_rows)
                                             
                                             # If there are remaining unmatched rows that couldn't fit in senior capacity
                                             # they will be handled later or logged
@@ -5704,8 +5752,34 @@ def process_allocation_files_with_dates(allocation_df, data_df, selected_dates, 
                                                     needs_training = True
                                                     break
                                         
-                                        # Agent is capable only if they can work AND don't need training
-                                        if can_work and not needs_training:
+                                        # Check Domain and Remark rule: 
+                                        # - If row has Remark="NTBP", only assign to agents with Domain="PB"
+                                        # - If agent has Domain="PB", only assign rows with Remark="NTBP"
+                                        domain_remark_match = True
+                                        agent_domain = agent.get('domain')
+                                        agent_is_pb = (agent_domain is not None and agent_domain.upper() == 'PB')
+                                        
+                                        if remark_col and remark_col in processed_df.columns:
+                                            # Check all rows in this batch
+                                            for row_idx in unallocated_row_indices:
+                                                row_remark = None
+                                                if pd.notna(processed_df.at[row_idx, remark_col]):
+                                                    row_remark = str(processed_df.at[row_idx, remark_col]).strip().upper()
+                                                
+                                                row_is_ntbp = (row_remark == 'NTBP')
+                                                
+                                                # Rule: NTBP rows only go to PB agents, and PB agents only get NTBP rows
+                                                if row_is_ntbp and not agent_is_pb:
+                                                    # Row is NTBP but agent is not PB - don't assign
+                                                    domain_remark_match = False
+                                                    break
+                                                elif not row_is_ntbp and agent_is_pb:
+                                                    # Row is not NTBP but agent is PB - don't assign
+                                                    domain_remark_match = False
+                                                    break
+                                        
+                                        # Agent is capable only if they can work AND don't need training AND match domain/remark rule
+                                        if can_work and not needs_training and domain_remark_match:
                                             capable_agents.append(agent)
                                     
                                     if capable_agents:

@@ -1955,17 +1955,24 @@ HTML_TEMPLATE = """
                         <div style="background: #f8f9fa; padding: 20px; border-radius: 10px; margin-bottom: 20px;">
                             <h4>Available Agent Files:</h4>
                             {% for work_file in all_agent_work_files %}
-                            <div style="border-bottom: 1px solid #dee2e6; padding: 10px 0; {% if loop.last %}border-bottom: none;{% endif %}">
-                                <strong>{{ work_file.agent.name }}</strong> - {{ work_file.filename }}
-                                <br>
-                                <small style="color: #666;">
-                                    Uploaded: {{ (work_file.upload_date | to_ist).strftime('%Y-%m-%d %I:%M %p') }} IST
-                                    | Status: <span style="color: {% if work_file.status == 'uploaded' %}#28a745{% elif work_file.status == 'consolidated' %}#007bff{% else %}#6c757d{% endif %}">{{ work_file.status.title() }}</span>
-                                </small>
-                                {% if work_file.notes %}
-                                <br>
-                                <small style="color: #666;"><em>{{ work_file.notes }}</em></small>
-                                {% endif %}
+                            <div style="border-bottom: {% if loop.last %}none{% else %}1px solid #dee2e6{% endif %}; padding: 10px 0; display: flex; justify-content: space-between; align-items: center;">
+                                <div style="flex: 1;">
+                                    <strong>{{ work_file.agent.name }}</strong> - {{ work_file.filename }}
+                                    <br>
+                                    <small style="color: #666;">
+                                        Uploaded: {{ (work_file.upload_date | to_ist).strftime('%Y-%m-%d %I:%M %p') }} IST
+                                        | Status: <span style="color: {% if work_file.status == 'uploaded' %}#28a745{% elif work_file.status == 'consolidated' %}#007bff{% else %}#6c757d{% endif %}">{{ work_file.status.title() }}</span>
+                                    </small>
+                                    {% if work_file.notes %}
+                                    <br>
+                                    <small style="color: #666;"><em>{{ work_file.notes }}</em></small>
+                                    {% endif %}
+                                </div>
+                                <div style="margin-left: 15px;">
+                                    <a href="/download_agent_work_file/{{ work_file.id }}" class="process-btn" style="padding: 8px 16px; text-decoration: none; display: inline-block; background: linear-gradient(135deg, #007bff, #0056b3); color: white; border-radius: 5px; font-size: 14px;">
+                                        <i class="fas fa-download"></i> Download
+                                    </a>
+                                </div>
                             </div>
                             {% endfor %}
                         </div>
@@ -6773,13 +6780,10 @@ def consolidate_agent_files():
                                 
                             if isinstance(sheet_data, pd.DataFrame):
                                 sheet_data_copy = sheet_data.copy()
-                                sheet_data_copy['Agent'] = work_file.agent.name
-                                sheet_data_copy['Source_Sheet'] = sheet_name
                                 all_agent_data.append(sheet_data_copy)
                     elif isinstance(file_data, pd.DataFrame):
                         # Single DataFrame
                         file_data_copy = file_data.copy()
-                        file_data_copy['Agent'] = work_file.agent.name
                         all_agent_data.append(file_data_copy)
             
             # Create combined sheet with all agent data
@@ -6824,6 +6828,77 @@ def consolidate_agent_files():
         
     except Exception as e:
         flash(f'Error consolidating agent files: {str(e)}', 'error')
+        return redirect('/')
+
+@app.route('/download_agent_work_file/<int:file_id>', methods=['GET'])
+@admin_required
+def download_agent_work_file(file_id):
+    """Download a single agent work file"""
+    try:
+        # Get the work file
+        work_file = AgentWorkFile.query.get_or_404(file_id)
+        
+        # Get file data
+        file_data = work_file.get_file_data()
+        
+        if not file_data:
+            flash('File data not found', 'error')
+            return redirect('/')
+        
+        # Create Excel buffer
+        excel_buffer = io.BytesIO()
+        
+        with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
+            if isinstance(file_data, dict):
+                # Multiple sheets
+                for sheet_name, sheet_data in file_data.items():
+                    if isinstance(sheet_data, pd.DataFrame):
+                        # Format date columns to MM/DD/YYYY
+                        sheet_data_copy = sheet_data.copy()
+                        for col in sheet_data_copy.columns:
+                            if 'date' in col.lower():
+                                try:
+                                    sheet_data_copy[col] = pd.to_datetime(sheet_data_copy[col], errors='coerce')
+                                    sheet_data_copy[col] = sheet_data_copy[col].apply(
+                                        lambda x: x.strftime('%m/%d/%Y') if pd.notna(x) else ''
+                                    )
+                                except Exception:
+                                    pass
+                        sheet_data_copy.to_excel(writer, sheet_name=sheet_name, index=False)
+            elif isinstance(file_data, pd.DataFrame):
+                # Single DataFrame
+                file_data_copy = file_data.copy()
+                # Format date columns to MM/DD/YYYY
+                for col in file_data_copy.columns:
+                    if 'date' in col.lower():
+                        try:
+                            file_data_copy[col] = pd.to_datetime(file_data_copy[col], errors='coerce')
+                            file_data_copy[col] = file_data_copy[col].apply(
+                                lambda x: x.strftime('%m/%d/%Y') if pd.notna(x) else ''
+                            )
+                        except Exception:
+                            pass
+                file_data_copy.to_excel(writer, sheet_name='Sheet1', index=False)
+            else:
+                # Fallback
+                pd.DataFrame([{'Message': 'No data available'}]).to_excel(writer, sheet_name='Sheet1', index=False)
+        
+        excel_buffer.seek(0)
+        
+        # Create filename with agent name and original filename
+        agent_name = work_file.agent.name.replace(' ', '_')
+        original_filename = work_file.filename.rsplit('.', 1)[0] if '.' in work_file.filename else work_file.filename
+        download_filename = f"{agent_name}_{original_filename}_{work_file.upload_date.strftime('%Y%m%d')}.xlsx"
+        
+        return send_file(
+            excel_buffer,
+            as_attachment=True,
+            download_name=download_filename,
+            mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+        )
+        
+    except Exception as e:
+        flash(f'Error downloading agent file: {str(e)}', 'error')
         return redirect('/')
 
 @app.route('/clear_all_agent_files', methods=['POST'])
@@ -7841,8 +7916,258 @@ Allocation Management System
     except Exception as e:
         return False, str(e)
 
+def create_consolidated_data():
+    """Create consolidated Excel data from all agent work files"""
+    try:
+        # Get all agent work files
+        work_files = AgentWorkFile.query.order_by(AgentWorkFile.upload_date.desc()).all()
+        
+        if not work_files:
+            return None, "No agent work files found"
+        
+        # Create Excel buffer
+        excel_buffer = io.BytesIO()
+        
+        # Helper function to find remark column
+        def find_remark_column(df):
+            """Find the remark column (case-insensitive)"""
+            for col in df.columns:
+                if col.lower() in ['remark', 'remarks']:
+                    return col
+            return None
+        
+        with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
+            # First pass: Collect all unique remark statuses across all agents
+            all_remark_statuses = set()
+            agent_remarks_data = {}  # Store remarks data per agent
+            
+            for work_file in work_files:
+                file_data = work_file.get_file_data()
+                agent_name = work_file.agent.name
+                remarks_dict = {}  # Dictionary to store all remarks with counts for this agent
+                
+                if file_data:
+                    if isinstance(file_data, dict):
+                        # Multiple sheets - process all sheets except Summary
+                        for sheet_name, sheet_data in file_data.items():
+                            # Skip Summary sheet
+                            if sheet_name.lower() == 'summary':
+                                continue
+                                
+                            if isinstance(sheet_data, pd.DataFrame):
+                                # Get remark column
+                                remark_col = find_remark_column(sheet_data)
+                                
+                                if remark_col:
+                                    # Get all remarks (including NaN)
+                                    remark_data = sheet_data[remark_col]
+                                    
+                                    # Count all non-empty remarks by status
+                                    non_empty_remarks = remark_data.dropna()
+                                    for remark in non_empty_remarks:
+                                        # Normalize remark (strip whitespace, handle case)
+                                        remark_normalized = str(remark).strip()
+                                        if remark_normalized:
+                                            remark_lower = remark_normalized.lower()
+                                            # Use original case for display, but normalize for counting
+                                            if remark_lower in remarks_dict:
+                                                remarks_dict[remark_lower] = {
+                                                    'count': remarks_dict[remark_lower]['count'] + 1,
+                                                    'display': remarks_dict[remark_lower]['display']  # Keep first seen case
+                                                }
+                                            else:
+                                                remarks_dict[remark_lower] = {
+                                                    'count': 1,
+                                                    'display': remark_normalized  # Keep original case
+                                                }
+                    elif isinstance(file_data, pd.DataFrame):
+                        # Single DataFrame
+                        # Get remark column
+                        remark_col = find_remark_column(file_data)
+                        
+                        if remark_col:
+                            # Get all remarks (including NaN)
+                            remark_data = file_data[remark_col]
+                            
+                            # Count all non-empty remarks by status
+                            non_empty_remarks = remark_data.dropna()
+                            for remark in non_empty_remarks:
+                                # Normalize remark (strip whitespace, handle case)
+                                remark_normalized = str(remark).strip()
+                                if remark_normalized:
+                                    remark_lower = remark_normalized.lower()
+                                    # Use original case for display, but normalize for counting
+                                    if remark_lower in remarks_dict:
+                                        remarks_dict[remark_lower] = {
+                                            'count': remarks_dict[remark_lower]['count'] + 1,
+                                            'display': remarks_dict[remark_lower]['display']  # Keep first seen case
+                                        }
+                                    else:
+                                        remarks_dict[remark_lower] = {
+                                            'count': 1,
+                                            'display': remark_normalized  # Keep original case
+                                        }
+                
+                # Store remarks data for this agent
+                agent_remarks_data[agent_name] = remarks_dict
+                
+                # Collect all unique remark statuses (using display name)
+                for remark_info in remarks_dict.values():
+                    all_remark_statuses.add(remark_info['display'])
+            
+            # Add empty remarks as a status if needed
+            all_remark_statuses.add('(Empty/No Remark)')
+            
+            # Sort remark statuses alphabetically for consistent column order
+            sorted_remark_statuses = sorted(all_remark_statuses)
+            
+            # Second pass: Create summary data with all remark statuses as columns
+            summary_data = []
+            
+            for work_file in work_files:
+                file_data = work_file.get_file_data()
+                agent_name = work_file.agent.name
+                total_assigned_count = 0
+                completed_count = 0
+                empty_remarks_count = 0
+                
+                # Calculate counts from file data
+                if file_data:
+                    if isinstance(file_data, dict):
+                        # Multiple sheets - count rows from all sheets except Summary
+                        for sheet_name, sheet_data in file_data.items():
+                            # Skip Summary sheet
+                            if sheet_name.lower() == 'summary':
+                                continue
+                                
+                            if isinstance(sheet_data, pd.DataFrame):
+                                # Total assigned count = all rows (excluding header)
+                                total_assigned_count += len(sheet_data)
+                                
+                                # Get remark column
+                                remark_col = find_remark_column(sheet_data)
+                                
+                                if remark_col:
+                                    # Get all remarks (including NaN)
+                                    remark_data = sheet_data[remark_col]
+                                    
+                                    # Count empty/NaN remarks
+                                    empty_remarks_count += remark_data.isna().sum()
+                                    
+                                    # Count completed (non-Workable remarks)
+                                    non_empty_remarks = remark_data.dropna()
+                                    # Convert to string first to handle mixed types
+                                    if len(non_empty_remarks) > 0:
+                                        non_empty_remarks_str = non_empty_remarks.astype(str).str.lower()
+                                        completed_count += len(non_empty_remarks_str[non_empty_remarks_str != 'workable'])
+                    elif isinstance(file_data, pd.DataFrame):
+                        # Single DataFrame
+                        # Total assigned count = all rows (excluding header)
+                        total_assigned_count = len(file_data)
+                        
+                        # Get remark column
+                        remark_col = find_remark_column(file_data)
+                        
+                        if remark_col:
+                            # Get all remarks (including NaN)
+                            remark_data = file_data[remark_col]
+                            
+                            # Count empty/NaN remarks
+                            empty_remarks_count = remark_data.isna().sum()
+                            
+                            # Count completed (non-Workable remarks)
+                            non_empty_remarks = remark_data.dropna()
+                            # Convert to string first to handle mixed types
+                            if len(non_empty_remarks) > 0:
+                                non_empty_remarks_str = non_empty_remarks.astype(str).str.lower()
+                                completed_count = len(non_empty_remarks_str[non_empty_remarks_str != 'workable'])
+                            else:
+                                completed_count = 0
+                
+                # Create row data for this agent
+                row_data = {
+                    'Agent': agent_name,
+                    'Total Assigned Count': total_assigned_count,
+                    'Completed Count': completed_count,
+                    'Empty Remarks Count': empty_remarks_count
+                }
+                
+                # Get remarks data for this agent
+                agent_remarks = agent_remarks_data.get(agent_name, {})
+                
+                # Add count for each remark status column
+                for remark_status in sorted_remark_statuses:
+                    if remark_status == '(Empty/No Remark)':
+                        # Use the empty_remarks_count
+                        row_data[remark_status] = empty_remarks_count
+                    else:
+                        # Find matching remark in agent's remarks (case-insensitive)
+                        count = 0
+                        for remark_lower, remark_info in agent_remarks.items():
+                            if remark_info['display'] == remark_status:
+                                count = remark_info['count']
+                                break
+                        row_data[remark_status] = count
+                
+                summary_data.append(row_data)
+            
+            # Create summary DataFrame
+            summary_df = pd.DataFrame(summary_data)
+            summary_df.to_excel(writer, sheet_name='Summary', index=False)
+            
+            # Combine all agent data into one sheet
+            all_agent_data = []
+            for work_file in work_files:
+                file_data = work_file.get_file_data()
+                if file_data:
+                    if isinstance(file_data, dict):
+                        # Multiple sheets - combine them (excluding Summary sheets)
+                        for sheet_name, sheet_data in file_data.items():
+                            # Skip Summary sheet
+                            if sheet_name.lower() == 'summary':
+                                continue
+                                
+                            if isinstance(sheet_data, pd.DataFrame):
+                                sheet_data_copy = sheet_data.copy()
+                                all_agent_data.append(sheet_data_copy)
+                    elif isinstance(file_data, pd.DataFrame):
+                        # Single DataFrame
+                        file_data_copy = file_data.copy()
+                        all_agent_data.append(file_data_copy)
+            
+            # Create combined sheet with all agent data
+            if all_agent_data:
+                combined_df = pd.concat(all_agent_data, ignore_index=True)
+                
+                # Format all date columns to MM/DD/YYYY format
+                for col in combined_df.columns:
+                    if 'date' in col.lower():
+                        try:
+                            # Convert to datetime if not already
+                            combined_df[col] = pd.to_datetime(combined_df[col], errors='coerce')
+                            # Format as MM/DD/YYYY, handling NaT (Not a Time) values
+                            combined_df[col] = combined_df[col].apply(
+                                lambda x: x.strftime('%m/%d/%Y') if pd.notna(x) else ''
+                            )
+                        except Exception:
+                            # If conversion fails, leave column as is
+                            pass
+                
+                combined_df.to_excel(writer, sheet_name='All Agent Data', index=False)
+            else:
+                # Fallback if no data found
+                simple_df = pd.DataFrame([{'Message': 'No data available from any agent'}])
+                simple_df.to_excel(writer, sheet_name='All Agent Data', index=False)
+        
+        excel_buffer.seek(0)
+        filename = f"consolidated_agent_files_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+        return excel_buffer, filename
+        
+    except Exception as e:
+        return None, f"Error creating consolidated data: {str(e)}"
+
 def cleanup_all_agent_files():
-    """Delete all agent work files daily at 4 AM to save server space"""
+    """Delete all agent work files daily at 7 AM to save server space"""
     try:
         with app.app_context():
             # Get all agent work files

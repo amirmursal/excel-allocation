@@ -7105,6 +7105,171 @@ def download_result():
                         
                         # Write Today Allocation sheet
                         today_allocation_df.to_excel(writer, sheet_name='Today Allocation', index=False)
+                
+                # Create NTBP Allocation sheet
+                if processed_df is not None:
+                    # Find Agent Name, Appointment Date, and Remark columns
+                    agent_name_col = None
+                    appointment_date_col = None
+                    remark_col = None
+                    
+                    for col in processed_df.columns:
+                        if 'agent' in col.lower() and 'name' in col.lower():
+                            agent_name_col = col
+                        if 'appointment' in col.lower() and 'date' in col.lower():
+                            appointment_date_col = col
+                        if 'remark' in col.lower():
+                            remark_col = col
+                    
+                    if agent_name_col and appointment_date_col and remark_col:
+                        # Get all unique appointment dates (reuse the logic from Priority Status sheet)
+                        appointment_dates_dict = {}  # key: YYYY-MM-DD, value: MM/DD/YYYY
+                        
+                        for idx, row in processed_df.iterrows():
+                            appt_date = row.get(appointment_date_col)
+                            if pd.notna(appt_date):
+                                # Convert to date object
+                                date_obj = None
+                                if hasattr(appt_date, 'date'):
+                                    date_obj = appt_date.date()
+                                elif hasattr(appt_date, 'strftime'):
+                                    try:
+                                        date_obj = pd.to_datetime(appt_date).date()
+                                    except:
+                                        date_obj = appt_date
+                                else:
+                                    try:
+                                        date_obj = pd.to_datetime(appt_date).date()
+                                    except:
+                                        continue
+                                
+                                if date_obj:
+                                    date_key = date_obj.strftime('%Y-%m-%d')
+                                    date_display = date_obj.strftime('%m/%d/%Y')
+                                    appointment_dates_dict[date_key] = date_display
+                        
+                        # Sort dates by key (YYYY-MM-DD) and create lists
+                        sorted_date_keys = sorted(appointment_dates_dict.keys())
+                        appointment_dates = sorted_date_keys  # For matching
+                        appointment_dates_display = [appointment_dates_dict[key] for key in sorted_date_keys]  # For display
+                        
+                        # Initialize data structure: agent_name -> date -> count
+                        agent_ntbp_allocation_data = {}
+                        
+                        # Get all unique agent names (only for rows with NTBP remark)
+                        agent_names = set()
+                        for idx, row in processed_df.iterrows():
+                            agent_name = row.get(agent_name_col)
+                            remark_value = row.get(remark_col)
+                            
+                            # Only include rows with NTBP remark
+                            if pd.notna(remark_value):
+                                remark_str = str(remark_value).strip().upper()
+                                if remark_str == 'NTBP':
+                                    if pd.notna(agent_name) and str(agent_name).strip():
+                                        agent_name_str = str(agent_name).strip()
+                                        # Skip NTC and Not to work as they're not agents
+                                        agent_name_upper = agent_name_str.upper()
+                                        if agent_name_upper != 'NTC' and 'NOT TO WORK' not in agent_name_upper.replace('-', ' ').replace('_', ' '):
+                                            agent_names.add(agent_name_str)
+                        
+                        # Initialize counts for each agent and date
+                        for agent_name in agent_names:
+                            agent_ntbp_allocation_data[agent_name] = {}
+                            for date_key in appointment_dates:
+                                agent_ntbp_allocation_data[agent_name][date_key] = 0
+                        
+                        # Count NTBP allocations by agent name and date
+                        for idx, row in processed_df.iterrows():
+                            agent_name = row.get(agent_name_col)
+                            appt_date = row.get(appointment_date_col)
+                            remark_value = row.get(remark_col)
+                            
+                            # Only process rows with NTBP remark
+                            if pd.isna(remark_value):
+                                continue  # Skip rows without remarks
+                            
+                            remark_str = str(remark_value).strip().upper()
+                            if remark_str != 'NTBP':
+                                continue  # Skip rows that are not NTBP
+                            
+                            if pd.notna(agent_name) and pd.notna(appt_date):
+                                agent_name_str = str(agent_name).strip()
+                                # Skip NTC and Not to work
+                                agent_name_upper = agent_name_str.upper()
+                                if agent_name_upper == 'NTC' or 'NOT TO WORK' in agent_name_upper.replace('-', ' ').replace('_', ' '):
+                                    continue
+                                
+                                # Convert appointment date to YYYY-MM-DD format
+                                date_obj = None
+                                if hasattr(appt_date, 'date'):
+                                    date_obj = appt_date.date()
+                                elif hasattr(appt_date, 'strftime'):
+                                    try:
+                                        date_obj = pd.to_datetime(appt_date).date()
+                                    except:
+                                        try:
+                                            date_obj = pd.to_datetime(str(appt_date)).date()
+                                        except:
+                                            continue
+                                else:
+                                    try:
+                                        date_obj = pd.to_datetime(appt_date).date()
+                                    except:
+                                        continue
+                                
+                                if date_obj and agent_name_str in agent_names:
+                                    date_str = date_obj.strftime('%Y-%m-%d')
+                                    
+                                    if date_str in appointment_dates:
+                                        agent_ntbp_allocation_data[agent_name_str][date_str] = \
+                                            agent_ntbp_allocation_data[agent_name_str].get(date_str, 0) + 1
+                        
+                        # Calculate totals
+                        # Totals for each agent
+                        agent_totals = {}
+                        for agent_name in agent_names:
+                            agent_totals[agent_name] = sum(agent_ntbp_allocation_data[agent_name].values())
+                        
+                        # Totals for each date column
+                        date_totals = {}
+                        for date_key in appointment_dates:
+                            date_totals[date_key] = sum(
+                                agent_ntbp_allocation_data[agent_name][date_key]
+                                for agent_name in agent_names
+                            )
+                        
+                        # Overall grand total
+                        overall_grand_total = sum(agent_totals.values())
+                        
+                        # Build the dataframe
+                        # Columns: Row Labels, Grand Total, [date columns]
+                        columns = ['Row Labels', 'Grand Total'] + appointment_dates_display
+                        rows_data = []
+                        
+                        # Add Grand Total row first
+                        grand_total_row = ['Grand Total', overall_grand_total]
+                        for date_key in appointment_dates:
+                            grand_total_row.append(date_totals[date_key])
+                        rows_data.append(grand_total_row)
+                        
+                        # Sort agent names for consistent ordering
+                        sorted_agent_names = sorted(agent_names)
+                        
+                        # Add rows for each agent
+                        for agent_name in sorted_agent_names:
+                            agent_total = agent_totals[agent_name]
+                            
+                            row_data = [agent_name, agent_total]
+                            for date_key in appointment_dates:
+                                row_data.append(agent_ntbp_allocation_data[agent_name][date_key])
+                            rows_data.append(row_data)
+                        
+                        # Create dataframe
+                        ntbp_allocation_df = pd.DataFrame(rows_data, columns=columns)
+                        
+                        # Write NTBP Allocation sheet
+                        ntbp_allocation_df.to_excel(writer, sheet_name='NTBP Allocation', index=False)
             
             return send_file(temp_path, as_attachment=True, download_name=filename)
             

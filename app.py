@@ -7456,6 +7456,62 @@ def download_result():
                         
                         # Write NTC Allocation sheet
                         ntc_allocation_df.to_excel(writer, sheet_name='NTC Allocation', index=False)
+                
+                # Create NTC Insurance Name and counts sheet
+                if processed_df is not None:
+                    # Find Insurance Carrier and Remark columns
+                    insurance_carrier_col = None
+                    remark_col = None
+                    
+                    for col in processed_df.columns:
+                        if ('dental' in col.lower() and 'primary' in col.lower() and 'ins' in col.lower()) or \
+                           ('insurance' in col.lower() and 'carrier' in col.lower()) or \
+                           ('insurance' in col.lower() and 'name' in col.lower()):
+                            insurance_carrier_col = col
+                        if 'remark' in col.lower():
+                            remark_col = col
+                    
+                    if insurance_carrier_col and remark_col:
+                        # Count insurance companies with NTC remark
+                        insurance_ntc_counts = {}
+                        
+                        for idx, row in processed_df.iterrows():
+                            remark_value = row.get(remark_col)
+                            insurance_value = row.get(insurance_carrier_col)
+                            
+                            # Only process rows with NTC remark
+                            if pd.isna(remark_value):
+                                continue  # Skip rows without remarks
+                            
+                            remark_str = str(remark_value).strip().upper()
+                            if remark_str != 'NTC':
+                                continue  # Skip rows that are not NTC
+                            
+                            # Count by insurance company name
+                            if pd.notna(insurance_value):
+                                insurance_name = str(insurance_value).strip()
+                                if insurance_name:  # Only count non-empty insurance names
+                                    insurance_ntc_counts[insurance_name] = insurance_ntc_counts.get(insurance_name, 0) + 1
+                        
+                        # Convert to list of tuples and sort by count (descending)
+                        insurance_list = [(insurance_name, count) for insurance_name, count in insurance_ntc_counts.items()]
+                        insurance_list.sort(key=lambda x: x[1], reverse=True)  # Sort by count in descending order
+                        
+                        # Calculate grand total
+                        grand_total = sum(count for _, count in insurance_list)
+                        
+                        # Create summary dataframe
+                        if insurance_list:
+                            ntc_insurance_df = pd.DataFrame(insurance_list, columns=['Row Labels', 'Count of Agent Name'])
+                            # Add grand total row
+                            grand_total_row = pd.DataFrame([['Grand Total', grand_total]], columns=['Row Labels', 'Count of Agent Name'])
+                            ntc_insurance_df = pd.concat([ntc_insurance_df, grand_total_row], ignore_index=True)
+                        else:
+                            # Create empty summary with just grand total
+                            ntc_insurance_df = pd.DataFrame([['Grand Total', 0]], columns=['Row Labels', 'Count of Agent Name'])
+                        
+                        # Write NTC Insurance Name and counts sheet
+                        ntc_insurance_df.to_excel(writer, sheet_name='NTC Insurance Name and counts', index=False)
             
             return send_file(temp_path, as_attachment=True, download_name=filename)
             

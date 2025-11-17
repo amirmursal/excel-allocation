@@ -7602,6 +7602,148 @@ def download_result():
                         
                         # Write Agent Insurance sheet
                         agent_insurance_df.to_excel(writer, sheet_name='Agent Insurance', index=False)
+                
+                # Create Priority Appointment Pending sheet
+                if processed_df is not None:
+                    # Find Office Name and Appointment Date columns
+                    office_name_col = None
+                    appointment_date_col = None
+                    
+                    for col in processed_df.columns:
+                        if 'office' in col.lower() and 'name' in col.lower():
+                            office_name_col = col
+                        if 'appointment' in col.lower() and 'date' in col.lower():
+                            appointment_date_col = col
+                    
+                    if office_name_col and appointment_date_col:
+                        # Get all unique appointment dates (reuse the logic from Priority Status sheet)
+                        appointment_dates_dict = {}  # key: YYYY-MM-DD, value: MM/DD/YYYY
+                        
+                        for idx, row in processed_df.iterrows():
+                            appt_date = row.get(appointment_date_col)
+                            if pd.notna(appt_date):
+                                # Convert to date object
+                                date_obj = None
+                                if hasattr(appt_date, 'date'):
+                                    date_obj = appt_date.date()
+                                elif hasattr(appt_date, 'strftime'):
+                                    try:
+                                        date_obj = pd.to_datetime(appt_date).date()
+                                    except:
+                                        date_obj = appt_date
+                                else:
+                                    try:
+                                        date_obj = pd.to_datetime(appt_date).date()
+                                    except:
+                                        continue
+                                
+                                if date_obj:
+                                    date_key = date_obj.strftime('%Y-%m-%d')
+                                    date_display = date_obj.strftime('%m/%d/%Y')
+                                    appointment_dates_dict[date_key] = date_display
+                        
+                        # Sort dates by key (YYYY-MM-DD) and create lists
+                        sorted_date_keys = sorted(appointment_dates_dict.keys())
+                        appointment_dates = sorted_date_keys  # For matching
+                        appointment_dates_display = [appointment_dates_dict[key] for key in sorted_date_keys]  # For display
+                        
+                        # Initialize data structure: office_name -> date -> count
+                        office_date_data = {}
+                        
+                        # Get all unique office names
+                        office_names = set()
+                        for idx, row in processed_df.iterrows():
+                            office_name = row.get(office_name_col)
+                            if pd.notna(office_name) and str(office_name).strip():
+                                office_name_str = str(office_name).strip()
+                                office_names.add(office_name_str)
+                        
+                        # Initialize counts for each office and date
+                        for office_name in office_names:
+                            office_date_data[office_name] = {}
+                            for date_key in appointment_dates:
+                                office_date_data[office_name][date_key] = 0
+                        
+                        # Count rows by office name and appointment date
+                        for idx, row in processed_df.iterrows():
+                            office_name = row.get(office_name_col)
+                            appt_date = row.get(appointment_date_col)
+                            
+                            if pd.notna(office_name) and pd.notna(appt_date):
+                                office_name_str = str(office_name).strip()
+                                
+                                # Convert appointment date to YYYY-MM-DD format
+                                date_obj = None
+                                if hasattr(appt_date, 'date'):
+                                    date_obj = appt_date.date()
+                                elif hasattr(appt_date, 'strftime'):
+                                    try:
+                                        date_obj = pd.to_datetime(appt_date).date()
+                                    except:
+                                        try:
+                                            date_obj = pd.to_datetime(str(appt_date)).date()
+                                        except:
+                                            continue
+                                else:
+                                    try:
+                                        date_obj = pd.to_datetime(appt_date).date()
+                                    except:
+                                        continue
+                                
+                                if date_obj and office_name_str in office_names:
+                                    date_str = date_obj.strftime('%Y-%m-%d')
+                                    
+                                    if date_str in appointment_dates:
+                                        office_date_data[office_name_str][date_str] = \
+                                            office_date_data[office_name_str].get(date_str, 0) + 1
+                        
+                        # Calculate totals
+                        # Totals for each office
+                        office_totals = {}
+                        for office_name in office_names:
+                            office_totals[office_name] = sum(office_date_data[office_name].values())
+                        
+                        # Totals for each date column
+                        date_totals = {}
+                        for date_key in appointment_dates:
+                            date_totals[date_key] = sum(
+                                office_date_data[office_name][date_key]
+                                for office_name in office_names
+                            )
+                        
+                        # Overall grand total
+                        overall_grand_total = sum(office_totals.values())
+                        
+                        # Build the dataframe
+                        # Columns: Row Labels, [date columns], Grand Total
+                        columns = ['Row Labels'] + appointment_dates_display + ['Grand Total']
+                        rows_data = []
+                        
+                        # Sort office names for consistent ordering
+                        sorted_office_names = sorted(office_names)
+                        
+                        # Add rows for each office
+                        for office_name in sorted_office_names:
+                            office_total = office_totals[office_name]
+                            
+                            row_data = [office_name]
+                            for date_key in appointment_dates:
+                                row_data.append(office_date_data[office_name][date_key])
+                            row_data.append(office_total)
+                            rows_data.append(row_data)
+                        
+                        # Add Grand Total row
+                        grand_total_row = ['Grand Total']
+                        for date_key in appointment_dates:
+                            grand_total_row.append(date_totals[date_key])
+                        grand_total_row.append(overall_grand_total)
+                        rows_data.append(grand_total_row)
+                        
+                        # Create dataframe
+                        priority_appointment_pending_df = pd.DataFrame(rows_data, columns=columns)
+                        
+                        # Write Priority Appointment Pending sheet
+                        priority_appointment_pending_df.to_excel(writer, sheet_name='Priority Appointment Pending', index=False)
             
             # Apply formatting to make certain text bold
             from openpyxl import load_workbook
@@ -7751,6 +7893,18 @@ def download_result():
             # Format NTC Insurance Name and counts sheet
             if 'NTC Insurance Name and counts' in wb.sheetnames:
                 ws = wb['NTC Insurance Name and counts']
+                for row_idx, row in enumerate(ws.iter_rows(min_row=2, max_row=ws.max_row, min_col=1, max_col=1), start=2):
+                    cell_value = row[0].value
+                    if cell_value and isinstance(cell_value, str):
+                        cell_str = cell_value.strip()
+                        if cell_str == 'Grand Total':
+                            # Make entire row bold
+                            for col_idx in range(1, ws.max_column + 1):
+                                ws.cell(row=row_idx, column=col_idx).font = Font(bold=True)
+            
+            # Format Priority Appointment Pending sheet
+            if 'Priority Appointment Pending' in wb.sheetnames:
+                ws = wb['Priority Appointment Pending']
                 for row_idx, row in enumerate(ws.iter_rows(min_row=2, max_row=ws.max_row, min_col=1, max_col=1), start=2):
                     cell_value = row[0].value
                     if cell_value and isinstance(cell_value, str):

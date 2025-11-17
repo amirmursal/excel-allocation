@@ -7512,6 +7512,256 @@ def download_result():
                         
                         # Write NTC Insurance Name and counts sheet
                         ntc_insurance_df.to_excel(writer, sheet_name='NTC Insurance Name and counts', index=False)
+                
+                # Create Agent \ Insurance sheet
+                if processed_df is not None:
+                    # Find Agent Name and Insurance Carrier columns
+                    agent_name_col = None
+                    insurance_carrier_col = None
+                    
+                    for col in processed_df.columns:
+                        if 'agent' in col.lower() and 'name' in col.lower():
+                            agent_name_col = col
+                        if ('dental' in col.lower() and 'primary' in col.lower() and 'ins' in col.lower()) or \
+                           ('insurance' in col.lower() and 'carrier' in col.lower()) or \
+                           ('insurance' in col.lower() and 'name' in col.lower()):
+                            insurance_carrier_col = col
+                    
+                    if agent_name_col and insurance_carrier_col:
+                        # Initialize data structure: agent_name -> insurance_name -> count
+                        agent_insurance_data = {}
+                        
+                        # Get all unique agent names (excluding NTC and Not to work)
+                        agent_names = set()
+                        for idx, row in processed_df.iterrows():
+                            agent_name = row.get(agent_name_col)
+                            if pd.notna(agent_name) and str(agent_name).strip():
+                                agent_name_str = str(agent_name).strip()
+                                agent_name_upper = agent_name_str.upper()
+                                # Skip NTC and Not to work as they're not agents
+                                if agent_name_upper != 'NTC' and 'NOT TO WORK' not in agent_name_upper.replace('-', ' ').replace('_', ' '):
+                                    agent_names.add(agent_name_str)
+                        
+                        # Initialize counts for each agent and insurance
+                        for agent_name in agent_names:
+                            agent_insurance_data[agent_name] = {}
+                        
+                        # Count rows by agent name and insurance company
+                        for idx, row in processed_df.iterrows():
+                            agent_name = row.get(agent_name_col)
+                            insurance_value = row.get(insurance_carrier_col)
+                            
+                            if pd.notna(agent_name) and str(agent_name).strip():
+                                agent_name_str = str(agent_name).strip()
+                                agent_name_upper = agent_name_str.upper()
+                                
+                                # Skip NTC and Not to work
+                                if agent_name_upper == 'NTC' or 'NOT TO WORK' in agent_name_upper.replace('-', ' ').replace('_', ' '):
+                                    continue
+                                
+                                if agent_name_str in agent_names:
+                                    # Count by insurance company
+                                    if pd.notna(insurance_value):
+                                        insurance_name = str(insurance_value).strip()
+                                        if insurance_name:  # Only count non-empty insurance names
+                                            agent_insurance_data[agent_name_str][insurance_name] = \
+                                                agent_insurance_data[agent_name_str].get(insurance_name, 0) + 1
+                        
+                        # Calculate totals for each agent
+                        agent_totals = {}
+                        for agent_name in agent_names:
+                            agent_totals[agent_name] = sum(agent_insurance_data[agent_name].values())
+                        
+                        # Calculate overall grand total
+                        overall_grand_total = sum(agent_totals.values())
+                        
+                        # Build the dataframe
+                        # Columns: Row Labels, Count of Insurance rows
+                        columns = ['Row Labels', 'Count of Insurance rows']
+                        rows_data = []
+                        
+                        # Sort agent names for consistent ordering
+                        sorted_agent_names = sorted(agent_names)
+                        
+                        # Add rows for each agent and their insurance companies
+                        for agent_name in sorted_agent_names:
+                            # Add agent name row with total
+                            agent_total = agent_totals[agent_name]
+                            rows_data.append([agent_name, agent_total])
+                            
+                            # Add insurance company sub-rows for this agent
+                            insurance_companies = sorted(agent_insurance_data[agent_name].items(), key=lambda x: x[1], reverse=True)
+                            for insurance_name, count in insurance_companies:
+                                rows_data.append([insurance_name, count])
+                        
+                        # Add Grand Total row
+                        rows_data.append(['Grand Total', overall_grand_total])
+                        
+                        # Create dataframe
+                        agent_insurance_df = pd.DataFrame(rows_data, columns=columns)
+                        
+                        # Write Agent Insurance sheet
+                        agent_insurance_df.to_excel(writer, sheet_name='Agent Insurance', index=False)
+            
+            # Apply formatting to make certain text bold
+            from openpyxl import load_workbook
+            from openpyxl.styles import Font
+            
+            wb = load_workbook(temp_path)
+            
+            # Format Agent Count Summary sheet
+            if 'Agent Count Summary' in wb.sheetnames:
+                ws = wb['Agent Count Summary']
+                for row_idx, row in enumerate(ws.iter_rows(min_row=2, max_row=ws.max_row, min_col=1, max_col=1), start=2):
+                    cell_value = row[0].value
+                    if cell_value and isinstance(cell_value, str):
+                        cell_str = cell_value.strip()
+                        # Make only Grand Total bold
+                        if cell_str == 'Grand Total':
+                            # Make entire row bold
+                            for col_idx in range(1, ws.max_column + 1):
+                                ws.cell(row=row_idx, column=col_idx).font = Font(bold=True)
+            
+            # Format Priority Status sheet
+            if 'Priority Status' in wb.sheetnames:
+                ws = wb['Priority Status']
+                for row_idx, row in enumerate(ws.iter_rows(min_row=2, max_row=ws.max_row, min_col=1, max_col=1), start=2):
+                    cell_value = row[0].value
+                    if cell_value and isinstance(cell_value, str):
+                        cell_str = cell_value.strip()
+                        # Make only Grand Total bold
+                        if cell_str == 'Grand Total':
+                            # Make entire row bold
+                            for col_idx in range(1, ws.max_column + 1):
+                                ws.cell(row=row_idx, column=col_idx).font = Font(bold=True)
+            
+            # Format Priority Remark sheet
+            if 'Priority Remark' in wb.sheetnames:
+                ws = wb['Priority Remark']
+                for row_idx, row in enumerate(ws.iter_rows(min_row=2, max_row=ws.max_row, min_col=1, max_col=1), start=2):
+                    cell_value = row[0].value
+                    if cell_value and isinstance(cell_value, str):
+                        cell_str = cell_value.strip()
+                        # Make First Priority, Second Priority, Third Priority, and Grand Total bold
+                        if cell_str in ['First Priority', 'Second Priority', 'Third Priority', 'Grand Total']:
+                            row[0].font = Font(bold=True)
+                            # Make entire row bold
+                            for col_idx in range(1, ws.max_column + 1):
+                                ws.cell(row=row_idx, column=col_idx).font = Font(bold=True)
+            
+            # Format Today Allocation sheet
+            if 'Today Allocation' in wb.sheetnames:
+                ws = wb['Today Allocation']
+                for row_idx, row in enumerate(ws.iter_rows(min_row=2, max_row=ws.max_row, min_col=1, max_col=1), start=2):
+                    cell_value = row[0].value
+                    if cell_value and isinstance(cell_value, str):
+                        cell_str = cell_value.strip()
+                        # Make only Grand Total bold
+                        if cell_str == 'Grand Total':
+                            # Make entire row bold
+                            for col_idx in range(1, ws.max_column + 1):
+                                ws.cell(row=row_idx, column=col_idx).font = Font(bold=True)
+            
+            # Format NTBP Allocation sheet
+            if 'NTBP Allocation' in wb.sheetnames:
+                ws = wb['NTBP Allocation']
+                for row_idx, row in enumerate(ws.iter_rows(min_row=2, max_row=ws.max_row, min_col=1, max_col=1), start=2):
+                    cell_value = row[0].value
+                    if cell_value and isinstance(cell_value, str):
+                        cell_str = cell_value.strip()
+                        # Make only Grand Total bold
+                        if cell_str == 'Grand Total':
+                            # Make entire row bold
+                            for col_idx in range(1, ws.max_column + 1):
+                                ws.cell(row=row_idx, column=col_idx).font = Font(bold=True)
+            
+            # Format NTC Allocation sheet
+            if 'NTC Allocation' in wb.sheetnames:
+                ws = wb['NTC Allocation']
+                for row_idx, row in enumerate(ws.iter_rows(min_row=2, max_row=ws.max_row, min_col=1, max_col=1), start=2):
+                    cell_value = row[0].value
+                    if cell_value and isinstance(cell_value, str):
+                        cell_str = cell_value.strip()
+                        # Make only NTC and Grand Total bold
+                        if cell_str in ['Grand Total', 'NTC']:
+                            # Make entire row bold
+                            for col_idx in range(1, ws.max_column + 1):
+                                ws.cell(row=row_idx, column=col_idx).font = Font(bold=True)
+            
+            # Format Agent Insurance sheet
+            if 'Agent Insurance' in wb.sheetnames:
+                ws = wb['Agent Insurance']
+                # Track which rows are agent names (they have totals that are sums of following insurance rows)
+                for row_idx, row in enumerate(ws.iter_rows(min_row=2, max_row=ws.max_row, min_col=1, max_col=2), start=2):
+                    cell_value = row[0].value
+                    if cell_value and isinstance(cell_value, str):
+                        cell_str = cell_value.strip()
+                        if cell_str == 'Grand Total':
+                            # Make entire row bold
+                            for col_idx in range(1, ws.max_column + 1):
+                                ws.cell(row=row_idx, column=col_idx).font = Font(bold=True)
+                        else:
+                            # Check if this is an agent name row
+                            # Agent names have totals (sums), insurance companies have individual counts
+                            # Agent names are followed by insurance companies with smaller counts
+                            current_count = row[1].value if len(row) > 1 else None
+                            if current_count and isinstance(current_count, (int, float)):
+                                # Check if next row is Grand Total
+                                if row_idx < ws.max_row:
+                                    next_cell_value = ws.cell(row=row_idx + 1, column=1).value
+                                    next_count = ws.cell(row=row_idx + 1, column=2).value
+                                    
+                                    # If next row is Grand Total, current is likely the last agent
+                                    if next_cell_value and isinstance(next_cell_value, str) and next_cell_value.strip() == 'Grand Total':
+                                        row[0].font = Font(bold=True)
+                                        ws.cell(row=row_idx, column=2).font = Font(bold=True)
+                                    elif next_count and isinstance(next_count, (int, float)):
+                                        # Try to sum up following rows to see if they match current count
+                                        # This would indicate current is an agent total
+                                        sum_following = 0
+                                        check_row = row_idx + 1
+                                        while check_row <= ws.max_row:
+                                            check_cell_value = ws.cell(row=check_row, column=1).value
+                                            check_count = ws.cell(row=check_row, column=2).value
+                                            
+                                            # Stop if we hit Grand Total or another potential agent (count >= current/2)
+                                            if check_cell_value and isinstance(check_cell_value, str) and check_cell_value.strip() == 'Grand Total':
+                                                break
+                                            if check_count and isinstance(check_count, (int, float)):
+                                                # If this row's count is large (could be another agent), stop
+                                                if check_count >= current_count * 0.5:  # Another agent would have a large total
+                                                    break
+                                                sum_following += check_count
+                                            check_row += 1
+                                        
+                                        # If sum of following rows approximately equals current count, it's an agent total
+                                        # Use a tolerance to account for rounding
+                                        if sum_following > 0 and abs(current_count - sum_following) <= 1:
+                                            row[0].font = Font(bold=True)
+                                            ws.cell(row=row_idx, column=2).font = Font(bold=True)
+                                        # Fallback: if current count is much larger (at least 5x) than next, it's likely an agent
+                                        elif current_count >= next_count * 5:
+                                            row[0].font = Font(bold=True)
+                                            ws.cell(row=row_idx, column=2).font = Font(bold=True)
+                                else:
+                                    # Last data row before Grand Total - likely an agent
+                                    row[0].font = Font(bold=True)
+                                    ws.cell(row=row_idx, column=2).font = Font(bold=True)
+            
+            # Format NTC Insurance Name and counts sheet
+            if 'NTC Insurance Name and counts' in wb.sheetnames:
+                ws = wb['NTC Insurance Name and counts']
+                for row_idx, row in enumerate(ws.iter_rows(min_row=2, max_row=ws.max_row, min_col=1, max_col=1), start=2):
+                    cell_value = row[0].value
+                    if cell_value and isinstance(cell_value, str):
+                        cell_str = cell_value.strip()
+                        if cell_str == 'Grand Total':
+                            # Make entire row bold
+                            for col_idx in range(1, ws.max_column + 1):
+                                ws.cell(row=row_idx, column=col_idx).font = Font(bold=True)
+            
+            wb.save(temp_path)
+            wb.close()
             
             return send_file(temp_path, as_attachment=True, download_name=filename)
             

@@ -7270,6 +7270,192 @@ def download_result():
                         
                         # Write NTBP Allocation sheet
                         ntbp_allocation_df.to_excel(writer, sheet_name='NTBP Allocation', index=False)
+                
+                # Create NTC Allocation sheet
+                if processed_df is not None:
+                    # Find Agent Name, Appointment Date, and Remark columns
+                    agent_name_col = None
+                    appointment_date_col = None
+                    remark_col = None
+                    
+                    for col in processed_df.columns:
+                        if 'agent' in col.lower() and 'name' in col.lower():
+                            agent_name_col = col
+                        if 'appointment' in col.lower() and 'date' in col.lower():
+                            appointment_date_col = col
+                        if 'remark' in col.lower():
+                            remark_col = col
+                    
+                    if agent_name_col and appointment_date_col and remark_col:
+                        # Get all unique appointment dates (reuse the logic from Priority Status sheet)
+                        appointment_dates_dict = {}  # key: YYYY-MM-DD, value: MM/DD/YYYY
+                        
+                        for idx, row in processed_df.iterrows():
+                            appt_date = row.get(appointment_date_col)
+                            if pd.notna(appt_date):
+                                # Convert to date object
+                                date_obj = None
+                                if hasattr(appt_date, 'date'):
+                                    date_obj = appt_date.date()
+                                elif hasattr(appt_date, 'strftime'):
+                                    try:
+                                        date_obj = pd.to_datetime(appt_date).date()
+                                    except:
+                                        date_obj = appt_date
+                                else:
+                                    try:
+                                        date_obj = pd.to_datetime(appt_date).date()
+                                    except:
+                                        continue
+                                
+                                if date_obj:
+                                    date_key = date_obj.strftime('%Y-%m-%d')
+                                    date_display = date_obj.strftime('%m/%d/%Y')
+                                    appointment_dates_dict[date_key] = date_display
+                        
+                        # Sort dates by key (YYYY-MM-DD) and create lists
+                        sorted_date_keys = sorted(appointment_dates_dict.keys())
+                        appointment_dates = sorted_date_keys  # For matching
+                        appointment_dates_display = [appointment_dates_dict[key] for key in sorted_date_keys]  # For display
+                        
+                        # Initialize data structure: agent_name -> date -> count
+                        agent_ntc_allocation_data = {}
+                        ntc_row_data = {}  # For rows where Agent Name is "NTC" or empty
+                        
+                        # Initialize NTC row data
+                        for date_key in appointment_dates:
+                            ntc_row_data[date_key] = 0
+                        
+                        # Get all unique agent names (only for rows with NTC remark)
+                        agent_names = set()
+                        for idx, row in processed_df.iterrows():
+                            agent_name = row.get(agent_name_col)
+                            remark_value = row.get(remark_col)
+                            
+                            # Only include rows with NTC remark
+                            if pd.notna(remark_value):
+                                remark_str = str(remark_value).strip().upper()
+                                if remark_str == 'NTC':
+                                    if pd.notna(agent_name) and str(agent_name).strip():
+                                        agent_name_str = str(agent_name).strip()
+                                        agent_name_upper = agent_name_str.upper()
+                                        # If agent name is "NTC", it goes to NTC row, not agent names
+                                        if agent_name_upper != 'NTC' and 'NOT TO WORK' not in agent_name_upper.replace('-', ' ').replace('_', ' '):
+                                            agent_names.add(agent_name_str)
+                        
+                        # Initialize counts for each agent and date
+                        for agent_name in agent_names:
+                            agent_ntc_allocation_data[agent_name] = {}
+                            for date_key in appointment_dates:
+                                agent_ntc_allocation_data[agent_name][date_key] = 0
+                        
+                        # Count NTC allocations by agent name and date
+                        for idx, row in processed_df.iterrows():
+                            agent_name = row.get(agent_name_col)
+                            appt_date = row.get(appointment_date_col)
+                            remark_value = row.get(remark_col)
+                            
+                            # Only process rows with NTC remark
+                            if pd.isna(remark_value):
+                                continue  # Skip rows without remarks
+                            
+                            remark_str = str(remark_value).strip().upper()
+                            if remark_str != 'NTC':
+                                continue  # Skip rows that are not NTC
+                            
+                            if pd.notna(appt_date):
+                                # Convert appointment date to YYYY-MM-DD format
+                                date_obj = None
+                                if hasattr(appt_date, 'date'):
+                                    date_obj = appt_date.date()
+                                elif hasattr(appt_date, 'strftime'):
+                                    try:
+                                        date_obj = pd.to_datetime(appt_date).date()
+                                    except:
+                                        try:
+                                            date_obj = pd.to_datetime(str(appt_date)).date()
+                                        except:
+                                            continue
+                                else:
+                                    try:
+                                        date_obj = pd.to_datetime(appt_date).date()
+                                    except:
+                                        continue
+                                
+                                if date_obj:
+                                    date_str = date_obj.strftime('%Y-%m-%d')
+                                    
+                                    if date_str in appointment_dates:
+                                        # Check if agent name is valid or if it should go to NTC row
+                                        if pd.notna(agent_name) and str(agent_name).strip():
+                                            agent_name_str = str(agent_name).strip()
+                                            agent_name_upper = agent_name_str.upper()
+                                            
+                                            if agent_name_upper == 'NTC':
+                                                # Count in NTC row
+                                                ntc_row_data[date_str] = ntc_row_data.get(date_str, 0) + 1
+                                            elif agent_name_str in agent_names:
+                                                # Count in agent row
+                                                agent_ntc_allocation_data[agent_name_str][date_str] = \
+                                                    agent_ntc_allocation_data[agent_name_str].get(date_str, 0) + 1
+                                        else:
+                                            # Empty agent name - count in NTC row
+                                            ntc_row_data[date_str] = ntc_row_data.get(date_str, 0) + 1
+                        
+                        # Calculate totals
+                        # Totals for each agent
+                        agent_totals = {}
+                        for agent_name in agent_names:
+                            agent_totals[agent_name] = sum(agent_ntc_allocation_data[agent_name].values())
+                        
+                        # Total for NTC row
+                        ntc_row_total = sum(ntc_row_data.values())
+                        
+                        # Totals for each date column
+                        date_totals = {}
+                        for date_key in appointment_dates:
+                            date_totals[date_key] = (
+                                sum(agent_ntc_allocation_data[agent_name][date_key] for agent_name in agent_names) +
+                                ntc_row_data[date_key]
+                            )
+                        
+                        # Overall grand total
+                        overall_grand_total = sum(agent_totals.values()) + ntc_row_total
+                        
+                        # Build the dataframe
+                        # Columns: Row Labels, Grand Total, [date columns]
+                        columns = ['Row Labels', 'Grand Total'] + appointment_dates_display
+                        rows_data = []
+                        
+                        # Add Grand Total row first
+                        grand_total_row = ['Grand Total', overall_grand_total]
+                        for date_key in appointment_dates:
+                            grand_total_row.append(date_totals[date_key])
+                        rows_data.append(grand_total_row)
+                        
+                        # Sort agent names for consistent ordering
+                        sorted_agent_names = sorted(agent_names)
+                        
+                        # Add rows for each agent
+                        for agent_name in sorted_agent_names:
+                            agent_total = agent_totals[agent_name]
+                            
+                            row_data = [agent_name, agent_total]
+                            for date_key in appointment_dates:
+                                row_data.append(agent_ntc_allocation_data[agent_name][date_key])
+                            rows_data.append(row_data)
+                        
+                        # Add NTC row
+                        ntc_row = ['NTC', ntc_row_total]
+                        for date_key in appointment_dates:
+                            ntc_row.append(ntc_row_data[date_key])
+                        rows_data.append(ntc_row)
+                        
+                        # Create dataframe
+                        ntc_allocation_df = pd.DataFrame(rows_data, columns=columns)
+                        
+                        # Write NTC Allocation sheet
+                        ntc_allocation_df.to_excel(writer, sheet_name='NTC Allocation', index=False)
             
             return send_file(temp_path, as_attachment=True, download_name=filename)
             

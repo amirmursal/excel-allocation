@@ -402,6 +402,7 @@ processing_result = None
 # Agent processing result
 agent_processing_result = None
 agent_allocations_data = None
+agent_insurance_agent_names = None  # Store agent names for Agent Insurance sheet formatting
 
 # Database helper functions
 def init_database():
@@ -4102,6 +4103,10 @@ def format_insurance_company_name(insurance_text):
     original_name = insurance_str  # Keep original for tracking
     matched_from_mapping = False  # Track if matched from mapping file
     
+    # Ensure insurance_str is a string
+    if not isinstance(insurance_str, str):
+        insurance_str = str(insurance_str) if insurance_str is not None else ''
+    
     # Handle special cases first (after cleaning)
     if insurance_str.upper() == 'NO INSURANCE':
         formatted = clean_insurance_name('No Insurance')
@@ -4137,14 +4142,18 @@ def format_insurance_company_name(insurance_text):
             if company_name and company_name in mapping:
                 formatted = clean_insurance_name(str(mapping[company_name]))
                 matched_from_mapping = True
-            elif company_name and company_name.lower() in mapping:
-                formatted = clean_insurance_name(str(mapping[company_name.lower()]))
-                matched_from_mapping = True
+            elif company_name:
+                company_name_str = str(company_name) if not isinstance(company_name, str) else company_name
+                if company_name_str.lower() in mapping:
+                    formatted = clean_insurance_name(str(mapping[company_name_str.lower()]))
+                    matched_from_mapping = True
             
             # Try matching original string (lowercase) as fallback
-            if not formatted and insurance_str.lower() in mapping:
-                formatted = clean_insurance_name(str(mapping[insurance_str.lower()]))
-                matched_from_mapping = True
+            if not formatted:
+                insurance_str_safe = str(insurance_str) if not isinstance(insurance_str, str) else insurance_str
+                if insurance_str_safe.lower() in mapping:
+                    formatted = clean_insurance_name(str(mapping[insurance_str_safe.lower()]))
+                    matched_from_mapping = True
             
             # Remove "Primary" and "Secondary" text
             if not formatted and company_name:
@@ -4158,9 +4167,11 @@ def format_insurance_company_name(insurance_text):
                 if company_name and company_name in mapping:
                     formatted = clean_insurance_name(str(mapping[company_name]))
                     matched_from_mapping = True
-                elif company_name and company_name.lower() in mapping:
-                    formatted = clean_insurance_name(str(mapping[company_name.lower()]))
-                    matched_from_mapping = True
+                elif company_name:
+                    company_name_str = str(company_name) if not isinstance(company_name, str) else company_name
+                    if company_name_str.lower() in mapping:
+                        formatted = clean_insurance_name(str(mapping[company_name_str.lower()]))
+                        matched_from_mapping = True
         
         # If no match found in mapping, use fallback logic (existing code continues below)
         if not formatted:
@@ -4533,9 +4544,13 @@ def expand_insurance_groups(insurance_list_str):
     if pd.isna(insurance_list_str) or not insurance_list_str:
         return insurance_list_str
     
+    # Ensure input is a string
+    if not isinstance(insurance_list_str, str):
+        insurance_list_str = str(insurance_list_str) if insurance_list_str is not None else ''
+    
     value_str = str(insurance_list_str)
-    # Split by common delimiters
-    companies = [comp.strip() for comp in re.split(r'[;,\|]', value_str) if comp.strip()]
+    # Split by common delimiters and ensure each component is a string
+    companies = [str(comp).strip() for comp in re.split(r'[;,\|]', value_str) if comp and str(comp).strip()]
     
     expanded_companies = []
     has_dd_ins = False
@@ -4545,7 +4560,8 @@ def expand_insurance_groups(insurance_list_str):
     has_dd_group = False
     
     for comp in companies:
-        comp_lower = comp.lower().strip()
+        comp_str = str(comp) if comp is not None else ''
+        comp_lower = comp_str.lower().strip()
         
         # Check for "DD INS" or "INS" (case-insensitive)
         if comp_lower == 'dd ins' or comp_lower == 'ins':
@@ -4572,7 +4588,7 @@ def expand_insurance_groups(insurance_list_str):
     if has_dd_ins or has_ins:
         for dd_ins_company in DD_INS_GROUP:
             # Check if company is already in the list (case-insensitive)
-            if not any(existing.lower() == dd_ins_company.lower() for existing in expanded_companies):
+            if not any(str(existing).lower() == str(dd_ins_company).lower() for existing in expanded_companies):
                 expanded_companies.append(dd_ins_company)
         expansion_type = 'DD INS' if has_dd_ins else 'INS'
     
@@ -4580,7 +4596,7 @@ def expand_insurance_groups(insurance_list_str):
     if has_dd_toolkit or has_dd_toolkits or has_dd_group:
         for dd_toolkit_company in DD_TOOLKIT_GROUP:
             # Check if company is already in the list (case-insensitive)
-            if not any(existing.lower() == dd_toolkit_company.lower() for existing in expanded_companies):
+            if not any(str(existing).lower() == str(dd_toolkit_company).lower() for existing in expanded_companies):
                 expanded_companies.append(dd_toolkit_company)
         expansion_type = 'DD Toolkit' if has_dd_toolkit else ('DD Toolkits' if has_dd_toolkits else 'DD')
     
@@ -5622,12 +5638,15 @@ def process_allocation_files_with_dates(allocation_df, data_df, selected_dates, 
                                         # Check if this insurance company is in the agent's "do not allocate" list
                                         should_not_allocate = False
                                         if senior_agent.get('insurance_do_not_allocate'):
+                                            insurance_carrier_str = str(insurance_carrier) if insurance_carrier else ''
                                             for do_not_allocate_comp in senior_agent['insurance_do_not_allocate']:
-                                                if (insurance_carrier.lower() in do_not_allocate_comp.lower() or 
-                                                    do_not_allocate_comp.lower() in insurance_carrier.lower() or
-                                                    insurance_carrier == do_not_allocate_comp):
-                                                    should_not_allocate = True
-                                                    break
+                                                do_not_allocate_comp_str = str(do_not_allocate_comp) if do_not_allocate_comp else ''
+                                                if insurance_carrier_str and do_not_allocate_comp_str:
+                                                    if (insurance_carrier_str.lower() in do_not_allocate_comp_str.lower() or 
+                                                        do_not_allocate_comp_str.lower() in insurance_carrier_str.lower() or
+                                                        insurance_carrier_str == do_not_allocate_comp_str):
+                                                        should_not_allocate = True
+                                                        break
                                         
                                         # Only add row if agent can be allocated this insurance company
                                         if not should_not_allocate:
@@ -5681,12 +5700,15 @@ def process_allocation_files_with_dates(allocation_df, data_df, selected_dates, 
                                         # Check if this insurance company is in the agent's "do not allocate" list
                                         should_not_allocate = False
                                         if senior_agent.get('insurance_do_not_allocate'):
+                                            insurance_carrier_str = str(insurance_carrier) if insurance_carrier else ''
                                             for do_not_allocate_comp in senior_agent['insurance_do_not_allocate']:
-                                                if (insurance_carrier.lower() in do_not_allocate_comp.lower() or 
-                                                    do_not_allocate_comp.lower() in insurance_carrier.lower() or
-                                                    insurance_carrier == do_not_allocate_comp):
-                                                    should_not_allocate = True
-                                                    break
+                                                do_not_allocate_comp_str = str(do_not_allocate_comp) if do_not_allocate_comp else ''
+                                                if insurance_carrier_str and do_not_allocate_comp_str:
+                                                    if (insurance_carrier_str.lower() in do_not_allocate_comp_str.lower() or 
+                                                        do_not_allocate_comp_str.lower() in insurance_carrier_str.lower() or
+                                                        insurance_carrier_str == do_not_allocate_comp_str):
+                                                        should_not_allocate = True
+                                                        break
                                         
                                         # Only add row if agent can be allocated this insurance company
                                         if not should_not_allocate:
@@ -5862,12 +5884,15 @@ def process_allocation_files_with_dates(allocation_df, data_df, selected_dates, 
                                         # First check if this insurance company is in the agent's "do not allocate" list
                                         should_not_allocate = False
                                         if agent.get('insurance_do_not_allocate'):
+                                            insurance_carrier_str = str(insurance_carrier) if insurance_carrier else ''
                                             for do_not_allocate_comp in agent['insurance_do_not_allocate']:
-                                                if (insurance_carrier.lower() in do_not_allocate_comp.lower() or 
-                                                    do_not_allocate_comp.lower() in insurance_carrier.lower() or
-                                                    insurance_carrier == do_not_allocate_comp):
-                                                    should_not_allocate = True
-                                                    break
+                                                do_not_allocate_comp_str = str(do_not_allocate_comp) if do_not_allocate_comp else ''
+                                                if insurance_carrier_str and do_not_allocate_comp_str:
+                                                    if (insurance_carrier_str.lower() in do_not_allocate_comp_str.lower() or 
+                                                        do_not_allocate_comp_str.lower() in insurance_carrier_str.lower() or
+                                                        insurance_carrier_str == do_not_allocate_comp_str):
+                                                        should_not_allocate = True
+                                                        break
                                         
                                         # If agent should not be allocated this insurance company, skip them
                                         if should_not_allocate:
@@ -6455,7 +6480,8 @@ def upload_allocation_file():
             # Find the Insurance List column (case-insensitive)
             insurance_working_col = None
             for col in df.columns:
-                if 'insurance' in col.lower() and 'list' in col.lower():
+                col_str = str(col) if not isinstance(col, str) else col
+                if 'insurance' in col_str.lower() and 'list' in col_str.lower():
                     insurance_working_col = col
                     break
             
@@ -6470,7 +6496,8 @@ def upload_allocation_file():
                     # Format each company name, but preserve "senior" keyword and group names for expansion
                     formatted_companies = []
                     for comp in companies:
-                        comp_lower = comp.lower()
+                        comp_str = str(comp) if comp is not None else ''
+                        comp_lower = comp_str.lower()
                         if 'senior' in comp_lower:
                             formatted_companies.append(comp)  # Keep senior as-is
                         elif (comp_lower == 'dd ins' or comp_lower == 'ins' or 
@@ -6642,7 +6669,7 @@ def process_files():
 @app.route('/download_result', methods=['POST'])
 @admin_required
 def download_result():
-    global data_file_data, data_filename, agent_allocations_data
+    global data_file_data, data_filename, agent_allocations_data, agent_insurance_agent_names
     
     if not data_file_data:
         return jsonify({'error': 'No data to download'}), 400
@@ -7687,6 +7714,10 @@ def download_result():
                         
                         # Write Agent Insurance sheet
                         agent_insurance_df.to_excel(writer, sheet_name='Agent Insurance', index=False)
+                        
+                        # Store agent names for later formatting (we'll add comments after writer closes)
+                        # Store in a way that's accessible during formatting
+                        agent_insurance_agent_names = sorted_agent_names.copy()
                 
                 # Create Priority Appointment Pending sheet
                 if processed_df is not None:
@@ -7918,8 +7949,9 @@ def download_result():
             # Format Agent Insurance sheet
             if 'Agent Insurance' in wb.sheetnames:
                 ws = wb['Agent Insurance']
-                # Track which rows are agent names (they have totals that are sums of following insurance rows)
-                for row_idx, row in enumerate(ws.iter_rows(min_row=2, max_row=ws.max_row, min_col=1, max_col=2), start=2):
+                
+                # Check for agent rows using stored agent names (most reliable method)
+                for row_idx, row in enumerate(ws.iter_rows(min_row=2, max_row=ws.max_row, min_col=1, max_col=1), start=2):
                     cell_value = row[0].value
                     if cell_value and isinstance(cell_value, str):
                         cell_str = cell_value.strip()
@@ -7928,51 +7960,12 @@ def download_result():
                             for col_idx in range(1, ws.max_column + 1):
                                 ws.cell(row=row_idx, column=col_idx).font = Font(bold=True)
                         else:
-                            # Check if this is an agent name row
-                            # Agent names have totals (sums), insurance companies have individual counts
-                            # Agent names are followed by insurance companies with smaller counts
-                            current_count = row[1].value if len(row) > 1 else None
-                            if current_count and isinstance(current_count, (int, float)):
-                                # Check if next row is Grand Total
-                                if row_idx < ws.max_row:
-                                    next_cell_value = ws.cell(row=row_idx + 1, column=1).value
-                                    next_count = ws.cell(row=row_idx + 1, column=2).value
-                                    
-                                    # If next row is Grand Total, current is likely the last agent
-                                    if next_cell_value and isinstance(next_cell_value, str) and next_cell_value.strip() == 'Grand Total':
-                                        row[0].font = Font(bold=True)
-                                        ws.cell(row=row_idx, column=2).font = Font(bold=True)
-                                    elif next_count and isinstance(next_count, (int, float)):
-                                        # Try to sum up following rows to see if they match current count
-                                        # This would indicate current is an agent total
-                                        sum_following = 0
-                                        check_row = row_idx + 1
-                                        while check_row <= ws.max_row:
-                                            check_cell_value = ws.cell(row=check_row, column=1).value
-                                            check_count = ws.cell(row=check_row, column=2).value
-                                            
-                                            # Stop if we hit Grand Total or another potential agent (count >= current/2)
-                                            if check_cell_value and isinstance(check_cell_value, str) and check_cell_value.strip() == 'Grand Total':
-                                                break
-                                            if check_count and isinstance(check_count, (int, float)):
-                                                # If this row's count is large (could be another agent), stop
-                                                if check_count >= current_count * 0.5:  # Another agent would have a large total
-                                                    break
-                                                sum_following += check_count
-                                            check_row += 1
-                                        
-                                        # If sum of following rows approximately equals current count, it's an agent total
-                                        # Use a tolerance to account for rounding
-                                        if sum_following > 0 and abs(current_count - sum_following) <= 1:
-                                            row[0].font = Font(bold=True)
-                                            ws.cell(row=row_idx, column=2).font = Font(bold=True)
-                                        # Fallback: if current count is much larger (at least 5x) than next, it's likely an agent
-                                        elif current_count >= next_count * 5:
-                                            row[0].font = Font(bold=True)
-                                            ws.cell(row=row_idx, column=2).font = Font(bold=True)
-                                else:
-                                    # Last data row before Grand Total - likely an agent
-                                    row[0].font = Font(bold=True)
+                            # Only bold rows that are in the stored agent names list
+                            # This ensures only agent names are bold, not insurance names
+                            if agent_insurance_agent_names and cell_str in agent_insurance_agent_names:
+                                # Make agent name and count bold
+                                row[0].font = Font(bold=True)
+                                if ws.max_column >= 2:
                                     ws.cell(row=row_idx, column=2).font = Font(bold=True)
             
             # Format NTC Insurance Name and counts sheet

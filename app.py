@@ -5092,12 +5092,13 @@ def process_allocation_files_with_dates(allocation_df, data_df, selected_dates, 
                     agent_summary = "\n⚠️ No sheets found in allocation file."
                     return processed_df, agent_summary
                 
-                # Find agent name, ID, counts, insurance list, exceptions, email, role, shift time, shift group, and domain columns
+                # Find agent name, ID, counts, insurance list, exceptions, email, role, shift time, shift group, domain, and ins do not allocate columns
                 agent_name_col = None
                 agent_id_col = None
                 counts_col = None
                 insurance_working_col = None
                 insurance_needs_training_col = None
+                insurance_do_not_allocate_col = None
                 email_col = None
                 role_col = None
                 shift_time_col = None
@@ -5115,6 +5116,8 @@ def process_allocation_files_with_dates(allocation_df, data_df, selected_dates, 
                         insurance_working_col = col
                     elif 'exception' in col_lower:
                         insurance_needs_training_col = col
+                    elif ('ins' in col_lower or 'insurance' in col_lower) and ('do' in col_lower and 'not' in col_lower and 'allocate' in col_lower):
+                        insurance_do_not_allocate_col = col
                     elif 'email' in col_lower and 'id' in col_lower:
                         email_col = col
                     elif col_lower == 'role' or col_lower == 'job role' or col_lower == 'position' or ('role' in col_lower and 'type' in col_lower):
@@ -5135,6 +5138,8 @@ def process_allocation_files_with_dates(allocation_df, data_df, selected_dates, 
                         columns_to_select.append(insurance_working_col)
                     if insurance_needs_training_col:
                         columns_to_select.append(insurance_needs_training_col)
+                    if insurance_do_not_allocate_col:
+                        columns_to_select.append(insurance_do_not_allocate_col)
                     if email_col:
                         columns_to_select.append(email_col)
                     if role_col:
@@ -5230,6 +5235,17 @@ def process_allocation_files_with_dates(allocation_df, data_df, selected_dates, 
                             training_str = str(row[insurance_needs_training_col])
                             training_companies = [comp.strip() for comp in training_str.replace(',', ';').replace('|', ';').split(';') if comp.strip()]
                             insurance_needs_training = training_companies
+                        
+                        # Get insurance companies this agent should NOT be allocated
+                        insurance_do_not_allocate = []
+                        if insurance_do_not_allocate_col and pd.notna(row[insurance_do_not_allocate_col]):
+                            # Split by common delimiters and clean up
+                            do_not_allocate_str = str(row[insurance_do_not_allocate_col])
+                            do_not_allocate_companies = [comp.strip() for comp in do_not_allocate_str.replace(',', ';').replace('|', ';').split(';') if comp.strip()]
+                            # Format insurance company names for matching
+                            for comp in do_not_allocate_companies:
+                                formatted_comp = format_insurance_company_name(comp)
+                                insurance_do_not_allocate.append(formatted_comp)
                         
                         # Get agent email
                         agent_email = ''
@@ -5403,6 +5419,7 @@ def process_allocation_files_with_dates(allocation_df, data_df, selected_dates, 
                             'email': agent_email,
                             'insurance_companies': insurance_companies,
                             'insurance_needs_training': insurance_needs_training,
+                            'insurance_do_not_allocate': insurance_do_not_allocate,  # Insurance companies this agent should NOT be allocated
                             'is_senior': is_senior,
                             'shift_start_time': shift_start_time.strftime('%H:%M') if shift_start_time else None,  # Store as HH:MM string
                             'shift_time_original': original_shift_time,  # Original shift time value from Excel
@@ -5595,13 +5612,32 @@ def process_allocation_files_with_dates(allocation_df, data_df, selected_dates, 
                                     if available_capacity <= 0:
                                         continue
                                     
-                                    remaining_work = len(ntbp_priority_work) - work_idx
-                                    rows_to_assign = min(available_capacity, remaining_work)
+                                    # Collect rows that can be allocated to this agent (checking "do not allocate" list)
+                                    assignable_rows = []
+                                    rows_processed = 0
+                                    for i in range(work_idx, min(work_idx + available_capacity, len(ntbp_priority_work))):
+                                        insurance_carrier, row_idx = ntbp_priority_work[i]
+                                        rows_processed += 1
+                                        
+                                        # Check if this insurance company is in the agent's "do not allocate" list
+                                        should_not_allocate = False
+                                        if senior_agent.get('insurance_do_not_allocate'):
+                                            for do_not_allocate_comp in senior_agent['insurance_do_not_allocate']:
+                                                if (insurance_carrier.lower() in do_not_allocate_comp.lower() or 
+                                                    do_not_allocate_comp.lower() in insurance_carrier.lower() or
+                                                    insurance_carrier == do_not_allocate_comp):
+                                                    should_not_allocate = True
+                                                    break
+                                        
+                                        # Only add row if agent can be allocated this insurance company
+                                        if not should_not_allocate:
+                                            assignable_rows.append((insurance_carrier, row_idx))
+                                    
+                                    rows_to_assign = len(assignable_rows)
                                     
                                     if rows_to_assign > 0:
                                         agent_id = senior_agent.get('id', senior_agent.get('name', 'Unknown'))
-                                        for i in range(rows_to_assign):
-                                            insurance_carrier, row_idx = ntbp_priority_work[work_idx + i]
+                                        for insurance_carrier, row_idx in assignable_rows:
                                             senior_agent['row_indices'].append(row_idx)
                                             
                                             if agent_id in ins_group_allocations:
@@ -5614,7 +5650,9 @@ def process_allocation_files_with_dates(allocation_df, data_df, selected_dates, 
                                                     toolkit_group_allocations[agent_id] += 1
                                         
                                         senior_agent['allocated'] += rows_to_assign
-                                        work_idx += rows_to_assign
+                                    
+                                    # Increment work_idx by number of rows processed (including skipped ones)
+                                    work_idx += rows_processed
                             
                             # Allocate non-NTBP priority work only to non-PB senior agents
                             work_idx = 0
@@ -5633,13 +5671,32 @@ def process_allocation_files_with_dates(allocation_df, data_df, selected_dates, 
                                     if available_capacity <= 0:
                                         continue
                                     
-                                    remaining_work = len(non_ntbp_priority_work) - work_idx
-                                    rows_to_assign = min(available_capacity, remaining_work)
+                                    # Collect rows that can be allocated to this agent (checking "do not allocate" list)
+                                    assignable_rows = []
+                                    rows_processed = 0
+                                    for i in range(work_idx, min(work_idx + available_capacity, len(non_ntbp_priority_work))):
+                                        insurance_carrier, row_idx = non_ntbp_priority_work[i]
+                                        rows_processed += 1
+                                        
+                                        # Check if this insurance company is in the agent's "do not allocate" list
+                                        should_not_allocate = False
+                                        if senior_agent.get('insurance_do_not_allocate'):
+                                            for do_not_allocate_comp in senior_agent['insurance_do_not_allocate']:
+                                                if (insurance_carrier.lower() in do_not_allocate_comp.lower() or 
+                                                    do_not_allocate_comp.lower() in insurance_carrier.lower() or
+                                                    insurance_carrier == do_not_allocate_comp):
+                                                    should_not_allocate = True
+                                                    break
+                                        
+                                        # Only add row if agent can be allocated this insurance company
+                                        if not should_not_allocate:
+                                            assignable_rows.append((insurance_carrier, row_idx))
+                                    
+                                    rows_to_assign = len(assignable_rows)
                                     
                                     if rows_to_assign > 0:
                                         agent_id = senior_agent.get('id', senior_agent.get('name', 'Unknown'))
-                                        for i in range(rows_to_assign):
-                                            insurance_carrier, row_idx = non_ntbp_priority_work[work_idx + i]
+                                        for insurance_carrier, row_idx in assignable_rows:
                                             senior_agent['row_indices'].append(row_idx)
                                             
                                             if agent_id in ins_group_allocations:
@@ -5652,9 +5709,9 @@ def process_allocation_files_with_dates(allocation_df, data_df, selected_dates, 
                                                     toolkit_group_allocations[agent_id] += 1
                                         
                                         senior_agent['allocated'] += rows_to_assign
-                                        work_idx += rows_to_assign
-                                        
-                                        # Log the allocation
+                                    
+                                    # Increment work_idx by number of rows processed (including skipped ones)
+                                    work_idx += rows_processed
                                 
                                 # Log progress
                                 if work_idx % 50 == 0 and work_idx < len(non_ntbp_priority_work):
@@ -5703,6 +5760,20 @@ def process_allocation_files_with_dates(allocation_df, data_df, selected_dates, 
                                             for senior_agent in available_senior_agents:
                                                 if row_idx >= len(filtered_row_indices):
                                                     break
+                                                
+                                                # Check if this insurance company is in the agent's "do not allocate" list
+                                                should_not_allocate = False
+                                                if senior_agent.get('insurance_do_not_allocate'):
+                                                    for do_not_allocate_comp in senior_agent['insurance_do_not_allocate']:
+                                                        if (insurance_carrier.lower() in do_not_allocate_comp.lower() or 
+                                                            do_not_allocate_comp.lower() in insurance_carrier.lower() or
+                                                            insurance_carrier == do_not_allocate_comp):
+                                                            should_not_allocate = True
+                                                            break
+                                                
+                                                # Skip this agent if insurance company is in their "do not allocate" list
+                                                if should_not_allocate:
+                                                    continue
                                                 
                                                 available_capacity = senior_agent['capacity'] - senior_agent['allocated']
                                                 if available_capacity > 0:
@@ -5788,7 +5859,21 @@ def process_allocation_files_with_dates(allocation_df, data_df, selected_dates, 
                                         # Check if agent can work with this insurance company
                                         can_work = False
                                         
-                                        # Senior agents can work with any insurance company
+                                        # First check if this insurance company is in the agent's "do not allocate" list
+                                        should_not_allocate = False
+                                        if agent.get('insurance_do_not_allocate'):
+                                            for do_not_allocate_comp in agent['insurance_do_not_allocate']:
+                                                if (insurance_carrier.lower() in do_not_allocate_comp.lower() or 
+                                                    do_not_allocate_comp.lower() in insurance_carrier.lower() or
+                                                    insurance_carrier == do_not_allocate_comp):
+                                                    should_not_allocate = True
+                                                    break
+                                        
+                                        # If agent should not be allocated this insurance company, skip them
+                                        if should_not_allocate:
+                                            continue
+                                        
+                                        # Senior agents can work with any insurance company (unless in do not allocate list)
                                         if agent['is_senior']:
                                             can_work = True
                                         elif not agent['insurance_companies']:  # If no specific companies listed, can work with any

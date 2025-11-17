@@ -6557,7 +6557,7 @@ def process_files():
 @app.route('/download_result', methods=['POST'])
 @admin_required
 def download_result():
-    global data_file_data, data_filename
+    global data_file_data, data_filename, agent_allocations_data
     
     if not data_file_data:
         return jsonify({'error': 'No data to download'}), 400
@@ -6573,6 +6573,7 @@ def download_result():
         
         try:
             with pd.ExcelWriter(temp_path, engine='openpyxl') as writer:
+                # Write all existing sheets
                 for sheet_name, df in data_file_data.items():
                     # Create a copy of the dataframe to avoid modifying the original
                     df_copy = df.copy()
@@ -6584,6 +6585,526 @@ def download_result():
                             df_copy[col] = pd.to_datetime(df_copy[col], errors='coerce').dt.strftime('%m/%d/%Y')
                     
                     df_copy.to_excel(writer, sheet_name=sheet_name, index=False)
+                
+                # Create Agent Count Summary sheet
+                # Get the processed dataframe
+                processed_df = list(data_file_data.values())[0] if data_file_data else None
+                
+                if processed_df is not None:
+                    # Check if Agent Name column exists
+                    agent_name_col = None
+                    for col in processed_df.columns:
+                        if 'agent' in col.lower() and 'name' in col.lower():
+                            agent_name_col = col
+                            break
+                    
+                    if agent_name_col:
+                        # Count allocations by agent name
+                        agent_counts = {}
+                        
+                        # Find Remark column
+                        remark_col = None
+                        for col in processed_df.columns:
+                            if 'remark' in col.lower():
+                                remark_col = col
+                                break
+                        
+                        # Count each row once - prioritize Remark column for NTC and Not to work
+                        for idx, row in processed_df.iterrows():
+                            # Check Remark column first for NTC and Not to work
+                            if remark_col and remark_col in processed_df.columns:
+                                remark_value = row.get(remark_col)
+                                if pd.notna(remark_value):
+                                    remark_str = str(remark_value).strip().upper()
+                                    if remark_str == 'NTC':
+                                        agent_counts['NTC'] = agent_counts.get('NTC', 0) + 1
+                                        continue  # Skip agent name counting for this row
+                                    elif 'NOT TO WORK' in remark_str.replace('-', ' ').replace('_', ' '):
+                                        agent_counts['Not to work'] = agent_counts.get('Not to work', 0) + 1
+                                        continue  # Skip agent name counting for this row
+                            
+                            # Count by Agent Name (if not already counted as NTC or Not to work)
+                            if agent_name_col in processed_df.columns:
+                                agent_name_value = row.get(agent_name_col)
+                                if pd.notna(agent_name_value):
+                                    agent_name_str = str(agent_name_value).strip()
+                                    # Check if it's NTC or Not to work in Agent Name column
+                                    agent_name_upper = agent_name_str.upper()
+                                    if agent_name_upper == 'NTC':
+                                        agent_counts['NTC'] = agent_counts.get('NTC', 0) + 1
+                                    elif 'NOT TO WORK' in agent_name_upper.replace('-', ' ').replace('_', ' '):
+                                        agent_counts['Not to work'] = agent_counts.get('Not to work', 0) + 1
+                                    else:
+                                        # Regular agent name
+                                        agent_counts[agent_name_str] = agent_counts.get(agent_name_str, 0) + 1
+                        
+                        # Convert to list of tuples and sort by count (descending)
+                        summary_list = [(row_label, count) for row_label, count in agent_counts.items()]
+                        summary_list.sort(key=lambda x: x[1], reverse=True)  # Sort by count in descending order
+                        
+                        # Calculate grand total
+                        grand_total = sum(count for _, count in summary_list)
+                        
+                        # Create summary dataframe
+                        if summary_list:
+                            summary_df = pd.DataFrame(summary_list, columns=['Row Labels', 'Count of Agent Name'])
+                            # Add grand total row
+                            grand_total_row = pd.DataFrame([['Grand Total', grand_total]], columns=['Row Labels', 'Count of Agent Name'])
+                            summary_df = pd.concat([summary_df, grand_total_row], ignore_index=True)
+                        else:
+                            # Create empty summary with just grand total
+                            summary_df = pd.DataFrame([['Grand Total', 0]], columns=['Row Labels', 'Count of Agent Name'])
+                        
+                        # Write summary sheet
+                        summary_df.to_excel(writer, sheet_name='Agent Count Summary', index=False)
+                
+                # Create Priority Status sheet
+                if processed_df is not None:
+                    # Find Priority Status column
+                    priority_status_col = None
+                    appointment_date_col = None
+                    
+                    for col in processed_df.columns:
+                        if 'priority' in col.lower() and 'status' in col.lower():
+                            priority_status_col = col
+                        if 'appointment' in col.lower() and 'date' in col.lower():
+                            appointment_date_col = col
+                    
+                    if priority_status_col and appointment_date_col:
+                        # Get all unique appointment dates (store both YYYY-MM-DD for matching and MM/DD/YYYY for display)
+                        appointment_dates_dict = {}  # key: YYYY-MM-DD, value: MM/DD/YYYY
+                        
+                        for idx, row in processed_df.iterrows():
+                            appt_date = row.get(appointment_date_col)
+                            if pd.notna(appt_date):
+                                # Convert to date object
+                                date_obj = None
+                                if hasattr(appt_date, 'date'):
+                                    date_obj = appt_date.date()
+                                elif hasattr(appt_date, 'strftime'):
+                                    # Try to parse if it's a string
+                                    try:
+                                        date_obj = pd.to_datetime(appt_date).date()
+                                    except:
+                                        date_obj = appt_date
+                                else:
+                                    try:
+                                        date_obj = pd.to_datetime(appt_date).date()
+                                    except:
+                                        continue
+                                
+                                if date_obj:
+                                    date_key = date_obj.strftime('%Y-%m-%d')
+                                    date_display = date_obj.strftime('%m/%d/%Y')
+                                    appointment_dates_dict[date_key] = date_display
+                        
+                        # Sort dates by key (YYYY-MM-DD) and create lists
+                        sorted_date_keys = sorted(appointment_dates_dict.keys())
+                        appointment_dates = sorted_date_keys  # For matching
+                        appointment_dates_display = [appointment_dates_dict[key] for key in sorted_date_keys]  # For display
+                        
+                        # Create pivot data structure
+                        priority_rows = ['First Priority', 'Second Priority', 'Third Priority']
+                        priority_data = {}
+                        
+                        # Initialize counts for each priority and date
+                        for priority in priority_rows:
+                            priority_data[priority] = {}
+                            for date in appointment_dates:
+                                priority_data[priority][date] = 0
+                        
+                        # Count rows by priority and date
+                        for idx, row in processed_df.iterrows():
+                            priority_status = row.get(priority_status_col)
+                            appt_date = row.get(appointment_date_col)
+                            
+                            if pd.notna(priority_status) and pd.notna(appt_date):
+                                priority_str = str(priority_status).strip()
+                                
+                                # Convert appointment date to YYYY-MM-DD format for matching
+                                date_obj = None
+                                if hasattr(appt_date, 'date'):
+                                    date_obj = appt_date.date()
+                                elif hasattr(appt_date, 'strftime'):
+                                    try:
+                                        date_obj = pd.to_datetime(appt_date).date()
+                                    except:
+                                        # Try parsing as string
+                                        try:
+                                            date_obj = pd.to_datetime(str(appt_date)).date()
+                                        except:
+                                            continue
+                                else:
+                                    try:
+                                        date_obj = pd.to_datetime(appt_date).date()
+                                    except:
+                                        continue
+                                
+                                if date_obj:
+                                    date_str = date_obj.strftime('%Y-%m-%d')
+                                    
+                                    if priority_str in priority_rows and date_str in appointment_dates:
+                                        priority_data[priority_str][date_str] = priority_data[priority_str].get(date_str, 0) + 1
+                        
+                        # Calculate grand totals for each priority
+                        priority_totals = {}
+                        for priority in priority_rows:
+                            priority_totals[priority] = sum(priority_data[priority].values())
+                        
+                        # Calculate grand total for all priorities
+                        overall_grand_total = sum(priority_totals.values())
+                        
+                        # Calculate totals for each date column
+                        date_totals = {}
+                        for date in appointment_dates:
+                            date_totals[date] = sum(priority_data[priority][date] for priority in priority_rows)
+                        
+                        # Build the dataframe
+                        # Columns: Row Labels, Grand Total, [date columns with MM/DD/YYYY format]
+                        columns = ['Row Labels', 'Grand Total'] + appointment_dates_display
+                        rows_data = []
+                        
+                        # Add priority rows
+                        for priority in priority_rows:
+                            row_data = [priority, priority_totals[priority]]
+                            for date_key in appointment_dates:
+                                row_data.append(priority_data[priority][date_key])
+                            rows_data.append(row_data)
+                        
+                        # Add Grand Total row
+                        grand_total_row = ['Grand Total', overall_grand_total]
+                        for date_key in appointment_dates:
+                            grand_total_row.append(date_totals[date_key])
+                        rows_data.append(grand_total_row)
+                        
+                        # Create dataframe
+                        priority_df = pd.DataFrame(rows_data, columns=columns)
+                        
+                        # Write Priority Status sheet
+                        priority_df.to_excel(writer, sheet_name='Priority Status', index=False)
+                
+                # Create Priority Remark sheet
+                if processed_df is not None:
+                    # Find Priority Status, Remark, and Appointment Date columns
+                    priority_status_col = None
+                    remark_col = None
+                    appointment_date_col = None
+                    
+                    for col in processed_df.columns:
+                        if 'priority' in col.lower() and 'status' in col.lower():
+                            priority_status_col = col
+                        if 'remark' in col.lower():
+                            remark_col = col
+                        if 'appointment' in col.lower() and 'date' in col.lower():
+                            appointment_date_col = col
+                    
+                    if priority_status_col and appointment_date_col:
+                        # Get all unique appointment dates (reuse the logic from Priority Status sheet)
+                        appointment_dates_dict = {}  # key: YYYY-MM-DD, value: MM/DD/YYYY
+                        
+                        for idx, row in processed_df.iterrows():
+                            appt_date = row.get(appointment_date_col)
+                            if pd.notna(appt_date):
+                                # Convert to date object
+                                date_obj = None
+                                if hasattr(appt_date, 'date'):
+                                    date_obj = appt_date.date()
+                                elif hasattr(appt_date, 'strftime'):
+                                    try:
+                                        date_obj = pd.to_datetime(appt_date).date()
+                                    except:
+                                        date_obj = appt_date
+                                else:
+                                    try:
+                                        date_obj = pd.to_datetime(appt_date).date()
+                                    except:
+                                        continue
+                                
+                                if date_obj:
+                                    date_key = date_obj.strftime('%Y-%m-%d')
+                                    date_display = date_obj.strftime('%m/%d/%Y')
+                                    appointment_dates_dict[date_key] = date_display
+                        
+                        # Sort dates by key (YYYY-MM-DD) and create lists
+                        sorted_date_keys = sorted(appointment_dates_dict.keys())
+                        appointment_dates = sorted_date_keys  # For matching
+                        appointment_dates_display = [appointment_dates_dict[key] for key in sorted_date_keys]  # For display
+                        
+                        # Define priority and remark categories
+                        priority_rows = ['First Priority', 'Second Priority', 'Third Priority']
+                        remark_types = ['NTBP', 'Not to work', 'Workable', 'NTC']
+                        
+                        # Initialize data structure: priority -> remark -> date -> count
+                        priority_remark_data = {}
+                        for priority in priority_rows:
+                            priority_remark_data[priority] = {}
+                            for remark in remark_types:
+                                priority_remark_data[priority][remark] = {}
+                                for date_key in appointment_dates:
+                                    priority_remark_data[priority][remark][date_key] = 0
+                        
+                        # Count rows by priority, remark, and date
+                        for idx, row in processed_df.iterrows():
+                            priority_status = row.get(priority_status_col)
+                            appt_date = row.get(appointment_date_col)
+                            remark_value = row.get(remark_col) if remark_col else None
+                            
+                            if pd.notna(priority_status) and pd.notna(appt_date):
+                                priority_str = str(priority_status).strip()
+                                
+                                # Convert appointment date to YYYY-MM-DD format
+                                date_obj = None
+                                if hasattr(appt_date, 'date'):
+                                    date_obj = appt_date.date()
+                                elif hasattr(appt_date, 'strftime'):
+                                    try:
+                                        date_obj = pd.to_datetime(appt_date).date()
+                                    except:
+                                        try:
+                                            date_obj = pd.to_datetime(str(appt_date)).date()
+                                        except:
+                                            continue
+                                else:
+                                    try:
+                                        date_obj = pd.to_datetime(appt_date).date()
+                                    except:
+                                        continue
+                                
+                                if date_obj and priority_str in priority_rows:
+                                    date_str = date_obj.strftime('%Y-%m-%d')
+                                    
+                                    if date_str in appointment_dates:
+                                        # Determine remark type
+                                        remark_type = 'Workable'  # Default
+                                        
+                                        if pd.notna(remark_value):
+                                            remark_str = str(remark_value).strip().upper()
+                                            
+                                            if remark_str == 'NTBP':
+                                                remark_type = 'NTBP'
+                                            elif remark_str == 'NTC':
+                                                remark_type = 'NTC'
+                                            elif 'NOT TO WORK' in remark_str.replace('-', ' ').replace('_', ' '):
+                                                remark_type = 'Not to work'
+                                            # else: Workable (default)
+                                        
+                                        if remark_type in remark_types:
+                                            priority_remark_data[priority_str][remark_type][date_str] = \
+                                                priority_remark_data[priority_str][remark_type].get(date_str, 0) + 1
+                        
+                        # Calculate totals
+                        # Totals for each priority+remark combination
+                        priority_remark_totals = {}
+                        for priority in priority_rows:
+                            priority_remark_totals[priority] = {}
+                            for remark in remark_types:
+                                priority_remark_totals[priority][remark] = sum(
+                                    priority_remark_data[priority][remark].values()
+                                )
+                        
+                        # Totals for each date column
+                        date_totals = {}
+                        for date_key in appointment_dates:
+                            date_totals[date_key] = sum(
+                                priority_remark_data[priority][remark][date_key]
+                                for priority in priority_rows
+                                for remark in remark_types
+                            )
+                        
+                        # Overall grand total
+                        overall_grand_total = sum(
+                            priority_remark_totals[priority][remark]
+                            for priority in priority_rows
+                            for remark in remark_types
+                        )
+                        
+                        # Build the dataframe
+                        # Columns: Row Labels, Grand Total, [date columns]
+                        columns = ['Row Labels', 'Grand Total'] + appointment_dates_display
+                        rows_data = []
+                        
+                        # Add rows for each priority and remark combination
+                        for priority in priority_rows:
+                            # Add priority header row with totals
+                            priority_total = sum(priority_remark_totals[priority].values())
+                            priority_row_data = [priority, priority_total]
+                            for date_key in appointment_dates:
+                                # Sum all remarks for this priority and date
+                                date_total = sum(
+                                    priority_remark_data[priority][remark][date_key]
+                                    for remark in remark_types
+                                )
+                                priority_row_data.append(date_total)
+                            rows_data.append(priority_row_data)
+                            
+                            # Add remark sub-rows for this priority
+                            for remark in remark_types:
+                                row_label = remark  # Just the remark name
+                                row_total = priority_remark_totals[priority][remark]
+                                
+                                row_data = [row_label, row_total]
+                                for date_key in appointment_dates:
+                                    row_data.append(priority_remark_data[priority][remark][date_key])
+                                rows_data.append(row_data)
+                        
+                        # Add Grand Total row
+                        grand_total_row = ['Grand Total', overall_grand_total]
+                        for date_key in appointment_dates:
+                            grand_total_row.append(date_totals[date_key])
+                        rows_data.append(grand_total_row)
+                        
+                        # Create dataframe
+                        priority_remark_df = pd.DataFrame(rows_data, columns=columns)
+                        
+                        # Write Priority Remark sheet
+                        priority_remark_df.to_excel(writer, sheet_name='Priority Remark', index=False)
+                
+                # Create Today Allocation sheet
+                if processed_df is not None:
+                    # Find Agent Name and Appointment Date columns
+                    agent_name_col = None
+                    appointment_date_col = None
+                    
+                    for col in processed_df.columns:
+                        if 'agent' in col.lower() and 'name' in col.lower():
+                            agent_name_col = col
+                        if 'appointment' in col.lower() and 'date' in col.lower():
+                            appointment_date_col = col
+                    
+                    if agent_name_col and appointment_date_col:
+                        # Get all unique appointment dates (reuse the logic from Priority Status sheet)
+                        appointment_dates_dict = {}  # key: YYYY-MM-DD, value: MM/DD/YYYY
+                        
+                        for idx, row in processed_df.iterrows():
+                            appt_date = row.get(appointment_date_col)
+                            if pd.notna(appt_date):
+                                # Convert to date object
+                                date_obj = None
+                                if hasattr(appt_date, 'date'):
+                                    date_obj = appt_date.date()
+                                elif hasattr(appt_date, 'strftime'):
+                                    try:
+                                        date_obj = pd.to_datetime(appt_date).date()
+                                    except:
+                                        date_obj = appt_date
+                                else:
+                                    try:
+                                        date_obj = pd.to_datetime(appt_date).date()
+                                    except:
+                                        continue
+                                
+                                if date_obj:
+                                    date_key = date_obj.strftime('%Y-%m-%d')
+                                    date_display = date_obj.strftime('%m/%d/%Y')
+                                    appointment_dates_dict[date_key] = date_display
+                        
+                        # Sort dates by key (YYYY-MM-DD) and create lists
+                        sorted_date_keys = sorted(appointment_dates_dict.keys())
+                        appointment_dates = sorted_date_keys  # For matching
+                        appointment_dates_display = [appointment_dates_dict[key] for key in sorted_date_keys]  # For display
+                        
+                        # Initialize data structure: agent_name -> date -> count
+                        agent_allocation_data = {}
+                        
+                        # Get all unique agent names
+                        agent_names = set()
+                        for idx, row in processed_df.iterrows():
+                            agent_name = row.get(agent_name_col)
+                            if pd.notna(agent_name) and str(agent_name).strip():
+                                agent_name_str = str(agent_name).strip()
+                                # Skip NTC and Not to work as they're not agents
+                                agent_name_upper = agent_name_str.upper()
+                                if agent_name_upper != 'NTC' and 'NOT TO WORK' not in agent_name_upper.replace('-', ' ').replace('_', ' '):
+                                    agent_names.add(agent_name_str)
+                        
+                        # Initialize counts for each agent and date
+                        for agent_name in agent_names:
+                            agent_allocation_data[agent_name] = {}
+                            for date_key in appointment_dates:
+                                agent_allocation_data[agent_name][date_key] = 0
+                        
+                        # Count allocations by agent name and date
+                        for idx, row in processed_df.iterrows():
+                            agent_name = row.get(agent_name_col)
+                            appt_date = row.get(appointment_date_col)
+                            
+                            if pd.notna(agent_name) and pd.notna(appt_date):
+                                agent_name_str = str(agent_name).strip()
+                                # Skip NTC and Not to work
+                                agent_name_upper = agent_name_str.upper()
+                                if agent_name_upper == 'NTC' or 'NOT TO WORK' in agent_name_upper.replace('-', ' ').replace('_', ' '):
+                                    continue
+                                
+                                # Convert appointment date to YYYY-MM-DD format
+                                date_obj = None
+                                if hasattr(appt_date, 'date'):
+                                    date_obj = appt_date.date()
+                                elif hasattr(appt_date, 'strftime'):
+                                    try:
+                                        date_obj = pd.to_datetime(appt_date).date()
+                                    except:
+                                        try:
+                                            date_obj = pd.to_datetime(str(appt_date)).date()
+                                        except:
+                                            continue
+                                else:
+                                    try:
+                                        date_obj = pd.to_datetime(appt_date).date()
+                                    except:
+                                        continue
+                                
+                                if date_obj and agent_name_str in agent_names:
+                                    date_str = date_obj.strftime('%Y-%m-%d')
+                                    
+                                    if date_str in appointment_dates:
+                                        agent_allocation_data[agent_name_str][date_str] = \
+                                            agent_allocation_data[agent_name_str].get(date_str, 0) + 1
+                        
+                        # Calculate totals
+                        # Totals for each agent
+                        agent_totals = {}
+                        for agent_name in agent_names:
+                            agent_totals[agent_name] = sum(agent_allocation_data[agent_name].values())
+                        
+                        # Totals for each date column
+                        date_totals = {}
+                        for date_key in appointment_dates:
+                            date_totals[date_key] = sum(
+                                agent_allocation_data[agent_name][date_key]
+                                for agent_name in agent_names
+                            )
+                        
+                        # Overall grand total
+                        overall_grand_total = sum(agent_totals.values())
+                        
+                        # Build the dataframe
+                        # Columns: Row Labels, Grand Total, [date columns]
+                        columns = ['Row Labels', 'Grand Total'] + appointment_dates_display
+                        rows_data = []
+                        
+                        # Add Grand Total row first
+                        grand_total_row = ['Grand Total', overall_grand_total]
+                        for date_key in appointment_dates:
+                            grand_total_row.append(date_totals[date_key])
+                        rows_data.append(grand_total_row)
+                        
+                        # Sort agent names for consistent ordering
+                        sorted_agent_names = sorted(agent_names)
+                        
+                        # Add rows for each agent
+                        for agent_name in sorted_agent_names:
+                            agent_total = agent_totals[agent_name]
+                            
+                            row_data = [agent_name, agent_total]
+                            for date_key in appointment_dates:
+                                row_data.append(agent_allocation_data[agent_name][date_key])
+                            rows_data.append(row_data)
+                        
+                        # Create dataframe
+                        today_allocation_df = pd.DataFrame(rows_data, columns=columns)
+                        
+                        # Write Today Allocation sheet
+                        today_allocation_df.to_excel(writer, sheet_name='Today Allocation', index=False)
             
             return send_file(temp_path, as_attachment=True, download_name=filename)
             

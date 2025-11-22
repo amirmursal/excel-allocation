@@ -6853,7 +6853,7 @@ def download_result():
                         appointment_dates_display = [appointment_dates_dict[key] for key in sorted_date_keys]  # For display
                         
                         # Create pivot data structure
-                        priority_rows = ['First Priority', 'Second Priority', 'Third Priority']
+                        priority_rows = ['First Priority', 'Second Priority']
                         priority_data = {}
                         
                         # Initialize counts for each priority and date
@@ -6980,7 +6980,7 @@ def download_result():
                         appointment_dates_display = [appointment_dates_dict[key] for key in sorted_date_keys]  # For display
                         
                         # Define priority and remark categories
-                        priority_rows = ['First Priority', 'Second Priority', 'Third Priority']
+                        priority_rows = ['First Priority', 'Second Priority']
                         remark_types = ['NTBP', 'Not to work', 'Workable', 'NTC']
                         
                         # Initialize data structure: priority -> remark -> date -> count
@@ -7110,17 +7110,20 @@ def download_result():
                 
                 # Create Today Allocation sheet
                 if processed_df is not None:
-                    # Find Agent Name and Appointment Date columns
+                    # Find Agent Name, Appointment Date, and Remark columns
                     agent_name_col = None
                     appointment_date_col = None
+                    remark_col = None
                     
                     for col in processed_df.columns:
                         if 'agent' in col.lower() and 'name' in col.lower():
                             agent_name_col = col
                         if 'appointment' in col.lower() and 'date' in col.lower():
                             appointment_date_col = col
+                        if 'remark' in col.lower():
+                            remark_col = col
                     
-                    if agent_name_col and appointment_date_col:
+                    if agent_name_col and appointment_date_col and remark_col:
                         # Get all unique appointment dates (reuse the logic from Priority Status sheet)
                         appointment_dates_dict = {}  # key: YYYY-MM-DD, value: MM/DD/YYYY
                         
@@ -7159,12 +7162,18 @@ def download_result():
                         agent_names = set()
                         for idx, row in processed_df.iterrows():
                             agent_name = row.get(agent_name_col)
-                            if pd.notna(agent_name) and str(agent_name).strip():
-                                agent_name_str = str(agent_name).strip()
-                                # Skip NTC and Not to work as they're not agents
-                                agent_name_upper = agent_name_str.upper()
-                                if agent_name_upper != 'NTC' and 'NOT TO WORK' not in agent_name_upper.replace('-', ' ').replace('_', ' '):
-                                    agent_names.add(agent_name_str)
+                            remark_value = row.get(remark_col)
+                            
+                            # Only include agents with "Workable" remark
+                            if pd.notna(remark_value):
+                                remark_str = str(remark_value).strip().upper()
+                                if remark_str == 'WORKABLE':
+                                    if pd.notna(agent_name) and str(agent_name).strip():
+                                        agent_name_str = str(agent_name).strip()
+                                        # Skip NTC and Not to work as they're not agents
+                                        agent_name_upper = agent_name_str.upper()
+                                        if agent_name_upper != 'NTC' and 'NOT TO WORK' not in agent_name_upper.replace('-', ' ').replace('_', ' '):
+                                            agent_names.add(agent_name_str)
                         
                         # Initialize counts for each agent and date
                         for agent_name in agent_names:
@@ -7172,10 +7181,19 @@ def download_result():
                             for date_key in appointment_dates:
                                 agent_allocation_data[agent_name][date_key] = 0
                         
-                        # Count allocations by agent name and date
+                        # Count allocations by agent name and date (only for Workable remark)
                         for idx, row in processed_df.iterrows():
                             agent_name = row.get(agent_name_col)
                             appt_date = row.get(appointment_date_col)
+                            remark_value = row.get(remark_col)
+                            
+                            # Only process rows with "Workable" remark
+                            if pd.isna(remark_value):
+                                continue
+                            
+                            remark_str = str(remark_value).strip().upper()
+                            if remark_str != 'WORKABLE':
+                                continue
                             
                             if pd.notna(agent_name) and pd.notna(appt_date):
                                 agent_name_str = str(agent_name).strip()

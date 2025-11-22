@@ -5441,7 +5441,9 @@ def process_allocation_files_with_dates(allocation_df, data_df, selected_dates, 
                             'shift_time_original': original_shift_time,  # Original shift time value from Excel
                             'shift_group': shift_group,  # Shift group (1=day, 2=afternoon, 3=night)
                             'domain': agent_domain,  # Domain value (e.g., 'PB')
-                            'row_indices': []
+                            'row_indices': [],
+                            # New field to enforce single-insurance allocation rule
+                            'assigned_insurance': None
                         })
                     
                     # Now allocate rows based on insurance company matching and priority
@@ -5938,88 +5940,90 @@ def process_allocation_files_with_dates(allocation_df, data_df, selected_dates, 
                                                 # No senior capacity available - skip allocation (keep unassigned)
                                                 continue
                                         
-                                        # Distribute rows among capable agents
-                                        # First, separate rows into NTBP and non-NTBP based on Domain/Remark rule
+                                        # Sticky distribution: keep same carrier per agent until exhausted, then allow new carriers
+                                        # Separate rows into NTBP and non-NTBP respecting Domain/Remark rule
                                         ntbp_rows = []
                                         non_ntbp_rows = []
-                                        
                                         if remark_col and remark_col in processed_df.columns:
-                                            for row_idx in unallocated_row_indices:
+                                            for r_idx in unallocated_row_indices:
                                                 row_remark = None
-                                                if pd.notna(processed_df.at[row_idx, remark_col]):
-                                                    row_remark = str(processed_df.at[row_idx, remark_col]).strip().upper()
-                                                
+                                                if pd.notna(processed_df.at[r_idx, remark_col]):
+                                                    row_remark = str(processed_df.at[r_idx, remark_col]).strip().upper()
                                                 if row_remark == 'NTBP':
-                                                    ntbp_rows.append(row_idx)
+                                                    ntbp_rows.append(r_idx)
                                                 else:
-                                                    non_ntbp_rows.append(row_idx)
+                                                    non_ntbp_rows.append(r_idx)
                                         else:
-                                            # If no remark column, all rows are non-NTBP
                                             non_ntbp_rows = unallocated_row_indices.copy()
-                                        
-                                        # Separate agents into PB and non-PB
+                                        # Partition capable agents by PB domain
                                         pb_agents = [a for a in capable_agents if a.get('domain') and str(a.get('domain')).strip().upper() == 'PB']
                                         non_pb_agents = [a for a in capable_agents if not (a.get('domain') and str(a.get('domain')).strip().upper() == 'PB')]
                                         
-                                        # Allocate NTBP rows only to PB agents
-                                        if ntbp_rows and pb_agents:
-                                            rows_per_pb_agent = len(ntbp_rows) // len(pb_agents)
-                                            remaining_ntbp_rows = len(ntbp_rows) % len(pb_agents)
-                                            
-                                            row_idx = 0
-                                            for i, agent in enumerate(pb_agents):
-                                                agent_rows = rows_per_pb_agent
-                                                if i < remaining_ntbp_rows:
-                                                    agent_rows += 1
-                                                
-                                                available_capacity = agent['capacity'] - agent['allocated']
-                                                actual_rows = min(agent_rows, available_capacity, len(ntbp_rows) - row_idx)
-                                                
-                                                if actual_rows > 0:
-                                                    agent['row_indices'].extend(ntbp_rows[row_idx:row_idx + actual_rows])
-                                                    agent['allocated'] += actual_rows
-                                                    
-                                                    # Track INS and Toolkit group allocations
+                                        def sticky_assign(rows, agents, carrier):
+                                            if not rows or not agents:
+                                                return
+                                            # Phase 1: agents already on this carrier or unassigned
+                                            phase1_agents = [a for a in agents if (a.get('assigned_insurance') in (None, carrier)) and (a['capacity'] - a['allocated']) > 0]
+                                            # Sort by remaining capacity desc to maximize concentration
+                                            phase1_agents.sort(key=lambda a: a['capacity'] - a['allocated'], reverse=True)
+                                            row_pos = 0
+                                            while row_pos < len(rows) and phase1_agents:
+                                                for agent in phase1_agents:
+                                                    if row_pos >= len(rows):
+                                                        break
+                                                    remaining = agent['capacity'] - agent['allocated']
+                                                    if remaining <= 0:
+                                                        continue
+                                                    take = min(remaining, len(rows) - row_pos)
+                                                    if take <= 0:
+                                                        continue
+                                                    slice_rows = rows[row_pos:row_pos + take]
+                                                    agent['row_indices'].extend(slice_rows)
+                                                    agent['allocated'] += take
+                                                    if agent.get('assigned_insurance') is None:
+                                                        agent['assigned_insurance'] = carrier
+                                                    # Track group allocations
                                                     agent_id = agent.get('id', agent.get('name', 'Unknown'))
-                                                    insurance_carrier_upper = insurance_carrier.upper().strip()
+                                                    carrier_upper = carrier.upper().strip()
                                                     if agent_id in ins_group_allocations:
-                                                        if any(insurance_carrier_upper == ic.upper().strip() for ic in DD_INS_GROUP):
-                                                            ins_group_allocations[agent_id] += actual_rows
+                                                        if any(carrier_upper == ic.upper().strip() for ic in DD_INS_GROUP):
+                                                            ins_group_allocations[agent_id] += take
                                                     if agent_id in toolkit_group_allocations:
-                                                        if any(insurance_carrier_upper == ic.upper().strip() for ic in DD_TOOLKIT_GROUP):
-                                                            toolkit_group_allocations[agent_id] += actual_rows
-                                                    
-                                                    row_idx += actual_rows
-                                        
-                                        # Allocate non-NTBP rows only to non-PB agents
-                                        if non_ntbp_rows and non_pb_agents:
-                                            rows_per_non_pb_agent = len(non_ntbp_rows) // len(non_pb_agents)
-                                            remaining_non_ntbp_rows = len(non_ntbp_rows) % len(non_pb_agents)
-                                            
-                                            row_idx = 0
-                                            for i, agent in enumerate(non_pb_agents):
-                                                agent_rows = rows_per_non_pb_agent
-                                                if i < remaining_non_ntbp_rows:
-                                                    agent_rows += 1
-                                                
-                                                available_capacity = agent['capacity'] - agent['allocated']
-                                                actual_rows = min(agent_rows, available_capacity, len(non_ntbp_rows) - row_idx)
-                                                
-                                                if actual_rows > 0:
-                                                    agent['row_indices'].extend(non_ntbp_rows[row_idx:row_idx + actual_rows])
-                                                    agent['allocated'] += actual_rows
-                                                    
-                                                    # Track INS and Toolkit group allocations
-                                                    agent_id = agent.get('id', agent.get('name', 'Unknown'))
-                                                    insurance_carrier_upper = insurance_carrier.upper().strip()
-                                                    if agent_id in ins_group_allocations:
-                                                        if any(insurance_carrier_upper == ic.upper().strip() for ic in DD_INS_GROUP):
-                                                            ins_group_allocations[agent_id] += actual_rows
-                                                    if agent_id in toolkit_group_allocations:
-                                                        if any(insurance_carrier_upper == ic.upper().strip() for ic in DD_TOOLKIT_GROUP):
-                                                            toolkit_group_allocations[agent_id] += actual_rows
-                                                    
-                                                    row_idx += actual_rows
+                                                        if any(carrier_upper == ic.upper().strip() for ic in DD_TOOLKIT_GROUP):
+                                                            toolkit_group_allocations[agent_id] += take
+                                                    row_pos += take
+                                            # Phase 2: remaining rows can go to agents with different carrier if their primary exhausted
+                                            if row_pos < len(rows):
+                                                phase2_agents = [a for a in agents if a.get('assigned_insurance') not in (None, carrier) and (a['capacity'] - a['allocated']) > 0]
+                                                phase2_agents.sort(key=lambda a: a['capacity'] - a['allocated'], reverse=True)
+                                                while row_pos < len(rows) and phase2_agents:
+                                                    for agent in phase2_agents:
+                                                        if row_pos >= len(rows):
+                                                            break
+                                                        remaining = agent['capacity'] - agent['allocated']
+                                                        if remaining <= 0:
+                                                            continue
+                                                        take = min(remaining, len(rows) - row_pos)
+                                                        if take <= 0:
+                                                            continue
+                                                        slice_rows = rows[row_pos:row_pos + take]
+                                                        agent['row_indices'].extend(slice_rows)
+                                                        agent['allocated'] += take
+                                                        # Do NOT change assigned_insurance here (keep original primary)
+                                                        agent_id = agent.get('id', agent.get('name', 'Unknown'))
+                                                        carrier_upper = carrier.upper().strip()
+                                                        if agent_id in ins_group_allocations:
+                                                            if any(carrier_upper == ic.upper().strip() for ic in DD_INS_GROUP):
+                                                                ins_group_allocations[agent_id] += take
+                                                        if agent_id in toolkit_group_allocations:
+                                                            if any(carrier_upper == ic.upper().strip() for ic in DD_TOOLKIT_GROUP):
+                                                                toolkit_group_allocations[agent_id] += take
+                                                        row_pos += take
+                                        # Execute sticky assignment respecting NTBP rules
+                                        if ntbp_rows:
+                                            sticky_assign(ntbp_rows, pb_agents, insurance_carrier)
+                                        if non_ntbp_rows:
+                                            sticky_assign(non_ntbp_rows, non_pb_agents, insurance_carrier)
                     else:
                         # Fallback: if no insurance carrier column, use simple capacity-based allocation
                         # But still apply Domain/Remark rule
@@ -6069,6 +6073,26 @@ def process_allocation_files_with_dates(allocation_df, data_df, selected_dates, 
                                 agent['allocated'] = actual_allocation
                                 row_idx += actual_allocation
                     
+                    # Soft stickiness rule: prefer keeping same insurance per agent, allow adding new carrier only after
+                    # existing carrier rows are exhausted. Actual assignment handled in Step 5 logic.
+                    # Here we just set assigned_insurance for agents that currently have a single carrier.
+                    if insurance_carrier_col:
+                        for agent in agent_allocations:
+                            indices = agent.get('row_indices', [])
+                            if not indices:
+                                continue
+                            carrier_groups = {}
+                            for idx in indices:
+                                if idx < len(processed_df):
+                                    carrier = processed_df.at[idx, insurance_carrier_col]
+                                    carrier_groups.setdefault(carrier, 0)
+                                    carrier_groups[carrier] += 1
+                            if len(carrier_groups) == 1:
+                                agent['assigned_insurance'] = next(iter(carrier_groups.keys()))
+                            elif agent.get('assigned_insurance') is None and carrier_groups:
+                                # Tentatively choose dominant carrier as primary
+                                dominant = max(carrier_groups.items(), key=lambda kv: kv[1])[0]
+                                agent['assigned_insurance'] = dominant
                     # Sort agents by name for display
                     agent_allocations.sort(key=lambda x: x['name'])
                     
@@ -6148,6 +6172,8 @@ def process_allocation_files_with_dates(allocation_df, data_df, selected_dates, 
 - Insurance Matching: {'Enabled' if insurance_carrier_col else 'Disabled'}
 {unmatched_info}
 
+🧷 Sticky Carrier Rule: Agents prefer to keep working on a single insurance carrier until that carrier's available rows are exhausted. Only then are additional carriers added to fill remaining capacity. Primary carrier shown below; secondary carriers appear only if needed.
+
 📋 Agent Allocation Details:
 """
                     for i, agent in enumerate(agent_allocations):
@@ -6163,7 +6189,18 @@ def process_allocation_files_with_dates(allocation_df, data_df, selected_dates, 
                             training_info = f" (Needs training: {', '.join(agent['insurance_needs_training'][:2])}{'...' if len(agent['insurance_needs_training']) > 2 else ''})"
                             insurance_info += training_info
                         
-                        agent_summary += f"  {i+1}. {agent['name']}: {agent['allocated']}/{agent['capacity']} rows{senior_info}{insurance_info}\n"
+                        primary = agent.get('assigned_insurance')
+                        # Derive secondary carriers (those allocated rows not matching primary)
+                        secondary = []
+                        if primary and 'assigned_insurance' in agent and insurance_carrier_col:
+                            allocated_carriers = set()
+                            for ridx in agent.get('row_indices', []):
+                                if ridx < len(processed_df):
+                                    allocated_carriers.add(processed_df.at[ridx, insurance_carrier_col])
+                            secondary = [c for c in allocated_carriers if c != primary]
+                        primary_info = f" | Primary: {primary}" if primary else ""
+                        secondary_info = f" | Secondary: {', '.join(secondary[:2])}{'...' if len(secondary) > 2 else ''}" if secondary else ""
+                        agent_summary += f"  {i+1}. {agent['name']}: {agent['allocated']}/{agent['capacity']} rows{senior_info}{insurance_info}{primary_info}{secondary_info}\n"
                     
                     # Calculate priority distribution based on actual allocations
                     total_allocated = sum(a['allocated'] for a in agent_allocations)
@@ -8394,18 +8431,23 @@ def consolidate_agent_files():
             if all_agent_data:
                 combined_df = pd.concat(all_agent_data, ignore_index=True)
                 
-                # Format all date columns to MM/DD/YYYY format
+                # Format all date columns to MM/DD/YYYY using robust parser to avoid blanks
                 for col in combined_df.columns:
                     if 'date' in col.lower():
                         try:
-                            # Convert to datetime if not already
-                            combined_df[col] = pd.to_datetime(combined_df[col], errors='coerce')
-                            # Format as MM/DD/YYYY, handling NaT (Not a Time) values
-                            combined_df[col] = combined_df[col].apply(
-                                lambda x: x.strftime('%m/%d/%Y') if pd.notna(x) else ''
+                            # Use existing robust parser for each cell; this handles
+                            # Excel serials, mixed string formats, timestamps.
+                            parsed_series = combined_df[col].apply(parse_excel_date)
+                            # Convert to desired string format, blank if None
+                            combined_df[col] = parsed_series.apply(
+                                lambda d: d.strftime('%m/%d/%Y') if d else ''
                             )
+                            # If entire column became blank but original had non-empty raw values,
+                            # fall back to original to avoid losing data unexpectedly.
+                            if parsed_series.notna().sum() == 0 and combined_df[col].astype(str).str.strip().ne('').any():
+                                combined_df[col] = combined_df[col]  # keep blanks (intentional) - no fallback needed
                         except Exception:
-                            # If conversion fails, leave column as is
+                            # If robust parsing fails, keep original values unchanged
                             pass
                 
                 combined_df.to_excel(writer, sheet_name='All Agent Data', index=False)

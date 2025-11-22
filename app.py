@@ -9833,6 +9833,44 @@ def cleanup_all_agent_files():
         db.session.rollback()
         return False, str(e)
 
+def daily_consolidate_and_cleanup():
+    """Consolidate all agent files, email the consolidated workbook, then cleanup."""
+    try:
+        with app.app_context():
+            excel_buffer, filename_or_message = create_consolidated_data()
+            if excel_buffer is not None:
+                # Use env var for recipient, fallback to sandbox-allowed email for testing
+                to_email = os.environ.get('CONSOLIDATION_EMAIL', 'amirmursal@gmail.com')
+                subject = f"Daily Consolidated Agent Files - {datetime.now().strftime('%Y-%m-%d')}"
+                html_content = f"<p>Please find attached the consolidated agent workbook generated at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}.</p>"
+                success, message = send_email_with_resend(
+                    to_email=to_email,
+                    subject=subject,
+                    html_content=html_content,
+                    text_content="Daily consolidated agent files attachment.",
+                    attachment_data=excel_buffer.getvalue(),
+                    attachment_filename=filename_or_message
+                )
+                if success:
+                    print(f"✅ Daily consolidation email sent to {to_email}: {filename_or_message}")
+                else:
+                    print(f"❌ Failed to send consolidation email: {message}")
+            else:
+                print(f"⚠️ Skipping email - {filename_or_message}")
+
+            # Perform cleanup after emailing
+            all_files = AgentWorkFile.query.all()
+            file_count = len(all_files)
+            for work_file in all_files:
+                db.session.delete(work_file)
+            db.session.commit()
+            print(f"✅ Daily consolidation + cleanup complete. Deleted {file_count} file(s).")
+            return True, file_count
+    except Exception as e:
+        print(f"❌ Error in daily consolidation + cleanup: {str(e)}")
+        db.session.rollback()
+        return False, str(e)
+
 def check_and_send_reminders():
     """Check which agents need reminders and send them every 2 hours from shift start time"""
     global agent_allocations_for_reminders
@@ -10111,10 +10149,10 @@ if __name__ == '__main__':
     cleanup_minute = int(os.environ.get('CLEANUP_MINUTE', '0'))
     
     scheduler.add_job(
-        func=lambda: cleanup_all_agent_files(),
+        func=lambda: daily_consolidate_and_cleanup(),
         trigger=CronTrigger(hour=cleanup_hour, minute=cleanup_minute, timezone=cleanup_timezone),
-        id='daily_cleanup',
-        name=f'Daily cleanup of agent work files at {cleanup_hour:02d}:{cleanup_minute:02d} {cleanup_timezone_str}',
+        id='daily_consolidation_cleanup',
+        name=f'Daily consolidation email + cleanup at {cleanup_hour:02d}:{cleanup_minute:02d} {cleanup_timezone_str}',
         replace_existing=True
     )
     

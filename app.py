@@ -5245,11 +5245,12 @@ def process_allocation_files_with_dates(
         # Use data_df as the main file to process
         processed_df = data_df.copy()
 
-        # Find the appointment date column, receive date column, insurance carrier column, and remark column
+        # Find the appointment date column, receive date column, insurance carrier column, remark column, and secondary insurance column
         appointment_date_col = None
         receive_date_col = None
         insurance_carrier_col = None
         remark_col = None
+        secondary_insurance_col = None
         for col in processed_df.columns:
             if "appointment" in col.lower() and "date" in col.lower():
                 appointment_date_col = col
@@ -5264,6 +5265,13 @@ def process_allocation_files_with_dates(
                 insurance_carrier_col = col
             elif col.lower() in ["remark", "remarks"]:
                 remark_col = col
+            elif (
+                "dental" in col.lower()
+                and "secondary" in col.lower()
+                and "ins" in col.lower()
+                and "carr" in col.lower()
+            ):
+                secondary_insurance_col = col
 
         if appointment_date_col is None:
             return (
@@ -5705,10 +5713,11 @@ def process_allocation_files_with_dates(
                         if domain_col and pd.notna(row[domain_col]):
                             agent_domain = str(row[domain_col]).strip().upper()
 
-                        # Get allocation preference value and check if it contains PB or NTC
+                        # Get allocation preference value and check if it contains PB, NTC, or Single
                         allocation_preference = None
                         has_pb_preference = False
                         has_ntc_preference = False
+                        has_single_preference = False
                         if allocation_preference_col and pd.notna(
                             row[allocation_preference_col]
                         ):
@@ -5725,6 +5734,21 @@ def process_allocation_files_with_dates(
                             # Check if allocation preference contains "NTC"
                             # Valid values: "Sec+NTC", "Sec+Mix+NTC", "Mix+NTC", "NTC"
                             has_ntc_preference = "NTC" in allocation_preference
+                            # Check if allocation preference is exactly "Single"
+                            # Agents with "Single" should only get rows from one insurance company
+                            has_single_preference = allocation_preference == "SINGLE"
+                            # Check if allocation preference contains "Mix"
+                            # Agents with "Mix" should get multiple insurance company rows
+                            has_mix_preference = "MIX" in allocation_preference
+                            # Check if allocation preference contains "Sec" (e.g., "Sec + Single", "Sec + NTC", "Sec + Mix")
+                            # Agents with "Sec + X" should first get rows with secondary insurance, then apply X logic
+                            has_sec_preference = "SEC" in allocation_preference
+                            # Check if allocation preference is "Sec + Single" or "SEC+SINGLE"
+                            # This is a specific case of Sec preference
+                            has_sec_single_preference = (
+                                "SEC" in allocation_preference
+                                and "SINGLE" in allocation_preference
+                            )
                         # Debug: Store raw allocation preference for troubleshooting
                         allocation_preference_raw_value = (
                             str(row[allocation_preference_col]).strip()
@@ -5935,6 +5959,10 @@ def process_allocation_files_with_dates(
                                 "domain": agent_domain,  # Domain value (e.g., 'PB')
                                 "has_pb_preference": has_pb_preference,  # Whether allocation preference contains "PB"
                                 "has_ntc_preference": has_ntc_preference,  # Whether allocation preference contains "NTC"
+                                "has_single_preference": has_single_preference,  # Whether allocation preference is "Single"
+                                "has_mix_preference": has_mix_preference,  # Whether allocation preference contains "Mix"
+                                "has_sec_preference": has_sec_preference,  # Whether allocation preference contains "Sec" (e.g., "Sec + Single", "Sec + NTC", "Sec + Mix")
+                                "has_sec_single_preference": has_sec_single_preference,  # Whether allocation preference is "Sec + Single"
                                 "allocation_preference_raw": (
                                     allocation_preference_raw_value
                                     if "allocation_preference_raw_value" in locals()
@@ -6446,6 +6474,1549 @@ def process_allocation_files_with_dates(
                                                     rows_to_assign:
                                                 ]
 
+                        # Step 3.5.5: After NTC allocation, allocate other insurance rows to "Mix + NTC" agents if capacity remains
+                        # "Mix + NTC" agents should get NTC rows first (done in Step 3.5), then other insurance rows if capacity remains
+                        mix_ntc_agents = [
+                            a
+                            for a in agent_allocations
+                            if a.get("has_mix_preference", False)
+                            and a.get("has_ntc_preference", False)
+                            and not a.get(
+                                "has_sec_preference", False
+                            )  # Exclude "Sec + Mix + NTC" (handled separately)
+                            and (a["capacity"] - a["allocated"]) > 0
+                        ]
+
+                        if mix_ntc_agents and insurance_carrier_col:
+                            for agent in mix_ntc_agents:
+                                remaining_capacity = (
+                                    agent["capacity"] - agent["allocated"]
+                                )
+                                if remaining_capacity <= 0:
+                                    continue
+
+                                agent_insurance_list = agent.get(
+                                    "insurance_companies", []
+                                )
+
+                                # Find unallocated rows from multiple insurance companies that match agent's capabilities
+                                # Exclude NTC rows (already allocated) and secondary insurance rows
+                                mix_ntc_rows = []
+
+                                for idx in processed_df.index:
+                                    # Skip already allocated rows
+                                    if idx in [
+                                        i
+                                        for ag in agent_allocations
+                                        for i in ag["row_indices"]
+                                    ]:
+                                        continue
+
+                                    # Skip rows with secondary insurance (those go to "Sec + X" agents)
+                                    if secondary_insurance_col and pd.notna(
+                                        processed_df.at[idx, secondary_insurance_col]
+                                    ):
+                                        secondary_val = str(
+                                            processed_df.at[
+                                                idx, secondary_insurance_col
+                                            ]
+                                        ).strip()
+                                        if (
+                                            secondary_val
+                                            and secondary_val.lower() != "nan"
+                                        ):
+                                            continue
+
+                                    # Skip NTBP rows (handled in Step 2.5)
+                                    if remark_col and pd.notna(
+                                        processed_df.at[idx, remark_col]
+                                    ):
+                                        remark_val = (
+                                            str(processed_df.at[idx, remark_col])
+                                            .strip()
+                                            .upper()
+                                        )
+                                        if remark_val == "NTBP":
+                                            continue
+                                        # Skip NTC rows (already allocated in Step 3.5)
+                                        if remark_val == "NTC":
+                                            continue
+
+                                    # Get insurance company from "Dental Primary Ins Carr" column
+                                    if pd.notna(
+                                        processed_df.at[idx, insurance_carrier_col]
+                                    ):
+                                        row_insurance = str(
+                                            processed_df.at[idx, insurance_carrier_col]
+                                        ).strip()
+
+                                        # Check if row insurance is in agent's "Insurance List" (capabilities)
+                                        can_work = False
+                                        if agent.get("is_senior", False):
+                                            # Senior agents can work with any insurance company
+                                            can_work = True
+                                        elif not agent_insurance_list:
+                                            # If no specific companies listed, can work with any
+                                            can_work = True
+                                        else:
+                                            # Check if row insurance matches/is in agent's Insurance List (capabilities)
+                                            row_insurance_lower = row_insurance.lower()
+                                            for comp in agent_insurance_list:
+                                                comp_lower = comp.lower()
+                                                if (
+                                                    row_insurance_lower in comp_lower
+                                                    or comp_lower in row_insurance_lower
+                                                    or row_insurance == comp
+                                                ):
+                                                    can_work = True
+                                                    break
+
+                                        if can_work:
+                                            mix_ntc_rows.append(idx)
+
+                                # Allocate other insurance rows until capacity is full
+                                if mix_ntc_rows:
+                                    allocated_count = 0
+                                    while (
+                                        remaining_capacity > 0
+                                        and allocated_count < len(mix_ntc_rows)
+                                    ):
+                                        take = min(
+                                            remaining_capacity,
+                                            len(mix_ntc_rows) - allocated_count,
+                                        )
+                                        if take > 0:
+                                            slice_rows = mix_ntc_rows[
+                                                allocated_count : allocated_count + take
+                                            ]
+                                            agent["row_indices"].extend(slice_rows)
+                                            agent["allocated"] += take
+                                            for idx in slice_rows:
+                                                processed_df.at[idx, "Agent Name"] = (
+                                                    agent["name"]
+                                                )
+                                            allocated_count += take
+                                            remaining_capacity = (
+                                                agent["capacity"] - agent["allocated"]
+                                            )
+                                        else:
+                                            break
+
+                        # Step 3.6: Global Secondary Insurance Allocation - Allocate rows with secondary insurance to "Sec + X" agents
+                        # This should happen before other allocations so "Sec + X" agents get secondary insurance rows first
+                        if (
+                            secondary_insurance_col
+                            and secondary_insurance_col in processed_df.columns
+                        ):
+                            # Find all agents with "Sec + X" preference
+                            sec_preference_agents = [
+                                a
+                                for a in agent_allocations
+                                if a.get("has_sec_preference", False)
+                                and (a["capacity"] - a["allocated"]) > 0
+                            ]
+
+                            if sec_preference_agents:
+                                # Find all unallocated rows that have secondary insurance
+                                rows_with_secondary_insurance = []
+                                for idx in processed_df.index:
+                                    # Skip already allocated rows
+                                    if idx in [
+                                        i
+                                        for ag in agent_allocations
+                                        for i in ag["row_indices"]
+                                    ]:
+                                        continue
+
+                                    # Check if row has secondary insurance
+                                    if pd.notna(
+                                        processed_df.at[idx, secondary_insurance_col]
+                                    ):
+                                        secondary_val = str(
+                                            processed_df.at[
+                                                idx, secondary_insurance_col
+                                            ]
+                                        ).strip()
+                                        if (
+                                            secondary_val
+                                            and secondary_val.lower() != "nan"
+                                        ):
+                                            rows_with_secondary_insurance.append(idx)
+
+                                if rows_with_secondary_insurance:
+                                    # Allocate secondary insurance rows to "Sec + X" agents
+                                    # For "Sec + Single", they can only get one insurance company
+                                    # For "Sec + NTC", "Sec + Mix", etc., they can get any insurance
+
+                                    # Separate agents by type
+                                    sec_single_agents = [
+                                        a
+                                        for a in sec_preference_agents
+                                        if a.get("has_sec_single_preference", False)
+                                    ]
+                                    sec_other_agents = [
+                                        a
+                                        for a in sec_preference_agents
+                                        if not a.get("has_sec_single_preference", False)
+                                    ]
+
+                                    # First, allocate to "Sec + Single" agents (they need to stick to one insurance)
+                                    if (
+                                        sec_single_agents
+                                        and rows_with_secondary_insurance
+                                    ):
+                                        # Group rows by insurance carrier for "Sec + Single" agents
+                                        rows_by_carrier = {}
+                                        for row_idx in rows_with_secondary_insurance:
+                                            if insurance_carrier_col and pd.notna(
+                                                processed_df.at[
+                                                    row_idx, insurance_carrier_col
+                                                ]
+                                            ):
+                                                carrier = str(
+                                                    processed_df.at[
+                                                        row_idx, insurance_carrier_col
+                                                    ]
+                                                ).strip()
+                                                if carrier not in rows_by_carrier:
+                                                    rows_by_carrier[carrier] = []
+                                                rows_by_carrier[carrier].append(row_idx)
+
+                                        # Allocate to "Sec + Single" agents, one carrier at a time
+                                        for (
+                                            carrier,
+                                            carrier_rows,
+                                        ) in rows_by_carrier.items():
+                                            available_sec_single = [
+                                                a
+                                                for a in sec_single_agents
+                                                if (a["capacity"] - a["allocated"]) > 0
+                                                and a.get("assigned_insurance")
+                                                in (None, carrier)
+                                            ]
+
+                                            if available_sec_single:
+                                                available_sec_single.sort(
+                                                    key=lambda a: a["capacity"]
+                                                    - a["allocated"],
+                                                    reverse=True,
+                                                )
+
+                                                # Track which agents actually received secondary insurance rows
+                                                agents_with_secondary = []
+
+                                                row_pos = 0
+                                                for agent in available_sec_single:
+                                                    if row_pos >= len(carrier_rows):
+                                                        break
+                                                    remaining = (
+                                                        agent["capacity"]
+                                                        - agent["allocated"]
+                                                    )
+                                                    if remaining <= 0:
+                                                        continue
+                                                    take = min(
+                                                        remaining,
+                                                        len(carrier_rows) - row_pos,
+                                                    )
+                                                    if take > 0:
+                                                        slice_rows = carrier_rows[
+                                                            row_pos : row_pos + take
+                                                        ]
+                                                        agent["row_indices"].extend(
+                                                            slice_rows
+                                                        )
+                                                        agent["allocated"] += take
+                                                        if (
+                                                            agent.get(
+                                                                "assigned_insurance"
+                                                            )
+                                                            is None
+                                                        ):
+                                                            agent[
+                                                                "assigned_insurance"
+                                                            ] = carrier
+                                                        for idx in slice_rows:
+                                                            processed_df.at[
+                                                                idx, "Agent Name"
+                                                            ] = agent["name"]
+                                                        row_pos += take
+                                                        # Track this agent for same insurance allocation
+                                                        agents_with_secondary.append(
+                                                            agent
+                                                        )
+
+                                                # Remove allocated rows
+                                                rows_with_secondary_insurance = [
+                                                    r
+                                                    for r in rows_with_secondary_insurance
+                                                    if r not in carrier_rows[:row_pos]
+                                                ]
+
+                                                # After allocating secondary insurance rows to "Sec + Single" agents,
+                                                # if they still have capacity, allocate same insurance company rows
+                                                # BUT only if the insurance company is in the agent's Insurance List capabilities
+                                                for agent in agents_with_secondary:
+                                                    remaining_capacity = (
+                                                        agent["capacity"]
+                                                        - agent["allocated"]
+                                                    )
+                                                    if remaining_capacity <= 0:
+                                                        continue
+
+                                                    # Check if agent can work with this insurance company (from Insurance List)
+                                                    agent_can_work = False
+                                                    agent_insurance_list = agent.get(
+                                                        "insurance_companies", []
+                                                    )
+
+                                                    # Senior agents can work with any insurance company
+                                                    if agent.get("is_senior", False):
+                                                        agent_can_work = True
+                                                    elif not agent_insurance_list:
+                                                        # If no specific companies listed, can work with any
+                                                        agent_can_work = True
+                                                    else:
+                                                        # Check if the carrier is in the agent's insurance list
+                                                        carrier_lower = carrier.lower()
+                                                        for (
+                                                            comp
+                                                        ) in agent_insurance_list:
+                                                            comp_lower = comp.lower()
+                                                            if (
+                                                                carrier_lower
+                                                                in comp_lower
+                                                                or comp_lower
+                                                                in carrier_lower
+                                                                or carrier == comp
+                                                            ):
+                                                                agent_can_work = True
+                                                                break
+
+                                                    # Only proceed if agent can work with this insurance company
+                                                    if not agent_can_work:
+                                                        continue
+
+                                                    # Find unallocated rows with the same insurance company
+                                                    # (excluding rows with secondary insurance, as those were already allocated)
+                                                    # AND check that the insurance company from "Dental Primary Ins Carr" matches
+                                                    same_insurance_rows = []
+                                                    for idx in processed_df.index:
+                                                        # Skip already allocated rows
+                                                        if idx in [
+                                                            i
+                                                            for ag in agent_allocations
+                                                            for i in ag["row_indices"]
+                                                        ]:
+                                                            continue
+                                                        # Skip rows with secondary insurance (already allocated)
+                                                        if (
+                                                            secondary_insurance_col
+                                                            and pd.notna(
+                                                                processed_df.at[
+                                                                    idx,
+                                                                    secondary_insurance_col,
+                                                                ]
+                                                            )
+                                                        ):
+                                                            secondary_val = str(
+                                                                processed_df.at[
+                                                                    idx,
+                                                                    secondary_insurance_col,
+                                                                ]
+                                                            ).strip()
+                                                            if (
+                                                                secondary_val
+                                                                and secondary_val.lower()
+                                                                != "nan"
+                                                            ):
+                                                                continue
+                                                        # Check if insurance carrier from "Dental Primary Ins Carr" matches assigned carrier
+                                                        # AND check if that insurance company is in agent's "Insurance List" (capabilities)
+                                                        if (
+                                                            insurance_carrier_col
+                                                            and pd.notna(
+                                                                processed_df.at[
+                                                                    idx,
+                                                                    insurance_carrier_col,
+                                                                ]
+                                                            )
+                                                        ):
+                                                            row_insurance = str(
+                                                                processed_df.at[
+                                                                    idx,
+                                                                    insurance_carrier_col,
+                                                                ]
+                                                            ).strip()
+
+                                                            # First check: row insurance must match assigned carrier
+                                                            if row_insurance == carrier:
+                                                                # Second check: row insurance must be in agent's "Insurance List" (capabilities)
+                                                                can_work = False
+                                                                if agent.get(
+                                                                    "is_senior", False
+                                                                ):
+                                                                    # Senior agents can work with any insurance company
+                                                                    can_work = True
+                                                                elif (
+                                                                    not agent_insurance_list
+                                                                ):
+                                                                    # If no specific companies listed, can work with any
+                                                                    can_work = True
+                                                                else:
+                                                                    # Check if row insurance matches/is in agent's Insurance List
+                                                                    row_insurance_lower = (
+                                                                        row_insurance.lower()
+                                                                    )
+                                                                    for (
+                                                                        comp
+                                                                    ) in agent_insurance_list:
+                                                                        comp_lower = (
+                                                                            comp.lower()
+                                                                        )
+                                                                        if (
+                                                                            row_insurance_lower
+                                                                            in comp_lower
+                                                                            or comp_lower
+                                                                            in row_insurance_lower
+                                                                            or row_insurance
+                                                                            == comp
+                                                                        ):
+                                                                            can_work = (
+                                                                                True
+                                                                            )
+                                                                            break
+
+                                                                if can_work:
+                                                                    same_insurance_rows.append(
+                                                                        idx
+                                                                    )
+
+                                                    # Allocate same insurance rows (up to remaining capacity)
+                                                    # Keep allocating until capacity is full or no more rows available
+                                                    allocated_count = 0
+                                                    while (
+                                                        remaining_capacity > 0
+                                                        and allocated_count
+                                                        < len(same_insurance_rows)
+                                                    ):
+                                                        take = min(
+                                                            remaining_capacity,
+                                                            len(same_insurance_rows)
+                                                            - allocated_count,
+                                                        )
+                                                        if take > 0:
+                                                            slice_rows = same_insurance_rows[
+                                                                allocated_count : allocated_count
+                                                                + take
+                                                            ]
+                                                            agent["row_indices"].extend(
+                                                                slice_rows
+                                                            )
+                                                            agent["allocated"] += take
+                                                            for idx in slice_rows:
+                                                                processed_df.at[
+                                                                    idx, "Agent Name"
+                                                                ] = agent["name"]
+                                                            allocated_count += take
+                                                            remaining_capacity = (
+                                                                agent["capacity"]
+                                                                - agent["allocated"]
+                                                            )
+                                                        else:
+                                                            break
+
+                                    # Then, allocate remaining secondary insurance rows to other "Sec + X" agents
+                                    if (
+                                        sec_other_agents
+                                        and rows_with_secondary_insurance
+                                    ):
+                                        sec_other_agents.sort(
+                                            key=lambda a: a["capacity"]
+                                            - a["allocated"],
+                                            reverse=True,
+                                        )
+
+                                        row_pos = 0
+                                        for agent in sec_other_agents:
+                                            if row_pos >= len(
+                                                rows_with_secondary_insurance
+                                            ):
+                                                break
+                                            remaining = (
+                                                agent["capacity"] - agent["allocated"]
+                                            )
+                                            if remaining <= 0:
+                                                continue
+                                            take = min(
+                                                remaining,
+                                                len(rows_with_secondary_insurance)
+                                                - row_pos,
+                                            )
+                                            if take > 0:
+                                                slice_rows = (
+                                                    rows_with_secondary_insurance[
+                                                        row_pos : row_pos + take
+                                                    ]
+                                                )
+                                                agent["row_indices"].extend(slice_rows)
+                                                agent["allocated"] += take
+                                                # Set assigned insurance if not set (use primary insurance carrier)
+                                                if (
+                                                    agent.get("assigned_insurance")
+                                                    is None
+                                                    and insurance_carrier_col
+                                                ):
+                                                    if slice_rows and pd.notna(
+                                                        processed_df.at[
+                                                            slice_rows[0],
+                                                            insurance_carrier_col,
+                                                        ]
+                                                    ):
+                                                        agent["assigned_insurance"] = (
+                                                            str(
+                                                                processed_df.at[
+                                                                    slice_rows[0],
+                                                                    insurance_carrier_col,
+                                                                ]
+                                                            ).strip()
+                                                        )
+                                                for idx in slice_rows:
+                                                    processed_df.at[
+                                                        idx, "Agent Name"
+                                                    ] = agent["name"]
+                                                row_pos += take
+
+                                    # After allocating secondary insurance rows, if agents still have capacity,
+                                    # allocate based on the value after "Sec +" (Single, NTC, Mix, etc.)
+                                    # Check each "Sec + X" agent for remaining capacity
+                                    for agent in sec_preference_agents:
+                                        remaining_capacity = (
+                                            agent["capacity"] - agent["allocated"]
+                                        )
+                                        if remaining_capacity <= 0:
+                                            continue
+
+                                        # Get the allocation preference to determine what comes after "Sec +"
+                                        allocation_pref = agent.get(
+                                            "allocation_preference_raw", ""
+                                        )
+                                        if allocation_pref:
+                                            allocation_pref_upper = (
+                                                str(allocation_pref).strip().upper()
+                                            )
+
+                                            # For "Sec + Single", allocate same insurance company rows
+                                            if agent.get(
+                                                "has_sec_single_preference", False
+                                            ):
+                                                # Agent already has assigned_insurance from secondary allocation
+                                                assigned_ins = agent.get(
+                                                    "assigned_insurance"
+                                                )
+                                                if assigned_ins:
+                                                    # Find unallocated rows with the same insurance company
+                                                    same_insurance_rows = []
+                                                    for idx in processed_df.index:
+                                                        # Skip already allocated rows
+                                                        if idx in [
+                                                            i
+                                                            for ag in agent_allocations
+                                                            for i in ag["row_indices"]
+                                                        ]:
+                                                            continue
+                                                        # Skip rows with secondary insurance (already allocated)
+                                                        if (
+                                                            secondary_insurance_col
+                                                            and pd.notna(
+                                                                processed_df.at[
+                                                                    idx,
+                                                                    secondary_insurance_col,
+                                                                ]
+                                                            )
+                                                        ):
+                                                            secondary_val = str(
+                                                                processed_df.at[
+                                                                    idx,
+                                                                    secondary_insurance_col,
+                                                                ]
+                                                            ).strip()
+                                                            if (
+                                                                secondary_val
+                                                                and secondary_val.lower()
+                                                                != "nan"
+                                                            ):
+                                                                continue
+                                                        # Check if insurance carrier matches
+                                                        if (
+                                                            insurance_carrier_col
+                                                            and pd.notna(
+                                                                processed_df.at[
+                                                                    idx,
+                                                                    insurance_carrier_col,
+                                                                ]
+                                                            )
+                                                        ):
+                                                            row_carrier = str(
+                                                                processed_df.at[
+                                                                    idx,
+                                                                    insurance_carrier_col,
+                                                                ]
+                                                            ).strip()
+                                                            if (
+                                                                row_carrier
+                                                                == assigned_ins
+                                                            ):
+                                                                same_insurance_rows.append(
+                                                                    idx
+                                                                )
+
+                                                    # Allocate same insurance rows
+                                                    if same_insurance_rows:
+                                                        take = min(
+                                                            remaining_capacity,
+                                                            len(same_insurance_rows),
+                                                        )
+                                                        if take > 0:
+                                                            slice_rows = (
+                                                                same_insurance_rows[
+                                                                    :take
+                                                                ]
+                                                            )
+                                                            agent["row_indices"].extend(
+                                                                slice_rows
+                                                            )
+                                                            agent["allocated"] += take
+                                                            for idx in slice_rows:
+                                                                processed_df.at[
+                                                                    idx, "Agent Name"
+                                                                ] = agent["name"]
+
+                                            # For "Sec + NTC", allocate NTC rows
+                                            elif (
+                                                "NTC" in allocation_pref_upper
+                                                and "SEC" in allocation_pref_upper
+                                            ):
+                                                # Find unallocated NTC rows
+                                                ntc_rows = []
+                                                if (
+                                                    remark_col
+                                                    and remark_col
+                                                    in processed_df.columns
+                                                ):
+                                                    for idx in processed_df.index:
+                                                        # Skip already allocated rows
+                                                        if idx in [
+                                                            i
+                                                            for ag in agent_allocations
+                                                            for i in ag["row_indices"]
+                                                        ]:
+                                                            continue
+                                                        # Skip rows with secondary insurance (already allocated)
+                                                        if (
+                                                            secondary_insurance_col
+                                                            and pd.notna(
+                                                                processed_df.at[
+                                                                    idx,
+                                                                    secondary_insurance_col,
+                                                                ]
+                                                            )
+                                                        ):
+                                                            secondary_val = str(
+                                                                processed_df.at[
+                                                                    idx,
+                                                                    secondary_insurance_col,
+                                                                ]
+                                                            ).strip()
+                                                            if (
+                                                                secondary_val
+                                                                and secondary_val.lower()
+                                                                != "nan"
+                                                            ):
+                                                                continue
+                                                        # Check if remark is NTC
+                                                        if pd.notna(
+                                                            processed_df.at[
+                                                                idx, remark_col
+                                                            ]
+                                                        ):
+                                                            row_remark = (
+                                                                str(
+                                                                    processed_df.at[
+                                                                        idx, remark_col
+                                                                    ]
+                                                                )
+                                                                .strip()
+                                                                .upper()
+                                                            )
+                                                            if row_remark == "NTC":
+                                                                ntc_rows.append(idx)
+
+                                                # Allocate NTC rows
+                                                if ntc_rows:
+                                                    take = min(
+                                                        remaining_capacity,
+                                                        len(ntc_rows),
+                                                    )
+                                                    if take > 0:
+                                                        slice_rows = ntc_rows[:take]
+                                                        agent["row_indices"].extend(
+                                                            slice_rows
+                                                        )
+                                                        agent["allocated"] += take
+                                                        for idx in slice_rows:
+                                                            processed_df.at[
+                                                                idx, "Agent Name"
+                                                            ] = agent["name"]
+
+                                            # For "Sec + Mix", allocate Mix rows (multiple insurance company rows)
+                                            elif (
+                                                "MIX" in allocation_pref_upper
+                                                and "SEC" in allocation_pref_upper
+                                            ):
+                                                # Find unallocated rows from multiple insurance companies that match agent's capabilities
+                                                agent_insurance_list = agent.get(
+                                                    "insurance_companies", []
+                                                )
+                                                mix_rows = []
+                                                for idx in processed_df.index:
+                                                    # Skip already allocated rows
+                                                    if idx in [
+                                                        i
+                                                        for ag in agent_allocations
+                                                        for i in ag["row_indices"]
+                                                    ]:
+                                                        continue
+                                                    # Skip rows with secondary insurance (already allocated)
+                                                    if (
+                                                        secondary_insurance_col
+                                                        and pd.notna(
+                                                            processed_df.at[
+                                                                idx,
+                                                                secondary_insurance_col,
+                                                            ]
+                                                        )
+                                                    ):
+                                                        secondary_val = str(
+                                                            processed_df.at[
+                                                                idx,
+                                                                secondary_insurance_col,
+                                                            ]
+                                                        ).strip()
+                                                        if (
+                                                            secondary_val
+                                                            and secondary_val.lower()
+                                                            != "nan"
+                                                        ):
+                                                            continue
+                                                    # Skip rows with special remarks (NTBP, NTC)
+                                                    if (
+                                                        remark_col
+                                                        and remark_col
+                                                        in processed_df.columns
+                                                    ):
+                                                        if pd.notna(
+                                                            processed_df.at[
+                                                                idx, remark_col
+                                                            ]
+                                                        ):
+                                                            row_remark = (
+                                                                str(
+                                                                    processed_df.at[
+                                                                        idx, remark_col
+                                                                    ]
+                                                                )
+                                                                .strip()
+                                                                .upper()
+                                                            )
+                                                            if row_remark in [
+                                                                "NTBP",
+                                                                "NTC",
+                                                            ]:
+                                                                continue
+
+                                                    # Get insurance company from "Dental Primary Ins Carr" column
+                                                    if (
+                                                        insurance_carrier_col
+                                                        and pd.notna(
+                                                            processed_df.at[
+                                                                idx,
+                                                                insurance_carrier_col,
+                                                            ]
+                                                        )
+                                                    ):
+                                                        row_insurance = str(
+                                                            processed_df.at[
+                                                                idx,
+                                                                insurance_carrier_col,
+                                                            ]
+                                                        ).strip()
+
+                                                        # Check if row insurance is in agent's "Insurance List" (capabilities)
+                                                        can_work = False
+                                                        if agent.get(
+                                                            "is_senior", False
+                                                        ):
+                                                            # Senior agents can work with any insurance company
+                                                            can_work = True
+                                                        elif not agent_insurance_list:
+                                                            # If no specific companies listed, can work with any
+                                                            can_work = True
+                                                        else:
+                                                            # Check if row insurance matches/is in agent's Insurance List (capabilities)
+                                                            row_insurance_lower = (
+                                                                row_insurance.lower()
+                                                            )
+                                                            for (
+                                                                comp
+                                                            ) in agent_insurance_list:
+                                                                comp_lower = (
+                                                                    comp.lower()
+                                                                )
+                                                                if (
+                                                                    row_insurance_lower
+                                                                    in comp_lower
+                                                                    or comp_lower
+                                                                    in row_insurance_lower
+                                                                    or row_insurance
+                                                                    == comp
+                                                                ):
+                                                                    can_work = True
+                                                                    break
+
+                                                        if can_work:
+                                                            mix_rows.append(idx)
+
+                                                # Allocate Mix rows until capacity is full
+                                                if mix_rows:
+                                                    allocated_count = 0
+                                                    while (
+                                                        remaining_capacity > 0
+                                                        and allocated_count
+                                                        < len(mix_rows)
+                                                    ):
+                                                        take = min(
+                                                            remaining_capacity,
+                                                            len(mix_rows)
+                                                            - allocated_count,
+                                                        )
+                                                        if take > 0:
+                                                            slice_rows = mix_rows[
+                                                                allocated_count : allocated_count
+                                                                + take
+                                                            ]
+                                                            agent["row_indices"].extend(
+                                                                slice_rows
+                                                            )
+                                                            agent["allocated"] += take
+                                                            for idx in slice_rows:
+                                                                processed_df.at[
+                                                                    idx, "Agent Name"
+                                                                ] = agent["name"]
+                                                            allocated_count += take
+                                                            remaining_capacity = (
+                                                                agent["capacity"]
+                                                                - agent["allocated"]
+                                                            )
+                                                        else:
+                                                            break
+
+                                            # For "Sec + Mix + NTC", allocate Mix rows first, then NTC rows
+                                            elif (
+                                                "MIX" in allocation_pref_upper
+                                                and "NTC" in allocation_pref_upper
+                                                and "SEC" in allocation_pref_upper
+                                            ):
+                                                # Phase 1: Allocate mixed insurance company rows (if capacity remains after secondary allocation)
+                                                agent_insurance_list = agent.get(
+                                                    "insurance_companies", []
+                                                )
+                                                mix_rows = []
+                                                for idx in processed_df.index:
+                                                    # Skip already allocated rows
+                                                    if idx in [
+                                                        i
+                                                        for ag in agent_allocations
+                                                        for i in ag["row_indices"]
+                                                    ]:
+                                                        continue
+                                                    # Skip rows with secondary insurance (already allocated)
+                                                    if (
+                                                        secondary_insurance_col
+                                                        and pd.notna(
+                                                            processed_df.at[
+                                                                idx,
+                                                                secondary_insurance_col,
+                                                            ]
+                                                        )
+                                                    ):
+                                                        secondary_val = str(
+                                                            processed_df.at[
+                                                                idx,
+                                                                secondary_insurance_col,
+                                                            ]
+                                                        ).strip()
+                                                        if (
+                                                            secondary_val
+                                                            and secondary_val.lower()
+                                                            != "nan"
+                                                        ):
+                                                            continue
+                                                    # Skip rows with special remarks (NTBP, NTC - NTC will be handled in Phase 2)
+                                                    if (
+                                                        remark_col
+                                                        and remark_col
+                                                        in processed_df.columns
+                                                    ):
+                                                        if pd.notna(
+                                                            processed_df.at[
+                                                                idx, remark_col
+                                                            ]
+                                                        ):
+                                                            row_remark = (
+                                                                str(
+                                                                    processed_df.at[
+                                                                        idx, remark_col
+                                                                    ]
+                                                                )
+                                                                .strip()
+                                                                .upper()
+                                                            )
+                                                            if row_remark in [
+                                                                "NTBP",
+                                                                "NTC",
+                                                            ]:
+                                                                continue
+
+                                                    # Get insurance company from "Dental Primary Ins Carr" column
+                                                    if (
+                                                        insurance_carrier_col
+                                                        and pd.notna(
+                                                            processed_df.at[
+                                                                idx,
+                                                                insurance_carrier_col,
+                                                            ]
+                                                        )
+                                                    ):
+                                                        row_insurance = str(
+                                                            processed_df.at[
+                                                                idx,
+                                                                insurance_carrier_col,
+                                                            ]
+                                                        ).strip()
+
+                                                        # Check if row insurance is in agent's "Insurance List" (capabilities)
+                                                        can_work = False
+                                                        if agent.get(
+                                                            "is_senior", False
+                                                        ):
+                                                            # Senior agents can work with any insurance company
+                                                            can_work = True
+                                                        elif not agent_insurance_list:
+                                                            # If no specific companies listed, can work with any
+                                                            can_work = True
+                                                        else:
+                                                            # Check if row insurance matches/is in agent's Insurance List (capabilities)
+                                                            row_insurance_lower = (
+                                                                row_insurance.lower()
+                                                            )
+                                                            for (
+                                                                comp
+                                                            ) in agent_insurance_list:
+                                                                comp_lower = (
+                                                                    comp.lower()
+                                                                )
+                                                                if (
+                                                                    row_insurance_lower
+                                                                    in comp_lower
+                                                                    or comp_lower
+                                                                    in row_insurance_lower
+                                                                    or row_insurance
+                                                                    == comp
+                                                                ):
+                                                                    can_work = True
+                                                                    break
+
+                                                        if can_work:
+                                                            mix_rows.append(idx)
+
+                                                # Allocate Mix rows until capacity is full or no more rows
+                                                if mix_rows:
+                                                    allocated_count = 0
+                                                    while (
+                                                        remaining_capacity > 0
+                                                        and allocated_count
+                                                        < len(mix_rows)
+                                                    ):
+                                                        take = min(
+                                                            remaining_capacity,
+                                                            len(mix_rows)
+                                                            - allocated_count,
+                                                        )
+                                                        if take > 0:
+                                                            slice_rows = mix_rows[
+                                                                allocated_count : allocated_count
+                                                                + take
+                                                            ]
+                                                            agent["row_indices"].extend(
+                                                                slice_rows
+                                                            )
+                                                            agent["allocated"] += take
+                                                            for idx in slice_rows:
+                                                                processed_df.at[
+                                                                    idx, "Agent Name"
+                                                                ] = agent["name"]
+                                                            allocated_count += take
+                                                            remaining_capacity = (
+                                                                agent["capacity"]
+                                                                - agent["allocated"]
+                                                            )
+                                                        else:
+                                                            break
+
+                                                # Phase 2: If capacity still remains, allocate NTC rows
+                                                if remaining_capacity > 0:
+                                                    ntc_rows = []
+                                                    if (
+                                                        remark_col
+                                                        and remark_col
+                                                        in processed_df.columns
+                                                    ):
+                                                        for idx in processed_df.index:
+                                                            # Skip already allocated rows
+                                                            if idx in [
+                                                                i
+                                                                for ag in agent_allocations
+                                                                for i in ag[
+                                                                    "row_indices"
+                                                                ]
+                                                            ]:
+                                                                continue
+                                                            # Skip rows with secondary insurance (already allocated)
+                                                            if (
+                                                                secondary_insurance_col
+                                                                and pd.notna(
+                                                                    processed_df.at[
+                                                                        idx,
+                                                                        secondary_insurance_col,
+                                                                    ]
+                                                                )
+                                                            ):
+                                                                secondary_val = str(
+                                                                    processed_df.at[
+                                                                        idx,
+                                                                        secondary_insurance_col,
+                                                                    ]
+                                                                ).strip()
+                                                                if (
+                                                                    secondary_val
+                                                                    and secondary_val.lower()
+                                                                    != "nan"
+                                                                ):
+                                                                    continue
+                                                            # Check if remark is NTC
+                                                            if pd.notna(
+                                                                processed_df.at[
+                                                                    idx, remark_col
+                                                                ]
+                                                            ):
+                                                                row_remark = (
+                                                                    str(
+                                                                        processed_df.at[
+                                                                            idx,
+                                                                            remark_col,
+                                                                        ]
+                                                                    )
+                                                                    .strip()
+                                                                    .upper()
+                                                                )
+                                                                if row_remark == "NTC":
+                                                                    ntc_rows.append(idx)
+
+                                                    # Allocate NTC rows until capacity is full
+                                                    if ntc_rows:
+                                                        allocated_count = 0
+                                                        while (
+                                                            remaining_capacity > 0
+                                                            and allocated_count
+                                                            < len(ntc_rows)
+                                                        ):
+                                                            take = min(
+                                                                remaining_capacity,
+                                                                len(ntc_rows)
+                                                                - allocated_count,
+                                                            )
+                                                            if take > 0:
+                                                                slice_rows = ntc_rows[
+                                                                    allocated_count : allocated_count
+                                                                    + take
+                                                                ]
+                                                                agent[
+                                                                    "row_indices"
+                                                                ].extend(slice_rows)
+                                                                agent[
+                                                                    "allocated"
+                                                                ] += take
+                                                                for idx in slice_rows:
+                                                                    processed_df.at[
+                                                                        idx,
+                                                                        "Agent Name",
+                                                                    ] = agent["name"]
+                                                                allocated_count += take
+                                                                remaining_capacity = (
+                                                                    agent["capacity"]
+                                                                    - agent["allocated"]
+                                                                )
+                                                            else:
+                                                                break
+
+                        # Also ensure "Sec + Single" agents get same insurance company rows globally after Step 3.6
+                        # This handles cases where agents didn't get enough rows in the carrier-specific loop above
+                        sec_single_agents_global = [
+                            a
+                            for a in agent_allocations
+                            if a.get("has_sec_single_preference", False)
+                            and (a["capacity"] - a["allocated"]) > 0
+                        ]
+
+                        if sec_single_agents_global:
+                            for agent in sec_single_agents_global:
+                                remaining_capacity = (
+                                    agent["capacity"] - agent["allocated"]
+                                )
+                                if remaining_capacity <= 0:
+                                    continue
+
+                                assigned_ins = agent.get("assigned_insurance")
+                                if not assigned_ins:
+                                    continue  # Skip if no assigned insurance (should have been set from secondary allocation)
+
+                                # Find unallocated rows with the same insurance company
+                                same_insurance_rows = []
+                                agent_insurance_list = agent.get(
+                                    "insurance_companies", []
+                                )
+
+                                for idx in processed_df.index:
+                                    # Skip already allocated rows
+                                    if idx in [
+                                        i
+                                        for ag in agent_allocations
+                                        for i in ag["row_indices"]
+                                    ]:
+                                        continue
+
+                                    # Skip rows with secondary insurance (already allocated)
+                                    if secondary_insurance_col and pd.notna(
+                                        processed_df.at[idx, secondary_insurance_col]
+                                    ):
+                                        secondary_val = str(
+                                            processed_df.at[
+                                                idx, secondary_insurance_col
+                                            ]
+                                        ).strip()
+                                        if (
+                                            secondary_val
+                                            and secondary_val.lower() != "nan"
+                                        ):
+                                            continue
+
+                                    # Get insurance company from "Dental Primary Ins Carr" column
+                                    if insurance_carrier_col and pd.notna(
+                                        processed_df.at[idx, insurance_carrier_col]
+                                    ):
+                                        row_insurance = str(
+                                            processed_df.at[idx, insurance_carrier_col]
+                                        ).strip()
+
+                                        # First check: row insurance must match assigned insurance
+                                        if row_insurance == assigned_ins:
+                                            # Second check: row insurance must be in agent's "Insurance List" (capabilities)
+                                            can_work = False
+                                            if agent.get("is_senior", False):
+                                                # Senior agents can work with any insurance company
+                                                can_work = True
+                                            elif not agent_insurance_list:
+                                                # If no specific companies listed, can work with any
+                                                can_work = True
+                                            else:
+                                                # Check if row insurance matches/is in agent's Insurance List (capabilities)
+                                                row_insurance_lower = (
+                                                    row_insurance.lower()
+                                                )
+                                                for comp in agent_insurance_list:
+                                                    comp_lower = comp.lower()
+                                                    if (
+                                                        row_insurance_lower
+                                                        in comp_lower
+                                                        or comp_lower
+                                                        in row_insurance_lower
+                                                        or row_insurance == comp
+                                                    ):
+                                                        can_work = True
+                                                        break
+
+                                            if can_work:
+                                                same_insurance_rows.append(idx)
+
+                                # Allocate same insurance rows until capacity is full
+                                if same_insurance_rows:
+                                    allocated_count = 0
+                                    while (
+                                        remaining_capacity > 0
+                                        and allocated_count < len(same_insurance_rows)
+                                    ):
+                                        take = min(
+                                            remaining_capacity,
+                                            len(same_insurance_rows) - allocated_count,
+                                        )
+                                        if take > 0:
+                                            slice_rows = same_insurance_rows[
+                                                allocated_count : allocated_count + take
+                                            ]
+                                            agent["row_indices"].extend(slice_rows)
+                                            agent["allocated"] += take
+                                            for idx in slice_rows:
+                                                processed_df.at[idx, "Agent Name"] = (
+                                                    agent["name"]
+                                                )
+                                            allocated_count += take
+                                            remaining_capacity = (
+                                                agent["capacity"] - agent["allocated"]
+                                            )
+                                        else:
+                                            break
+
+                        # Step 3.7: Global Single Allocation - Allocate same insurance company rows to "Single" preference agents
+                        # This ensures agents with "Single" preference (not "Sec + Single") get same insurance company rows to fill their capacity
+                        single_preference_agents = [
+                            a
+                            for a in agent_allocations
+                            if a.get("has_single_preference", False)
+                            and not a.get(
+                                "has_sec_preference", False
+                            )  # Exclude "Sec + Single" (handled in Step 3.6)
+                            and (a["capacity"] - a["allocated"]) > 0
+                        ]
+
+                        if single_preference_agents:
+                            for agent in single_preference_agents:
+                                remaining_capacity = (
+                                    agent["capacity"] - agent["allocated"]
+                                )
+                                if remaining_capacity <= 0:
+                                    continue
+
+                                # Get the assigned insurance company (should be set from previous allocations)
+                                # If not set, find first row where "Dental Primary Ins Carr" matches agent's "Insurance List" capabilities
+                                assigned_ins = agent.get("assigned_insurance")
+                                if not assigned_ins:
+                                    agent_insurance_list = agent.get(
+                                        "insurance_companies", []
+                                    )
+
+                                    # Find first available row where insurance from "Dental Primary Ins Carr" matches agent's "Insurance List"
+                                    for idx in processed_df.index:
+                                        # Skip already allocated rows
+                                        if idx in [
+                                            i
+                                            for ag in agent_allocations
+                                            for i in ag["row_indices"]
+                                        ]:
+                                            continue
+
+                                        # Skip rows with secondary insurance (those go to "Sec + X" agents)
+                                        if secondary_insurance_col and pd.notna(
+                                            processed_df.at[
+                                                idx, secondary_insurance_col
+                                            ]
+                                        ):
+                                            secondary_val = str(
+                                                processed_df.at[
+                                                    idx, secondary_insurance_col
+                                                ]
+                                            ).strip()
+                                            if (
+                                                secondary_val
+                                                and secondary_val.lower() != "nan"
+                                            ):
+                                                continue
+
+                                        # Get insurance company from "Dental Primary Ins Carr" column
+                                        if insurance_carrier_col and pd.notna(
+                                            processed_df.at[idx, insurance_carrier_col]
+                                        ):
+                                            row_insurance = str(
+                                                processed_df.at[
+                                                    idx, insurance_carrier_col
+                                                ]
+                                            ).strip()
+
+                                            # Check if row insurance is in agent's "Insurance List" (capabilities)
+                                            can_work = False
+                                            if agent.get("is_senior", False):
+                                                # Senior agents can work with any insurance company
+                                                can_work = True
+                                            elif not agent_insurance_list:
+                                                # If no specific companies listed, can work with any
+                                                can_work = True
+                                            else:
+                                                # Check if row insurance matches/is in agent's Insurance List (capabilities)
+                                                row_insurance_lower = (
+                                                    row_insurance.lower()
+                                                )
+                                                for comp in agent_insurance_list:
+                                                    comp_lower = comp.lower()
+                                                    if (
+                                                        row_insurance_lower
+                                                        in comp_lower
+                                                        or comp_lower
+                                                        in row_insurance_lower
+                                                        or row_insurance == comp
+                                                    ):
+                                                        can_work = True
+                                                        break
+
+                                            if can_work:
+                                                # Found matching insurance - assign this insurance company to agent
+                                                assigned_ins = row_insurance
+                                                agent["assigned_insurance"] = (
+                                                    assigned_ins
+                                                )
+                                                break
+
+                                if assigned_ins:
+                                    # Find unallocated rows with the same insurance company
+                                    same_insurance_rows = []
+                                    agent_insurance_list = agent.get(
+                                        "insurance_companies", []
+                                    )
+
+                                    for idx in processed_df.index:
+                                        # Skip already allocated rows
+                                        if idx in [
+                                            i
+                                            for ag in agent_allocations
+                                            for i in ag["row_indices"]
+                                        ]:
+                                            continue
+
+                                        # Skip rows with secondary insurance (those go to "Sec + X" agents)
+                                        if secondary_insurance_col and pd.notna(
+                                            processed_df.at[
+                                                idx, secondary_insurance_col
+                                            ]
+                                        ):
+                                            secondary_val = str(
+                                                processed_df.at[
+                                                    idx, secondary_insurance_col
+                                                ]
+                                            ).strip()
+                                            if (
+                                                secondary_val
+                                                and secondary_val.lower() != "nan"
+                                            ):
+                                                continue
+
+                                        # Get insurance company from "Dental Primary Ins Carr" column
+                                        if insurance_carrier_col and pd.notna(
+                                            processed_df.at[idx, insurance_carrier_col]
+                                        ):
+                                            row_insurance = str(
+                                                processed_df.at[
+                                                    idx, insurance_carrier_col
+                                                ]
+                                            ).strip()
+
+                                            # First check: row insurance must match assigned insurance
+                                            if row_insurance == assigned_ins:
+                                                # Second check: row insurance must be in agent's "Insurance List" (capabilities)
+                                                can_work = False
+                                                if agent.get("is_senior", False):
+                                                    # Senior agents can work with any insurance company
+                                                    can_work = True
+                                                elif not agent_insurance_list:
+                                                    # If no specific companies listed, can work with any
+                                                    can_work = True
+                                                else:
+                                                    # Check if row insurance matches/is in agent's Insurance List (capabilities)
+                                                    row_insurance_lower = (
+                                                        row_insurance.lower()
+                                                    )
+                                                    for comp in agent_insurance_list:
+                                                        comp_lower = comp.lower()
+                                                        if (
+                                                            row_insurance_lower
+                                                            in comp_lower
+                                                            or comp_lower
+                                                            in row_insurance_lower
+                                                            or row_insurance == comp
+                                                        ):
+                                                            can_work = True
+                                                            break
+
+                                                if can_work:
+                                                    same_insurance_rows.append(idx)
+
+                                    # Allocate same insurance rows until capacity is full
+                                    if same_insurance_rows:
+                                        allocated_count = 0
+                                        while (
+                                            remaining_capacity > 0
+                                            and allocated_count
+                                            < len(same_insurance_rows)
+                                        ):
+                                            take = min(
+                                                remaining_capacity,
+                                                len(same_insurance_rows)
+                                                - allocated_count,
+                                            )
+                                            if take > 0:
+                                                slice_rows = same_insurance_rows[
+                                                    allocated_count : allocated_count
+                                                    + take
+                                                ]
+                                                agent["row_indices"].extend(slice_rows)
+                                                agent["allocated"] += take
+                                                for idx in slice_rows:
+                                                    processed_df.at[
+                                                        idx, "Agent Name"
+                                                    ] = agent["name"]
+                                                allocated_count += take
+                                                remaining_capacity = (
+                                                    agent["capacity"]
+                                                    - agent["allocated"]
+                                                )
+                                            else:
+                                                break
+
+                        # Step 3.8: Global Mix Allocation - Allocate multiple insurance company rows to "Mix" preference agents
+                        # Agents with "Mix" preference should get rows from multiple insurance companies (unlike "Single" which gets only one)
+                        # Exclude "Sec + Mix" agents (handled in Step 3.6) and "Mix + NTC" agents (handled in Step 3.5.5)
+                        mix_preference_agents = [
+                            a
+                            for a in agent_allocations
+                            if a.get("has_mix_preference", False)
+                            and not a.get(
+                                "has_sec_preference", False
+                            )  # Exclude "Sec + Mix" (handled in Step 3.6)
+                            and not (
+                                a.get("has_ntc_preference", False)
+                            )  # Exclude "Mix + NTC" (handled in Step 3.5.5)
+                            and (a["capacity"] - a["allocated"]) > 0
+                        ]
+
+                        if mix_preference_agents and insurance_carrier_col:
+                            for agent in mix_preference_agents:
+                                remaining_capacity = (
+                                    agent["capacity"] - agent["allocated"]
+                                )
+                                if remaining_capacity <= 0:
+                                    continue
+
+                                agent_insurance_list = agent.get(
+                                    "insurance_companies", []
+                                )
+
+                                # Find unallocated rows from multiple insurance companies that match agent's capabilities
+                                mix_rows = []
+
+                                for idx in processed_df.index:
+                                    # Skip already allocated rows
+                                    if idx in [
+                                        i
+                                        for ag in agent_allocations
+                                        for i in ag["row_indices"]
+                                    ]:
+                                        continue
+
+                                    # Skip rows with secondary insurance (those go to "Sec + X" agents)
+                                    if secondary_insurance_col and pd.notna(
+                                        processed_df.at[idx, secondary_insurance_col]
+                                    ):
+                                        secondary_val = str(
+                                            processed_df.at[
+                                                idx, secondary_insurance_col
+                                            ]
+                                        ).strip()
+                                        if (
+                                            secondary_val
+                                            and secondary_val.lower() != "nan"
+                                        ):
+                                            continue
+
+                                    # Skip NTBP and NTC rows (handled in their dedicated steps)
+                                    if remark_col and pd.notna(
+                                        processed_df.at[idx, remark_col]
+                                    ):
+                                        remark_val = (
+                                            str(processed_df.at[idx, remark_col])
+                                            .strip()
+                                            .upper()
+                                        )
+                                        if remark_val == "NTBP" or remark_val == "NTC":
+                                            continue
+
+                                    # Get insurance company from "Dental Primary Ins Carr" column
+                                    if pd.notna(
+                                        processed_df.at[idx, insurance_carrier_col]
+                                    ):
+                                        row_insurance = str(
+                                            processed_df.at[idx, insurance_carrier_col]
+                                        ).strip()
+
+                                        # Check if row insurance is in agent's "Insurance List" (capabilities)
+                                        can_work = False
+                                        if agent.get("is_senior", False):
+                                            # Senior agents can work with any insurance company
+                                            can_work = True
+                                        elif not agent_insurance_list:
+                                            # If no specific companies listed, can work with any
+                                            can_work = True
+                                        else:
+                                            # Check if row insurance matches/is in agent's Insurance List (capabilities)
+                                            row_insurance_lower = row_insurance.lower()
+                                            for comp in agent_insurance_list:
+                                                comp_lower = comp.lower()
+                                                if (
+                                                    row_insurance_lower in comp_lower
+                                                    or comp_lower in row_insurance_lower
+                                                    or row_insurance == comp
+                                                ):
+                                                    can_work = True
+                                                    break
+
+                                        if can_work:
+                                            mix_rows.append(idx)
+
+                                # Allocate mix rows until capacity is full
+                                if mix_rows:
+                                    allocated_count = 0
+                                    while (
+                                        remaining_capacity > 0
+                                        and allocated_count < len(mix_rows)
+                                    ):
+                                        take = min(
+                                            remaining_capacity,
+                                            len(mix_rows) - allocated_count,
+                                        )
+                                        if take > 0:
+                                            slice_rows = mix_rows[
+                                                allocated_count : allocated_count + take
+                                            ]
+                                            agent["row_indices"].extend(slice_rows)
+                                            agent["allocated"] += take
+                                            for idx in slice_rows:
+                                                processed_df.at[idx, "Agent Name"] = (
+                                                    agent["name"]
+                                                )
+                                            allocated_count += take
+                                            remaining_capacity = (
+                                                agent["capacity"] - agent["allocated"]
+                                            )
+                                        else:
+                                            break
+
                         # Step 3: FIRST PRIORITY - Allocate First Priority matched work to senior agents FIRST
                         # This takes precedence over unmatched insurance
 
@@ -6584,7 +8155,7 @@ def process_allocation_files_with_dates(
                                     if available_capacity <= 0:
                                         continue
 
-                                    # Collect rows that can be allocated to this agent (checking "do not allocate" list)
+                                    # Collect rows that can be allocated to this agent (checking "do not allocate" list and "Single" preference)
                                     assignable_rows = []
                                     rows_processed = 0
                                     for i in range(
@@ -6597,6 +8168,22 @@ def process_allocation_files_with_dates(
                                         insurance_carrier, row_idx = (
                                             non_special_priority_work[i]
                                         )
+
+                                        # For agents with "Single" preference, only allow rows from their assigned insurance
+                                        if senior_agent.get(
+                                            "has_single_preference", False
+                                        ):
+                                            assigned_ins = senior_agent.get(
+                                                "assigned_insurance"
+                                            )
+                                            # If agent already has an assigned insurance, only allow that insurance
+                                            if (
+                                                assigned_ins is not None
+                                                and assigned_ins != insurance_carrier
+                                            ):
+                                                rows_processed += 1
+                                                continue  # Skip this row - agent with "Single" already has different insurance
+
                                         rows_processed += 1
 
                                         # Check if this insurance company is in the agent's "do not allocate" list
@@ -6633,10 +8220,32 @@ def process_allocation_files_with_dates(
                                                         break
 
                                         # Only add row if agent can be allocated this insurance company
+                                        # For agents with "Single" preference, ensure they only get one insurance company
                                         if not should_not_allocate:
-                                            assignable_rows.append(
-                                                (insurance_carrier, row_idx)
-                                            )
+                                            # If agent has "Single" preference and already has assigned insurance,
+                                            # only allow rows from that same insurance
+                                            if senior_agent.get(
+                                                "has_single_preference", False
+                                            ):
+                                                assigned_ins = senior_agent.get(
+                                                    "assigned_insurance"
+                                                )
+                                                if assigned_ins is None:
+                                                    # Agent doesn't have assigned insurance yet - can assign this one
+                                                    assignable_rows.append(
+                                                        (insurance_carrier, row_idx)
+                                                    )
+                                                elif assigned_ins == insurance_carrier:
+                                                    # Agent already has this insurance - can assign more rows
+                                                    assignable_rows.append(
+                                                        (insurance_carrier, row_idx)
+                                                    )
+                                                # else: agent has different insurance - skip this row (already handled above)
+                                            else:
+                                                # Agent doesn't have "Single" preference - normal allocation
+                                                assignable_rows.append(
+                                                    (insurance_carrier, row_idx)
+                                                )
 
                                     rows_to_assign = len(assignable_rows)
 
@@ -6644,6 +8253,21 @@ def process_allocation_files_with_dates(
                                         agent_id = senior_agent.get(
                                             "id", senior_agent.get("name", "Unknown")
                                         )
+                                        # Set assigned_insurance for agents with "Single" preference when they get their first allocation
+                                        if (
+                                            senior_agent.get(
+                                                "has_single_preference", False
+                                            )
+                                            and senior_agent.get("assigned_insurance")
+                                            is None
+                                        ):
+                                            # Get the insurance carrier from the first assignable row
+                                            if assignable_rows:
+                                                first_insurance, _ = assignable_rows[0]
+                                                senior_agent["assigned_insurance"] = (
+                                                    first_insurance
+                                                )
+
                                         for (
                                             insurance_carrier,
                                             row_idx,
@@ -6806,7 +8430,7 @@ def process_allocation_files_with_dates(
                                                         and agent_domain.upper() == "PB"
                                                     ) or agent_has_pb_pref
 
-                                                    # Collect rows that match this agent's domain requirement
+                                                    # Collect rows that match this agent's domain requirement and "Single" preference
                                                     matching_rows = []
                                                     for check_idx in range(
                                                         row_idx,
@@ -6821,6 +8445,44 @@ def process_allocation_files_with_dates(
                                                                 check_idx
                                                             ]
                                                         )
+
+                                                        # For agents with "Single" preference, only allow rows from their assigned insurance
+                                                        if senior_agent.get(
+                                                            "has_single_preference",
+                                                            False,
+                                                        ):
+                                                            assigned_ins = (
+                                                                senior_agent.get(
+                                                                    "assigned_insurance"
+                                                                )
+                                                            )
+                                                            # Get the insurance carrier for this row
+                                                            row_insurance = None
+                                                            if (
+                                                                insurance_carrier_col
+                                                                and pd.notna(
+                                                                    processed_df.at[
+                                                                        actual_row_idx,
+                                                                        insurance_carrier_col,
+                                                                    ]
+                                                                )
+                                                            ):
+                                                                row_insurance = str(
+                                                                    processed_df.at[
+                                                                        actual_row_idx,
+                                                                        insurance_carrier_col,
+                                                                    ]
+                                                                ).strip()
+                                                            # If agent already has an assigned insurance, only allow that insurance
+                                                            if (
+                                                                assigned_ins is not None
+                                                                and row_insurance
+                                                                is not None
+                                                                and assigned_ins
+                                                                != row_insurance
+                                                            ):
+                                                                continue  # Skip this row - agent with "Single" already has different insurance
+
                                                         row_remark = None
                                                         if (
                                                             remark_col
@@ -6871,6 +8533,21 @@ def process_allocation_files_with_dates(
 
                                                     rows_to_assign = len(matching_rows)
                                                     if rows_to_assign > 0:
+                                                        # Set assigned_insurance for agents with "Single" preference when they get their first allocation
+                                                        if (
+                                                            senior_agent.get(
+                                                                "has_single_preference",
+                                                                False,
+                                                            )
+                                                            and senior_agent.get(
+                                                                "assigned_insurance"
+                                                            )
+                                                            is None
+                                                        ):
+                                                            senior_agent[
+                                                                "assigned_insurance"
+                                                            ] = insurance_carrier
+
                                                         agent_id = senior_agent.get(
                                                             "id",
                                                             senior_agent.get(
@@ -7175,16 +8852,195 @@ def process_allocation_files_with_dates(
                                         def sticky_assign(rows, agents, carrier):
                                             if not rows or not agents:
                                                 return
+
+                                            # For agents with "Sec + X" preference (Sec + Single, Sec + NTC, Sec + Mix, etc.),
+                                            # prioritize rows with secondary insurance first
+                                            sec_agents = [
+                                                a
+                                                for a in agents
+                                                if a.get("has_sec_preference", False)
+                                                and (a["capacity"] - a["allocated"]) > 0
+                                            ]
+
+                                            # Separate rows with secondary insurance for "Sec + X" agents
+                                            rows_with_secondary = []
+                                            rows_without_secondary = []
+
+                                            if secondary_insurance_col and sec_agents:
+                                                for row_idx in rows:
+                                                    has_secondary = False
+                                                    if pd.notna(
+                                                        processed_df.at[
+                                                            row_idx,
+                                                            secondary_insurance_col,
+                                                        ]
+                                                    ):
+                                                        secondary_val = str(
+                                                            processed_df.at[
+                                                                row_idx,
+                                                                secondary_insurance_col,
+                                                            ]
+                                                        ).strip()
+                                                        if (
+                                                            secondary_val
+                                                            and secondary_val.lower()
+                                                            != "nan"
+                                                        ):
+                                                            has_secondary = True
+
+                                                    if has_secondary:
+                                                        rows_with_secondary.append(
+                                                            row_idx
+                                                        )
+                                                    else:
+                                                        rows_without_secondary.append(
+                                                            row_idx
+                                                        )
+                                            else:
+                                                rows_without_secondary = rows.copy()
+
+                                            # First, allocate rows with secondary insurance to "Sec + X" agents
+                                            if rows_with_secondary and sec_agents:
+                                                # Filter agents based on their specific preference after "Sec +"
+                                                # For "Sec + Single", they can only take this carrier if unassigned or already assigned to this carrier
+                                                # For "Sec + NTC", "Sec + Mix", etc., they can take any carrier
+                                                available_sec_agents = []
+                                                for a in sec_agents:
+                                                    # If agent has "Sec + Single", apply Single logic
+                                                    if a.get(
+                                                        "has_sec_single_preference",
+                                                        False,
+                                                    ):
+                                                        if a.get(
+                                                            "assigned_insurance"
+                                                        ) in (None, carrier):
+                                                            available_sec_agents.append(
+                                                                a
+                                                            )
+                                                    else:
+                                                        # For "Sec + NTC", "Sec + Mix", etc., they can take any carrier
+                                                        available_sec_agents.append(a)
+
+                                                if available_sec_agents:
+                                                    available_sec_agents.sort(
+                                                        key=lambda a: a["capacity"]
+                                                        - a["allocated"],
+                                                        reverse=True,
+                                                    )
+
+                                                    row_pos = 0
+                                                    for agent in available_sec_agents:
+                                                        if row_pos >= len(
+                                                            rows_with_secondary
+                                                        ):
+                                                            break
+                                                        remaining = (
+                                                            agent["capacity"]
+                                                            - agent["allocated"]
+                                                        )
+                                                        if remaining <= 0:
+                                                            continue
+                                                        take = min(
+                                                            remaining,
+                                                            len(rows_with_secondary)
+                                                            - row_pos,
+                                                        )
+                                                        if take > 0:
+                                                            slice_rows = (
+                                                                rows_with_secondary[
+                                                                    row_pos : row_pos
+                                                                    + take
+                                                                ]
+                                                            )
+                                                            agent["row_indices"].extend(
+                                                                slice_rows
+                                                            )
+                                                            agent["allocated"] += take
+                                                            # Set assigned insurance if not set
+                                                            if (
+                                                                agent.get(
+                                                                    "assigned_insurance"
+                                                                )
+                                                                is None
+                                                            ):
+                                                                agent[
+                                                                    "assigned_insurance"
+                                                                ] = carrier
+                                                            for idx in slice_rows:
+                                                                processed_df.at[
+                                                                    idx, "Agent Name"
+                                                                ] = agent["name"]
+                                                            row_pos += take
+
+                                                    # Remove allocated rows from the list
+                                                    rows_with_secondary = (
+                                                        rows_with_secondary[row_pos:]
+                                                    )
+
+                                            # Combine remaining rows (secondary rows that weren't allocated + rows without secondary)
+                                            remaining_rows = (
+                                                rows_with_secondary
+                                                + rows_without_secondary
+                                            )
+
                                             # Phase 1: agents already on this carrier or unassigned
+                                            # For agents with "Single" preference, they can only get this carrier if:
+                                            # - They have no assigned insurance yet (None), OR
+                                            # - They already have this carrier assigned
                                             phase1_agents = [
                                                 a
                                                 for a in agents
-                                                if (
-                                                    a.get("assigned_insurance")
-                                                    in (None, carrier)
+                                                if (a["capacity"] - a["allocated"]) > 0
+                                                and (
+                                                    # If agent has "Single" or "Sec + Single" preference, they can only get this carrier
+                                                    # if they have no assigned insurance or already have this carrier
+                                                    (
+                                                        (
+                                                            a.get(
+                                                                "has_single_preference",
+                                                                False,
+                                                            )
+                                                            or a.get(
+                                                                "has_sec_single_preference",
+                                                                False,
+                                                            )
+                                                        )
+                                                        and a.get("assigned_insurance")
+                                                        in (None, carrier)
+                                                    )
+                                                    or
+                                                    # If agent has "Sec + X" (but not Single), they can take any carrier
+                                                    # (they already got secondary insurance rows above, now they can get regular rows)
+                                                    (
+                                                        a.get(
+                                                            "has_sec_preference", False
+                                                        )
+                                                        and not a.get(
+                                                            "has_sec_single_preference",
+                                                            False,
+                                                        )
+                                                        and a.get("assigned_insurance")
+                                                        in (None, carrier)
+                                                    )
+                                                    or
+                                                    # If agent doesn't have "Single" or "Sec" preference, use normal logic
+                                                    (
+                                                        not a.get(
+                                                            "has_single_preference",
+                                                            False,
+                                                        )
+                                                        and not a.get(
+                                                            "has_sec_preference",
+                                                            False,
+                                                        )
+                                                        and a.get("assigned_insurance")
+                                                        in (None, carrier)
+                                                    )
                                                 )
-                                                and (a["capacity"] - a["allocated"]) > 0
                                             ]
+
+                                            # Use remaining_rows instead of rows
+                                            rows = remaining_rows
                                             # Sort by remaining capacity desc to maximize concentration
                                             phase1_agents.sort(
                                                 key=lambda a: a["capacity"]
@@ -7255,6 +9111,7 @@ def process_allocation_files_with_dates(
                                                             ] += take
                                                     row_pos += take
                                             # Phase 2: remaining rows can go to agents with different carrier if their primary exhausted
+                                            # Exclude "Single" and "Sec + Single" agents from Phase 2 (they should only get same insurance)
                                             if row_pos < len(rows):
                                                 phase2_agents = [
                                                     a
@@ -7263,6 +9120,13 @@ def process_allocation_files_with_dates(
                                                     not in (None, carrier)
                                                     and (a["capacity"] - a["allocated"])
                                                     > 0
+                                                    and not a.get(
+                                                        "has_single_preference", False
+                                                    )
+                                                    and not a.get(
+                                                        "has_sec_single_preference",
+                                                        False,
+                                                    )
                                                 ]
                                                 phase2_agents.sort(
                                                     key=lambda a: a["capacity"]

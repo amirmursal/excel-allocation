@@ -4,7 +4,17 @@ Excel Allocation System - Web Application
 Admin can upload allocation and data files, Agent can upload status files
 """
 
-from flask import Flask, render_template_string, request, jsonify, send_file, redirect, session, url_for, flash
+from flask import (
+    Flask,
+    render_template_string,
+    request,
+    jsonify,
+    send_file,
+    redirect,
+    session,
+    url_for,
+    flash,
+)
 from flask_sqlalchemy import SQLAlchemy
 from flask_migrate import Migrate
 import pandas as pd
@@ -21,10 +31,12 @@ from functools import wraps
 from urllib.parse import quote
 from dotenv import load_dotenv
 import base64
+
 # Google OAuth imports
 from google.auth.transport import requests
 from google.oauth2 import id_token
 import requests as req
+
 # Scheduler for reminder emails
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.interval import IntervalTrigger
@@ -36,122 +48,133 @@ import resend
 load_dotenv()
 
 app = Flask(__name__)
-app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max file size
-app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'your-secret-key-change-in-production')
+app.config["MAX_CONTENT_LENGTH"] = 16 * 1024 * 1024  # 16MB max file size
+app.config["SECRET_KEY"] = os.environ.get(
+    "SECRET_KEY", "your-secret-key-change-in-production"
+)
 
 # Configure Flask to trust proxy headers (required for Railway/Heroku HTTPS detection)
 # This allows Flask to detect HTTPS from X-Forwarded-Proto header
-if os.environ.get('DATABASE_URL') or os.environ.get('RAILWAY_ENVIRONMENT'):
+if os.environ.get("DATABASE_URL") or os.environ.get("RAILWAY_ENVIRONMENT"):
     # Production environment - trust proxy headers
     from werkzeug.middleware.proxy_fix import ProxyFix
-    app.wsgi_app = ProxyFix(
-        app.wsgi_app,
-        x_proto=1,
-        x_host=1
-    )
+
+    app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)
 
 # Database configuration
-DATABASE_URL = os.environ.get('DATABASE_URL')
+DATABASE_URL = os.environ.get("DATABASE_URL")
 if DATABASE_URL:
     # For Railway/Heroku deployment
-    if DATABASE_URL.startswith('postgres://'):
-        DATABASE_URL = DATABASE_URL.replace('postgres://', 'postgresql://', 1)
-    app.config['SQLALCHEMY_DATABASE_URI'] = DATABASE_URL
+    if DATABASE_URL.startswith("postgres://"):
+        DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+    app.config["SQLALCHEMY_DATABASE_URI"] = DATABASE_URL
 else:
     # For local development
-    app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///excel_allocation.db'
+    app.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:///excel_allocation.db"
 
-app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 
 # Initialize database
 db = SQLAlchemy(app)
 migrate = Migrate(app, db)
 
 # Resend email configuration
-resend.api_key = os.environ.get('RESEND_API_KEY')
+resend.api_key = os.environ.get("RESEND_API_KEY")
 
 # Global variable to store agent allocations data for reminders
 agent_allocations_for_reminders = None
 
 # Google OAuth Configuration
-GOOGLE_CLIENT_ID = os.environ.get('GOOGLE_CLIENT_ID')
-GOOGLE_CLIENT_SECRET = os.environ.get('GOOGLE_CLIENT_SECRET')
+GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID")
+GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET")
 GOOGLE_DISCOVERY_URL = "https://accounts.google.com/.well-known/openid_configuration"
+
 
 # Database Models
 class User(db.Model):
     """User model for authentication and employee management"""
-    __tablename__ = 'users'
-    
+
+    __tablename__ = "users"
+
     id = db.Column(db.Integer, primary_key=True)
-    username = db.Column(db.String(80), unique=True, nullable=True)  # Made nullable for OAuth users
+    username = db.Column(
+        db.String(80), unique=True, nullable=True
+    )  # Made nullable for OAuth users
     email = db.Column(db.String(120), unique=True, nullable=False)
-    password_hash = db.Column(db.String(255), nullable=True)  # Made nullable for OAuth users
-    role = db.Column(db.String(20), nullable=False, default='agent')  # admin, agent
+    password_hash = db.Column(
+        db.String(255), nullable=True
+    )  # Made nullable for OAuth users
+    role = db.Column(db.String(20), nullable=False, default="agent")  # admin, agent
     name = db.Column(db.String(100), nullable=False)
     is_active = db.Column(db.Boolean, default=True)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     last_login = db.Column(db.DateTime)
     # Google OAuth fields
     google_id = db.Column(db.String(100), unique=True, nullable=True)
-    auth_provider = db.Column(db.String(20), default='local')  # local, google
-    
+    auth_provider = db.Column(db.String(20), default="local")  # local, google
+
     # Relationships
-    sessions = db.relationship('UserSession', backref='user', lazy=True, cascade='all, delete-orphan')
-    allocations = db.relationship('Allocation', backref='user', lazy=True)
-    
+    sessions = db.relationship(
+        "UserSession", backref="user", lazy=True, cascade="all, delete-orphan"
+    )
+    allocations = db.relationship("Allocation", backref="user", lazy=True)
+
     def set_password(self, password):
         """Hash and set password"""
         self.password_hash = generate_password_hash(password)
-    
+
     def check_password(self, password):
         """Check if provided password matches hash"""
         return check_password_hash(self.password_hash, password)
-    
+
     def to_dict(self):
         """Convert user to dictionary"""
         return {
-            'id': self.id,
-            'username': self.username,
-            'email': self.email,
-            'role': self.role,
-            'name': self.name,
-            'is_active': self.is_active,
-            'created_at': self.created_at.isoformat() if self.created_at else None,
-            'last_login': self.last_login.isoformat() if self.last_login else None
+            "id": self.id,
+            "username": self.username,
+            "email": self.email,
+            "role": self.role,
+            "name": self.name,
+            "is_active": self.is_active,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "last_login": self.last_login.isoformat() if self.last_login else None,
         }
+
 
 class UserSession(db.Model):
     """User session model for database-based session management"""
-    __tablename__ = 'user_sessions'
-    
+
+    __tablename__ = "user_sessions"
+
     id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
+    user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False)
     session_data = db.Column(db.Text)  # JSON string
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     expires_at = db.Column(db.DateTime, nullable=False)
     is_active = db.Column(db.Boolean, default=True)
-    
+
     def set_data(self, data):
         """Set session data as JSON string"""
         self.session_data = json.dumps(data)
-    
+
     def get_data(self):
         """Get session data from JSON string"""
         if self.session_data:
             return json.loads(self.session_data)
         return {}
-    
+
     def is_expired(self):
         """Check if session is expired"""
         return datetime.utcnow() > self.expires_at
 
+
 class Allocation(db.Model):
     """Allocation model for storing file processing data"""
-    __tablename__ = 'allocations'
-    
+
+    __tablename__ = "allocations"
+
     id = db.Column(db.Integer, primary_key=True)
-    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
+    user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False)
     allocation_filename = db.Column(db.String(255))
     data_filename = db.Column(db.String(255))
     allocation_data = db.Column(db.Text)  # JSON string
@@ -159,8 +182,10 @@ class Allocation(db.Model):
     processing_result = db.Column(db.Text)
     agent_allocations_data = db.Column(db.Text)  # JSON string
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
-    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-    
+    updated_at = db.Column(
+        db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+
     def set_allocation_data(self, data):
         """Set allocation data as JSON string"""
         if data is not None:
@@ -170,11 +195,11 @@ class Allocation(db.Model):
                 for key, value in data.items():
                     if isinstance(value, pd.DataFrame):
                         # Convert DataFrame to records and handle Timestamps
-                        df_records = value.to_dict('records')
+                        df_records = value.to_dict("records")
                         # Convert any Timestamp objects to strings
                         for record in df_records:
                             for k, v in record.items():
-                                if hasattr(v, 'isoformat'):  # Check if it's a Timestamp
+                                if hasattr(v, "isoformat"):  # Check if it's a Timestamp
                                     record[k] = v.isoformat()
                         serializable_data[key] = df_records
                     else:
@@ -182,18 +207,18 @@ class Allocation(db.Model):
                 self.allocation_data = json.dumps(serializable_data)
             elif isinstance(data, pd.DataFrame):
                 # Convert DataFrame to records and handle Timestamps
-                df_records = data.to_dict('records')
+                df_records = data.to_dict("records")
                 # Convert any Timestamp objects to strings
                 for record in df_records:
                     for k, v in record.items():
-                        if hasattr(v, 'isoformat'):  # Check if it's a Timestamp
+                        if hasattr(v, "isoformat"):  # Check if it's a Timestamp
                             record[k] = v.isoformat()
                 self.allocation_data = json.dumps(df_records)
             else:
                 self.allocation_data = json.dumps(data)
         else:
             self.allocation_data = None
-    
+
     def get_allocation_data(self):
         """Get allocation data from JSON string"""
         if self.allocation_data:
@@ -202,115 +227,11 @@ class Allocation(db.Model):
             if isinstance(data, dict):
                 converted_data = {}
                 for key, value in data.items():
-                    if isinstance(value, list) and len(value) > 0 and isinstance(value[0], dict):
-                        # This looks like a DataFrame converted to records
-                        converted_data[key] = pd.DataFrame(value)
-                    else:
-                        converted_data[key] = value
-                return converted_data
-            elif isinstance(data, list) and len(data) > 0 and isinstance(data[0], dict):
-                # This looks like a single DataFrame converted to records
-                return pd.DataFrame(data)
-            else:
-                return data
-        return None
-    
-    def set_data_file_data(self, data):
-        """Set data file data as JSON string"""
-        if data is not None:
-            # Convert pandas DataFrames to JSON-serializable format
-            if isinstance(data, dict):
-                serializable_data = {}
-                for key, value in data.items():
-                    if isinstance(value, pd.DataFrame):
-                        # Convert DataFrame to records and handle Timestamps
-                        df_records = value.to_dict('records')
-                        # Convert any Timestamp objects to strings
-                        for record in df_records:
-                            for k, v in record.items():
-                                if hasattr(v, 'isoformat'):  # Check if it's a Timestamp
-                                    record[k] = v.isoformat()
-                        serializable_data[key] = df_records
-                    else:
-                        serializable_data[key] = value
-                self.data_file_data = json.dumps(serializable_data)
-            elif isinstance(data, pd.DataFrame):
-                # Convert DataFrame to records and handle Timestamps
-                df_records = data.to_dict('records')
-                # Convert any Timestamp objects to strings
-                for record in df_records:
-                    for k, v in record.items():
-                        if hasattr(v, 'isoformat'):  # Check if it's a Timestamp
-                            record[k] = v.isoformat()
-                self.data_file_data = json.dumps(df_records)
-            else:
-                self.data_file_data = json.dumps(data)
-        else:
-            self.data_file_data = None
-    
-    def get_data_file_data(self):
-        """Get data file data from JSON string"""
-        if self.data_file_data:
-            data = json.loads(self.data_file_data)
-            # Convert back to pandas DataFrames if needed
-            if isinstance(data, dict):
-                converted_data = {}
-                for key, value in data.items():
-                    if isinstance(value, list) and len(value) > 0 and isinstance(value[0], dict):
-                        # This looks like a DataFrame converted to records
-                        converted_data[key] = pd.DataFrame(value)
-                    else:
-                        converted_data[key] = value
-                return converted_data
-            elif isinstance(data, list) and len(data) > 0 and isinstance(data[0], dict):
-                # This looks like a single DataFrame converted to records
-                return pd.DataFrame(data)
-            else:
-                return data
-        return None
-    
-    def set_agent_allocations_data(self, data):
-        """Set agent allocations data as JSON string"""
-        if data is not None:
-            # Convert pandas DataFrames to JSON-serializable format
-            if isinstance(data, dict):
-                serializable_data = {}
-                for key, value in data.items():
-                    if isinstance(value, pd.DataFrame):
-                        # Convert DataFrame to records and handle Timestamps
-                        df_records = value.to_dict('records')
-                        # Convert any Timestamp objects to strings
-                        for record in df_records:
-                            for k, v in record.items():
-                                if hasattr(v, 'isoformat'):  # Check if it's a Timestamp
-                                    record[k] = v.isoformat()
-                        serializable_data[key] = df_records
-                    else:
-                        serializable_data[key] = value
-                self.agent_allocations_data = json.dumps(serializable_data)
-            elif isinstance(data, pd.DataFrame):
-                # Convert DataFrame to records and handle Timestamps
-                df_records = data.to_dict('records')
-                # Convert any Timestamp objects to strings
-                for record in df_records:
-                    for k, v in record.items():
-                        if hasattr(v, 'isoformat'):  # Check if it's a Timestamp
-                            record[k] = v.isoformat()
-                self.agent_allocations_data = json.dumps(df_records)
-            else:
-                self.agent_allocations_data = json.dumps(data)
-        else:
-            self.agent_allocations_data = None
-    
-    def get_agent_allocations_data(self):
-        """Get agent allocations data from JSON string"""
-        if self.agent_allocations_data:
-            data = json.loads(self.agent_allocations_data)
-            # Convert back to pandas DataFrames if needed
-            if isinstance(data, dict):
-                converted_data = {}
-                for key, value in data.items():
-                    if isinstance(value, list) and len(value) > 0 and isinstance(value[0], dict):
+                    if (
+                        isinstance(value, list)
+                        and len(value) > 0
+                        and isinstance(value[0], dict)
+                    ):
                         # This looks like a DataFrame converted to records
                         converted_data[key] = pd.DataFrame(value)
                     else:
@@ -323,23 +244,8 @@ class Allocation(db.Model):
                 return data
         return None
 
-class AgentWorkFile(db.Model):
-    """Agent work file model for storing agent uploads"""
-    __tablename__ = 'agent_work_files'
-    
-    id = db.Column(db.Integer, primary_key=True)
-    agent_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
-    filename = db.Column(db.String(255), nullable=False)
-    file_data = db.Column(db.Text)  # JSON string of processed data
-    upload_date = db.Column(db.DateTime, default=datetime.utcnow)
-    status = db.Column(db.String(50), default='uploaded')  # uploaded, processed, consolidated
-    notes = db.Column(db.Text)  # Optional notes from agent
-    
-    # Relationships
-    agent = db.relationship('User', backref='work_files')
-    
-    def set_file_data(self, data):
-        """Set file data as JSON string"""
+    def set_data_file_data(self, data):
+        """Set data file data as JSON string"""
         if data is not None:
             # Convert pandas DataFrames to JSON-serializable format
             if isinstance(data, dict):
@@ -347,39 +253,43 @@ class AgentWorkFile(db.Model):
                 for key, value in data.items():
                     if isinstance(value, pd.DataFrame):
                         # Convert DataFrame to records and handle Timestamps
-                        df_records = value.to_dict('records')
+                        df_records = value.to_dict("records")
                         # Convert any Timestamp objects to strings
                         for record in df_records:
                             for k, v in record.items():
-                                if hasattr(v, 'isoformat'):  # Check if it's a Timestamp
+                                if hasattr(v, "isoformat"):  # Check if it's a Timestamp
                                     record[k] = v.isoformat()
                         serializable_data[key] = df_records
                     else:
                         serializable_data[key] = value
-                self.file_data = json.dumps(serializable_data)
+                self.data_file_data = json.dumps(serializable_data)
             elif isinstance(data, pd.DataFrame):
                 # Convert DataFrame to records and handle Timestamps
-                df_records = data.to_dict('records')
+                df_records = data.to_dict("records")
                 # Convert any Timestamp objects to strings
                 for record in df_records:
                     for k, v in record.items():
-                        if hasattr(v, 'isoformat'):  # Check if it's a Timestamp
+                        if hasattr(v, "isoformat"):  # Check if it's a Timestamp
                             record[k] = v.isoformat()
-                self.file_data = json.dumps(df_records)
+                self.data_file_data = json.dumps(df_records)
             else:
-                self.file_data = json.dumps(data)
+                self.data_file_data = json.dumps(data)
         else:
-            self.file_data = None
-    
-    def get_file_data(self):
-        """Get file data from JSON string"""
-        if self.file_data:
-            data = json.loads(self.file_data)
+            self.data_file_data = None
+
+    def get_data_file_data(self):
+        """Get data file data from JSON string"""
+        if self.data_file_data:
+            data = json.loads(self.data_file_data)
             # Convert back to pandas DataFrames if needed
             if isinstance(data, dict):
                 converted_data = {}
                 for key, value in data.items():
-                    if isinstance(value, list) and len(value) > 0 and isinstance(value[0], dict):
+                    if (
+                        isinstance(value, list)
+                        and len(value) > 0
+                        and isinstance(value[0], dict)
+                    ):
                         # This looks like a DataFrame converted to records
                         converted_data[key] = pd.DataFrame(value)
                     else:
@@ -391,6 +301,142 @@ class AgentWorkFile(db.Model):
             else:
                 return data
         return None
+
+    def set_agent_allocations_data(self, data):
+        """Set agent allocations data as JSON string"""
+        if data is not None:
+            # Convert pandas DataFrames to JSON-serializable format
+            if isinstance(data, dict):
+                serializable_data = {}
+                for key, value in data.items():
+                    if isinstance(value, pd.DataFrame):
+                        # Convert DataFrame to records and handle Timestamps
+                        df_records = value.to_dict("records")
+                        # Convert any Timestamp objects to strings
+                        for record in df_records:
+                            for k, v in record.items():
+                                if hasattr(v, "isoformat"):  # Check if it's a Timestamp
+                                    record[k] = v.isoformat()
+                        serializable_data[key] = df_records
+                    else:
+                        serializable_data[key] = value
+                self.agent_allocations_data = json.dumps(serializable_data)
+            elif isinstance(data, pd.DataFrame):
+                # Convert DataFrame to records and handle Timestamps
+                df_records = data.to_dict("records")
+                # Convert any Timestamp objects to strings
+                for record in df_records:
+                    for k, v in record.items():
+                        if hasattr(v, "isoformat"):  # Check if it's a Timestamp
+                            record[k] = v.isoformat()
+                self.agent_allocations_data = json.dumps(df_records)
+            else:
+                self.agent_allocations_data = json.dumps(data)
+        else:
+            self.agent_allocations_data = None
+
+    def get_agent_allocations_data(self):
+        """Get agent allocations data from JSON string"""
+        if self.agent_allocations_data:
+            data = json.loads(self.agent_allocations_data)
+            # Convert back to pandas DataFrames if needed
+            if isinstance(data, dict):
+                converted_data = {}
+                for key, value in data.items():
+                    if (
+                        isinstance(value, list)
+                        and len(value) > 0
+                        and isinstance(value[0], dict)
+                    ):
+                        # This looks like a DataFrame converted to records
+                        converted_data[key] = pd.DataFrame(value)
+                    else:
+                        converted_data[key] = value
+                return converted_data
+            elif isinstance(data, list) and len(data) > 0 and isinstance(data[0], dict):
+                # This looks like a single DataFrame converted to records
+                return pd.DataFrame(data)
+            else:
+                return data
+        return None
+
+
+class AgentWorkFile(db.Model):
+    """Agent work file model for storing agent uploads"""
+
+    __tablename__ = "agent_work_files"
+
+    id = db.Column(db.Integer, primary_key=True)
+    agent_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False)
+    filename = db.Column(db.String(255), nullable=False)
+    file_data = db.Column(db.Text)  # JSON string of processed data
+    upload_date = db.Column(db.DateTime, default=datetime.utcnow)
+    status = db.Column(
+        db.String(50), default="uploaded"
+    )  # uploaded, processed, consolidated
+    notes = db.Column(db.Text)  # Optional notes from agent
+
+    # Relationships
+    agent = db.relationship("User", backref="work_files")
+
+    def set_file_data(self, data):
+        """Set file data as JSON string"""
+        if data is not None:
+            # Convert pandas DataFrames to JSON-serializable format
+            if isinstance(data, dict):
+                serializable_data = {}
+                for key, value in data.items():
+                    if isinstance(value, pd.DataFrame):
+                        # Convert DataFrame to records and handle Timestamps
+                        df_records = value.to_dict("records")
+                        # Convert any Timestamp objects to strings
+                        for record in df_records:
+                            for k, v in record.items():
+                                if hasattr(v, "isoformat"):  # Check if it's a Timestamp
+                                    record[k] = v.isoformat()
+                        serializable_data[key] = df_records
+                    else:
+                        serializable_data[key] = value
+                self.file_data = json.dumps(serializable_data)
+            elif isinstance(data, pd.DataFrame):
+                # Convert DataFrame to records and handle Timestamps
+                df_records = data.to_dict("records")
+                # Convert any Timestamp objects to strings
+                for record in df_records:
+                    for k, v in record.items():
+                        if hasattr(v, "isoformat"):  # Check if it's a Timestamp
+                            record[k] = v.isoformat()
+                self.file_data = json.dumps(df_records)
+            else:
+                self.file_data = json.dumps(data)
+        else:
+            self.file_data = None
+
+    def get_file_data(self):
+        """Get file data from JSON string"""
+        if self.file_data:
+            data = json.loads(self.file_data)
+            # Convert back to pandas DataFrames if needed
+            if isinstance(data, dict):
+                converted_data = {}
+                for key, value in data.items():
+                    if (
+                        isinstance(value, list)
+                        and len(value) > 0
+                        and isinstance(value[0], dict)
+                    ):
+                        # This looks like a DataFrame converted to records
+                        converted_data[key] = pd.DataFrame(value)
+                    else:
+                        converted_data[key] = value
+                return converted_data
+            elif isinstance(data, list) and len(data) > 0 and isinstance(data[0], dict):
+                # This looks like a single DataFrame converted to records
+                return pd.DataFrame(data)
+            else:
+                return data
+        return None
+
 
 # Global variables to store session data (fallback for backward compatibility)
 allocation_data = None
@@ -402,51 +448,55 @@ processing_result = None
 # Agent processing result
 agent_processing_result = None
 agent_allocations_data = None
-agent_insurance_agent_names = None  # Store agent names for Agent Insurance sheet formatting
+agent_insurance_agent_names = (
+    None  # Store agent names for Agent Insurance sheet formatting
+)
+
 
 # Database helper functions
 def init_database():
     """Initialize database and create default users"""
     with app.app_context():
         db.create_all()
-        
+
         # Create default admin user if it doesn't exist
-        admin_user = User.query.filter_by(username='admin').first()
+        admin_user = User.query.filter_by(username="admin").first()
         if not admin_user:
             admin_user = User(
-                username='admin',
-                email='admin@example.com',
-                role='admin',
-                name='Administrator'
+                username="admin",
+                email="admin@example.com",
+                role="admin",
+                name="Administrator",
             )
-            admin_user.set_password('admin123')
+            admin_user.set_password("admin123")
             db.session.add(admin_user)
-        
+
         # Note: Agent users will be created automatically via Google OAuth
         # No need to create static agent accounts
-        
+
         db.session.commit()
+
 
 def get_user_by_username(username):
     """Get user by username"""
     return User.query.filter_by(username=username, is_active=True).first()
 
+
 def create_user_session(user_id, session_data=None, expires_hours=24):
     """Create a new user session"""
     expires_at = datetime.utcnow() + timedelta(hours=expires_hours)
-    session = UserSession(
-        user_id=user_id,
-        expires_at=expires_at
-    )
+    session = UserSession(user_id=user_id, expires_at=expires_at)
     if session_data:
         session.set_data(session_data)
     db.session.add(session)
     db.session.commit()
     return session
 
+
 def get_user_session(session_id):
     """Get user session by ID"""
     return UserSession.query.filter_by(id=session_id, is_active=True).first()
+
 
 def delete_user_session(session_id):
     """Delete user session"""
@@ -454,6 +504,7 @@ def delete_user_session(session_id):
     if session:
         session.is_active = False
         db.session.commit()
+
 
 def cleanup_expired_sessions():
     """Clean up expired sessions"""
@@ -464,6 +515,7 @@ def cleanup_expired_sessions():
         session.is_active = False
     db.session.commit()
 
+
 def get_or_create_allocation(user_id):
     """Get or create allocation record for user"""
     allocation = Allocation.query.filter_by(user_id=user_id).first()
@@ -473,12 +525,19 @@ def get_or_create_allocation(user_id):
         db.session.commit()
     return allocation
 
-def save_allocation_data(user_id, allocation_data=None, allocation_filename=None, 
-                        data_file_data=None, data_filename=None, 
-                        processing_result=None, agent_allocations_data=None):
+
+def save_allocation_data(
+    user_id,
+    allocation_data=None,
+    allocation_filename=None,
+    data_file_data=None,
+    data_filename=None,
+    processing_result=None,
+    agent_allocations_data=None,
+):
     """Save allocation data to database"""
     allocation = get_or_create_allocation(user_id)
-    
+
     if allocation_data is not None:
         allocation.set_allocation_data(allocation_data)
     if allocation_filename is not None:
@@ -491,64 +550,70 @@ def save_allocation_data(user_id, allocation_data=None, allocation_filename=None
         allocation.processing_result = processing_result
     if agent_allocations_data is not None:
         allocation.set_agent_allocations_data(agent_allocations_data)
-    
+
     allocation.updated_at = datetime.utcnow()
     db.session.commit()
     return allocation
+
 
 def get_allocation_data(user_id):
     """Get allocation data from database"""
     allocation = Allocation.query.filter_by(user_id=user_id).first()
     if allocation:
         return {
-            'allocation_data': allocation.get_allocation_data(),
-            'allocation_filename': allocation.allocation_filename,
-            'data_file_data': allocation.get_data_file_data(),
-            'data_filename': allocation.data_filename,
-            'processing_result': allocation.processing_result,
-            'agent_allocations_data': allocation.get_agent_allocations_data()
+            "allocation_data": allocation.get_allocation_data(),
+            "allocation_filename": allocation.allocation_filename,
+            "data_file_data": allocation.get_data_file_data(),
+            "data_filename": allocation.data_filename,
+            "processing_result": allocation.processing_result,
+            "agent_allocations_data": allocation.get_agent_allocations_data(),
         }
     return None
 
+
 def save_agent_work_file(agent_id, filename, file_data, notes=None):
     """Save agent work file to database"""
-    work_file = AgentWorkFile(
-        agent_id=agent_id,
-        filename=filename,
-        notes=notes
-    )
+    work_file = AgentWorkFile(agent_id=agent_id, filename=filename, notes=notes)
     work_file.set_file_data(file_data)
     db.session.add(work_file)
     db.session.commit()
     return work_file
 
+
 def get_agent_work_files(agent_id=None):
     """Get agent work files, optionally filtered by agent"""
     if agent_id:
-        return AgentWorkFile.query.filter_by(agent_id=agent_id).order_by(AgentWorkFile.upload_date.desc()).all()
+        return (
+            AgentWorkFile.query.filter_by(agent_id=agent_id)
+            .order_by(AgentWorkFile.upload_date.desc())
+            .all()
+        )
     return AgentWorkFile.query.order_by(AgentWorkFile.upload_date.desc()).all()
+
 
 def get_all_agent_work_files():
     """Get all agent work files for consolidation (admin view)"""
     # Return all files regardless of status so admin can see all uploaded files
     return AgentWorkFile.query.order_by(AgentWorkFile.upload_date.desc()).all()
 
+
 # Template filter to convert datetime to IST
-@app.template_filter('to_ist')
+@app.template_filter("to_ist")
 def to_ist_filter(dt):
     """Convert datetime to IST (Asia/Kolkata) timezone"""
     if dt is None:
         return None
-    
+
     # If datetime is naive (no timezone info), assume it's UTC
     if dt.tzinfo is None:
         dt = pytz.UTC.localize(dt)
-    
+
     # Convert to IST
-    ist_timezone = pytz.timezone('Asia/Kolkata')
+    ist_timezone = pytz.timezone("Asia/Kolkata")
     ist_time = dt.astimezone(ist_timezone)
-    
+
     return ist_time
+
 
 # Google OAuth helper functions
 def get_google_provider_cfg():
@@ -557,66 +622,71 @@ def get_google_provider_cfg():
     return {
         "authorization_endpoint": "https://accounts.google.com/o/oauth2/v2/auth",
         "token_endpoint": "https://oauth2.googleapis.com/token",
-        "userinfo_endpoint": "https://www.googleapis.com/oauth2/v3/userinfo"
+        "userinfo_endpoint": "https://www.googleapis.com/oauth2/v3/userinfo",
     }
+
 
 def verify_google_token(token):
     """Verify Google OAuth token and return user info"""
     try:
         # Verify the token
-        idinfo = id_token.verify_oauth2_token(token, requests.Request(), GOOGLE_CLIENT_ID)
-        
+        idinfo = id_token.verify_oauth2_token(
+            token, requests.Request(), GOOGLE_CLIENT_ID
+        )
+
         # Verify the issuer
-        if idinfo['iss'] not in ['accounts.google.com', 'https://accounts.google.com']:
-            raise ValueError('Wrong issuer.')
-        
+        if idinfo["iss"] not in ["accounts.google.com", "https://accounts.google.com"]:
+            raise ValueError("Wrong issuer.")
+
         return {
-            'google_id': idinfo['sub'],
-            'email': idinfo['email'],
-            'name': idinfo['name'],
-            'picture': idinfo.get('picture', '')
+            "google_id": idinfo["sub"],
+            "email": idinfo["email"],
+            "name": idinfo["name"],
+            "picture": idinfo.get("picture", ""),
         }
     except ValueError as e:
         return None
 
+
 def get_or_create_google_user(google_user_info):
     """Get existing user or create new user from Google OAuth info"""
     # First try to find by Google ID
-    user = User.query.filter_by(google_id=google_user_info['google_id']).first()
-    
+    user = User.query.filter_by(google_id=google_user_info["google_id"]).first()
+
     if user:
         return user
-    
+
     # If not found by Google ID, try to find by email
-    user = User.query.filter_by(email=google_user_info['email']).first()
-    
+    user = User.query.filter_by(email=google_user_info["email"]).first()
+
     if user:
         # Update existing user with Google ID
-        user.google_id = google_user_info['google_id']
-        user.auth_provider = 'google'
-        user.name = google_user_info['name']
+        user.google_id = google_user_info["google_id"]
+        user.auth_provider = "google"
+        user.name = google_user_info["name"]
         db.session.commit()
         return user
-    
+
     # Create new user
     user = User(
-        email=google_user_info['email'],
-        name=google_user_info['name'],
-        google_id=google_user_info['google_id'],
-        auth_provider='google',
-        role='agent',  # Default role for OAuth users
-        is_active=True
+        email=google_user_info["email"],
+        name=google_user_info["name"],
+        google_id=google_user_info["google_id"],
+        auth_provider="google",
+        role="agent",  # Default role for OAuth users
+        is_active=True,
     )
     db.session.add(user)
     db.session.commit()
     return user
+
 
 # Authentication decorators
 def login_required(f):
     @wraps(f)
     def decorated_function(*args, **kwargs):
         # Check for database session first
-        db_session_id = session.get('db_session_id')
+        db_session_id = session.get("db_session_id")
         if db_session_id:
             db_session = get_user_session(db_session_id)
             if db_session and not db_session.is_expired():
@@ -629,74 +699,87 @@ def login_required(f):
                 if db_session:
                     delete_user_session(db_session_id)
                 session.clear()
-        
+
         # Fallback to Flask session
-        if 'user_id' not in session:
-            return redirect(url_for('login'))
+        if "user_id" not in session:
+            return redirect(url_for("login"))
         return f(*args, **kwargs)
+
     return decorated_function
+
 
 def admin_required(f):
     @wraps(f)
     def decorated_function(*args, **kwargs):
         # Check for database session first
-        db_session_id = session.get('db_session_id')
+        db_session_id = session.get("db_session_id")
         if db_session_id:
             db_session = get_user_session(db_session_id)
             if db_session and not db_session.is_expired():
                 session_data = db_session.get_data()
-                if session_data.get('user_role') != 'admin':
-                    flash('Access denied. Admin privileges required.', 'error')
-                    return redirect(url_for('dashboard'))
+                if session_data.get("user_role") != "admin":
+                    flash("Access denied. Admin privileges required.", "error")
+                    return redirect(url_for("dashboard"))
                 session.update(session_data)
                 return f(*args, **kwargs)
             else:
                 if db_session:
                     delete_user_session(db_session_id)
                 session.clear()
-        
+
         # Fallback to Flask session
-        if 'user_id' not in session:
-            return redirect(url_for('login'))
-        if session.get('user_role') != 'admin':
-            flash('Access denied. Admin privileges required.', 'error')
-            return redirect(url_for('dashboard'))
+        if "user_id" not in session:
+            return redirect(url_for("login"))
+        if session.get("user_role") != "admin":
+            flash("Access denied. Admin privileges required.", "error")
+            return redirect(url_for("dashboard"))
         return f(*args, **kwargs)
+
     return decorated_function
+
 
 def agent_required(f):
     @wraps(f)
     def decorated_function(*args, **kwargs):
         # Check for database session first
-        db_session_id = session.get('db_session_id')
+        db_session_id = session.get("db_session_id")
         if db_session_id:
             db_session = get_user_session(db_session_id)
             if db_session and not db_session.is_expired():
                 session_data = db_session.get_data()
-                if session_data.get('user_role') != 'agent':
-                    flash('Access denied. Agent privileges required.', 'error')
-                    return redirect(url_for('dashboard'))
+                if session_data.get("user_role") != "agent":
+                    flash("Access denied. Agent privileges required.", "error")
+                    return redirect(url_for("dashboard"))
                 session.update(session_data)
                 return f(*args, **kwargs)
             else:
                 if db_session:
                     delete_user_session(db_session_id)
                 session.clear()
-        
+
         # Fallback to Flask session
-        if 'user_id' not in session:
-            return redirect(url_for('login'))
-        if session.get('user_role') != 'agent':
-            flash('Access denied. Agent privileges required.', 'error')
-            return redirect(url_for('dashboard'))
+        if "user_id" not in session:
+            return redirect(url_for("login"))
+        if session.get("user_role") != "agent":
+            flash("Access denied. Agent privileges required.", "error")
+            return redirect(url_for("dashboard"))
         return f(*args, **kwargs)
+
     return decorated_function
 
+
 # Email helper function using Resend
-def send_email_with_resend(to_email, subject, html_content, text_content=None, attachment_data=None, attachment_filename=None):
+def send_email_with_resend(
+    to_email,
+    subject,
+    html_content,
+    text_content=None,
+    attachment_data=None,
+    attachment_filename=None,
+):
     """
     Send email using Resend API
-    
+
     Args:
         to_email: Recipient email address
         subject: Email subject
@@ -704,22 +787,22 @@ def send_email_with_resend(to_email, subject, html_content, text_content=None, a
         text_content: Plain text email content (optional)
         attachment_data: BytesIO or bytes object for attachment (optional)
         attachment_filename: Filename for attachment (optional)
-    
+
     Returns:
         tuple: (success: bool, message: str)
     """
     try:
         email_data = {
-            "from": os.environ.get('RESEND_FROM_EMAIL', 'onboarding@resend.dev'),
+            "from": os.environ.get("RESEND_FROM_EMAIL", "onboarding@resend.dev"),
             "to": to_email,
             "subject": subject,
-            "html": html_content
+            "html": html_content,
         }
-        
+
         # Add text content if provided
         if text_content:
             email_data["text"] = text_content
-        
+
         # Add attachment if provided
         if attachment_data and attachment_filename:
             # Convert BytesIO to bytes if needed
@@ -727,28 +810,28 @@ def send_email_with_resend(to_email, subject, html_content, text_content=None, a
                 attachment_bytes = attachment_data.getvalue()
             else:
                 attachment_bytes = attachment_data
-            
+
             # Encode to base64
-            attachment_base64 = base64.b64encode(attachment_bytes).decode('utf-8')
-            
-            email_data["attachments"] = [{
-                "filename": attachment_filename,
-                "content": attachment_base64
-            }]
-        
+            attachment_base64 = base64.b64encode(attachment_bytes).decode("utf-8")
+
+            email_data["attachments"] = [
+                {"filename": attachment_filename, "content": attachment_base64}
+            ]
+
         r = resend.Emails.send(email_data)
-        
+
         # Check if email was sent successfully
         # Resend API returns an object with 'id' field on success
-        if isinstance(r, dict) and 'id' in r:
+        if isinstance(r, dict) and "id" in r:
             return True, f"Email sent successfully to {to_email}"
-        elif hasattr(r, 'id'):
+        elif hasattr(r, "id"):
             return True, f"Email sent successfully to {to_email}"
         else:
             return False, f"Failed to send email: {str(r)}"
-            
+
     except Exception as e:
         return False, f"Error sending email: {str(e)}"
+
 
 # Login Template
 LOGIN_TEMPLATE = """
@@ -3827,23 +3910,25 @@ HTML_TEMPLATE = """
 </html>
 """
 
+
 def get_business_days_until_date(start_date, target_date):
     """Calculate business days between start_date and target_date (excluding weekends)"""
     from datetime import timedelta
-    
+
     if target_date < start_date:
         return -1  # Past date
-    
+
     current_date = start_date
     business_days = 0
-    
+
     while current_date < target_date:
         current_date += timedelta(days=1)
         # Check if it's a weekday (Monday=0, Sunday=6)
         if current_date.weekday() < 5:  # Monday to Friday
             business_days += 1
-    
+
     return business_days
+
 
 # Global variable to cache insurance name mapping
 _insurance_name_mapping = None
@@ -3853,187 +3938,189 @@ _formatted_insurance_details = []  # Track original -> formatted mappings
 
 # Insurance corrected list mappings (stored directly in code since file will be deleted)
 CORRECTED_LIST_MAPPINGS = {
-    'Always Care': 'Always Care',
-    'Always Care Dental Benefits': 'Always Care',
-    'BCBS Arizona': 'BCBS Arizona',
-    'BCBS Arizona FEP': 'BCBS Arizona',
-    'BCBS California Dental Plan': 'BCBS California',
-    'BCBS California FEP': 'BCBS California FEP',
-    'BCBS FEP BLUEDENTAL': 'BCBS FEP',
-    'BCBS FEP Dental': 'BCBS FEP',
-    'BCBS FEP Program': 'BCBS FEP',
-    'BCBS FEPOREGON': 'BCBS FEP',
-    'BCBS Federal Dental': 'BCBS Federal',
-    'BCBS Federal Gov`t': 'BCBS Federal',
-    'BCBS IDAHO': 'BCBS IDAHO',
-    'BCBS Idaho': 'BCBS IDAHO',
-    'BCBS Illinois  Federal': 'BCBS Illinois',
-    'BCBS Oregon FEP Program': 'BCBS Oregon FEP Program',
-    'BCBS Tennessee Federal Gov`t': 'BCBS Tennessee Federal',
-    'Beam Insurance Administrators': 'Beam',
-    'Benefit & Risk Management (BRMS  CA)': 'Benefit & Risk Management',
-    'Best Life': 'Best Life',
-    'Best Life & Health Insurance Co.': 'Best Life',
-    'BlueCross BlueShield AZ': 'BCBS Arizona',
-    'BlueShield AZ': 'BCBS Arizona',
-    'CCPOA': 'CCPOA',
-    'CENTRAL STATES': 'CENTRAL STATES',
-    'CONVERSION DEFAULT  Do NOT Delete! Change Pt Ins!': 'CONVERSION DEFAULT  Do NOT Delete! Change Pt Ins!',
-    'CarePlus': 'CarePlus',
-    'Careington Benefit Solutions': 'Careington Benefit Solutions',
-    'Central States Health & Life Co. Of Omaha': 'Central States Health & Life Co. Of Omaha',
-    'Cigna': 'Cigna',
-    'Community Dental Associates': 'Community Dental Associates',
-    'Core Five Solutions': 'Core Five Solutions',
-    'Cypress Ancillary Benefits': 'Cypress Ancillary Benefits',
-    'DD $2000 MAX': 'DD $2000 MAX',
-    'DD California Federal Plan': 'DD California Federal Plan',
-    'DD California Federal Services': 'DD California Federal Plan',
-    'DD DI': 'DD DI',
-    'DD Dental Choice': 'DD Dental Choice',
-    'DD FE': 'DD FEP',
-    'DD Fed Govt': 'DD FEP',
-    'DD Federal Employee Dental Pro': 'DD FEP',
-    'DD Federal Government Programs': 'DD FEP',
-    'DD GE': 'DD GE',
-    'DD GeorgiaBasic': 'DD GeorgiaBasic',
-    'DD IO': 'DD IO',
-    'DD Idaho': 'DD Idaho',
-    'DD Individual': 'DD Individual',
-    'DD Individual Plan': 'DD Individual',
-    'DD Indv': 'DD Individual',
-    'DD Ins Company': 'DD Ins Company',
-    'DD Insurance Colorado': 'DD Colorado',
-    'DD Iowa': 'DD Iowa',
-    'DD KA': 'DD KA',
-    'DD KE': 'DD KE',
-    'DD M': 'DD M',
-    'DD Mass': 'DD Mass',
-    'DD NO': 'DD NO',
-    'DD PE': 'DD PE',
-    'DD PL': 'DD PL',
-    'DD PLAN OF Wisconsin.': 'DD Wisconsin.',
-    'DD PP': 'DD',
-    'DD PPO': 'DD',
-    'DD Plan': 'DD',
-    'DD Plan Of Arizona': 'DD Arizona',
-    'DD Plan of Arizona': 'DD Arizona',
-    'DD RH': 'DD Rhode Island',
-    'DD Rhode Island': 'DD Rhode Island',
-    'DD SO': 'DD SO',
-    'DD TE': 'DD Tennesse',
-    'DD VI': 'DD VI',
-    'DD Wisconsin INDV': 'DD Wisconsin INDV',
-    'DD plan': 'DD plan',
-    'DDIC': 'DDIC',
-    'DELTA': 'DD',
-    'DENCAP Dental Plans': 'DENCAP Dental Plans',
-    'Delt Dental of CA': 'DD California',
-    'Delta': 'DD',
-    'Delta Deltal premier': 'DD',
-    'Delta Denta': 'DD',
-    'Delta MN': 'DD Minnesota',
-    'Delta WI': 'DD Wisconsin',
-    'Delta Wi': 'DD Wisconsin',
-    'Delta of WA': 'DD of Washington',
-    'DeltaCare USA': 'DeltaCare USA',
-    'Dental Claims': 'Dental Claims',
-    'Dental Claims Administrator': 'Dental Claims',
-    'FEP Blue Dental': 'FEP Blue Dental',
-    'FEP BlueDental': 'FEP BlueDental',
-    'Fiedler Dentistry Membership Plan': 'Fiedler Dentistry Membership Plan',
-    'LINE CONSTRUCTION  LINECO': 'LIneco',
-    'LIneco': 'LIneco',
-    'Liberty Dental Plan': 'Liberty Dental',
-    'Lincoln Financial Group': 'Lincoln Financial Group',
-    'Lincoln Financial Group (Lincoln Nationa': 'Lincoln Financial Group',
-    'Line Construction Benefit Fund': 'LIneco',
-    'Manhattan Life': 'Manhattan Life',
-    'Medical Mutual': 'Medical Mutual',
-    'Medico Insurance Company': 'Medico Insurance Company',
-    'Meritain': 'Meritain',
-    'Meritain Health': 'Meritain',
-    'Met': 'Metlife',
-    'Metlife': 'Metlife',
-    'Metropolitan': 'Metropolitan',
-    'Moonlight Graham': 'Moonlight Graham',
-    'Mutual Omaha': 'Mutual Omaha',
-    'NECAIBEW Welfare Trust Fund': 'NECAIBEW Welfare Trust Fund',
-    'NHW': 'NHW',
-    'NTCA': 'NTCA',
-    'NTCA Benefits': 'NTCA',
-    'National Elevator Industry Health Benefit Plan': 'National Elevator Industry Plan',
-    'National Elevator Industry Plan': 'National Elevator Industry Plan',
-    'Network Health Wisconsin': 'Network Health Wisconsin',
-    'Nippon Life Insurance': 'Nippon Life Insurance',
-    'Novartis Corporation': 'Novartis Corporation',
-    'OSF MedAdvantage': 'OSF MedAdvantage',
-    'Oakland County Discount Plan': 'Oakland County Discount Plan',
-    'Operating Engineers Local #49': 'Operating Engineers Local #49',
-    'PACIFIC SOURCE': 'PACIFIC SOURCE',
-    'PacificSource Health Plans': 'PacificSource Health Plans',
-    'Paramount Dental': 'Paramount Dental',
-    'Perio Membership Plan August': 'Perio Membership Plan August',
-    "Physician's Mutual": 'Physicians Mutual',
-    'Physicians Mutual': 'Physicians Mutual',
-    'Plan for Health': 'Plan for Health',
-    'Prairie States': 'Prairie States',
-    'Principal': 'Principal',
-    'Principlal': 'Principal',
-    'Professional Benefits Administr': 'Professional Benefits Administr',
-    'REGENCE BCBS': 'REGENCE BCBS',
-    'Regarding Dentistry  Membership': 'Regarding Dentistry  Membership',
-    'Reliance Standard': 'Reliance Standard',
-    'Renaissance': 'Renaissance',
-    'Renaissance Life and Health': 'Renaissance',
-    'Renaissance, Dental': 'Renaissance',
-    'SIHO': 'SIHO',
-    'Secure Care Dental': 'Secure Care Dental',
-    'Security Life Ins of America': 'Security Life Ins of America',
-    'Simple Dental': 'Simple Dental',
-    'Standard Life Insurance': 'Standard Life Insurance',
-    'Strong Family Health': 'Strong Family Health',
-    'Sunlife': 'Sunlife',
-    'Superior Dental Care': 'Superior Dental Care',
-    'THE UNITED FURNITURE WORKERS INSURANCE F': 'THE UNITED FURNITURE WORKERS INSURANCE F',
-    'Team Care': 'Teamcare',
-    'Teamcare': 'Teamcare',
-    'Texas International Life Ins Co': 'Texas International Life Ins Co',
-    'The Benefit Group': 'The Benefit Group',
-    'Tricare': 'Tricare',
-    'TruAssure Insurance Company': 'TruAssure',
-    'UHC': 'UHC',
-    'UMR': 'UMR',
-    'US Health Group': 'US Health Group',
-    'United Concordia': 'UCCI',
-    'Unum': 'Unum',
-    'WilsonMcShane Corporation': 'WilsonMcShane Corporation',
+    "Always Care": "Always Care",
+    "Always Care Dental Benefits": "Always Care",
+    "BCBS Arizona": "BCBS Arizona",
+    "BCBS Arizona FEP": "BCBS Arizona",
+    "BCBS California Dental Plan": "BCBS California",
+    "BCBS California FEP": "BCBS California FEP",
+    "BCBS FEP BLUEDENTAL": "BCBS FEP",
+    "BCBS FEP Dental": "BCBS FEP",
+    "BCBS FEP Program": "BCBS FEP",
+    "BCBS FEPOREGON": "BCBS FEP",
+    "BCBS Federal Dental": "BCBS Federal",
+    "BCBS Federal Gov`t": "BCBS Federal",
+    "BCBS IDAHO": "BCBS IDAHO",
+    "BCBS Idaho": "BCBS IDAHO",
+    "BCBS Illinois  Federal": "BCBS Illinois",
+    "BCBS Oregon FEP Program": "BCBS Oregon FEP Program",
+    "BCBS Tennessee Federal Gov`t": "BCBS Tennessee Federal",
+    "Beam Insurance Administrators": "Beam",
+    "Benefit & Risk Management (BRMS  CA)": "Benefit & Risk Management",
+    "Best Life": "Best Life",
+    "Best Life & Health Insurance Co.": "Best Life",
+    "BlueCross BlueShield AZ": "BCBS Arizona",
+    "BlueShield AZ": "BCBS Arizona",
+    "CCPOA": "CCPOA",
+    "CENTRAL STATES": "CENTRAL STATES",
+    "CONVERSION DEFAULT  Do NOT Delete! Change Pt Ins!": "CONVERSION DEFAULT  Do NOT Delete! Change Pt Ins!",
+    "CarePlus": "CarePlus",
+    "Careington Benefit Solutions": "Careington Benefit Solutions",
+    "Central States Health & Life Co. Of Omaha": "Central States Health & Life Co. Of Omaha",
+    "Cigna": "Cigna",
+    "Community Dental Associates": "Community Dental Associates",
+    "Core Five Solutions": "Core Five Solutions",
+    "Cypress Ancillary Benefits": "Cypress Ancillary Benefits",
+    "DD $2000 MAX": "DD $2000 MAX",
+    "DD California Federal Plan": "DD California Federal Plan",
+    "DD California Federal Services": "DD California Federal Plan",
+    "DD DI": "DD DI",
+    "DD Dental Choice": "DD Dental Choice",
+    "DD FE": "DD FEP",
+    "DD Fed Govt": "DD FEP",
+    "DD Federal Employee Dental Pro": "DD FEP",
+    "DD Federal Government Programs": "DD FEP",
+    "DD GE": "DD GE",
+    "DD GeorgiaBasic": "DD GeorgiaBasic",
+    "DD IO": "DD IO",
+    "DD Idaho": "DD Idaho",
+    "DD Individual": "DD Individual",
+    "DD Individual Plan": "DD Individual",
+    "DD Indv": "DD Individual",
+    "DD Ins Company": "DD Ins Company",
+    "DD Insurance Colorado": "DD Colorado",
+    "DD Iowa": "DD Iowa",
+    "DD KA": "DD KA",
+    "DD KE": "DD KE",
+    "DD M": "DD M",
+    "DD Mass": "DD Mass",
+    "DD NO": "DD NO",
+    "DD PE": "DD PE",
+    "DD PL": "DD PL",
+    "DD PLAN OF Wisconsin.": "DD Wisconsin.",
+    "DD PP": "DD",
+    "DD PPO": "DD",
+    "DD Plan": "DD",
+    "DD Plan Of Arizona": "DD Arizona",
+    "DD Plan of Arizona": "DD Arizona",
+    "DD RH": "DD Rhode Island",
+    "DD Rhode Island": "DD Rhode Island",
+    "DD SO": "DD SO",
+    "DD TE": "DD Tennesse",
+    "DD VI": "DD VI",
+    "DD Wisconsin INDV": "DD Wisconsin INDV",
+    "DD plan": "DD plan",
+    "DDIC": "DDIC",
+    "DELTA": "DD",
+    "DENCAP Dental Plans": "DENCAP Dental Plans",
+    "Delt Dental of CA": "DD California",
+    "Delta": "DD",
+    "Delta Deltal premier": "DD",
+    "Delta Denta": "DD",
+    "Delta MN": "DD Minnesota",
+    "Delta WI": "DD Wisconsin",
+    "Delta Wi": "DD Wisconsin",
+    "Delta of WA": "DD of Washington",
+    "DeltaCare USA": "DeltaCare USA",
+    "Dental Claims": "Dental Claims",
+    "Dental Claims Administrator": "Dental Claims",
+    "FEP Blue Dental": "FEP Blue Dental",
+    "FEP BlueDental": "FEP BlueDental",
+    "Fiedler Dentistry Membership Plan": "Fiedler Dentistry Membership Plan",
+    "LINE CONSTRUCTION  LINECO": "LIneco",
+    "LIneco": "LIneco",
+    "Liberty Dental Plan": "Liberty Dental",
+    "Lincoln Financial Group": "Lincoln Financial Group",
+    "Lincoln Financial Group (Lincoln Nationa": "Lincoln Financial Group",
+    "Line Construction Benefit Fund": "LIneco",
+    "Manhattan Life": "Manhattan Life",
+    "Medical Mutual": "Medical Mutual",
+    "Medico Insurance Company": "Medico Insurance Company",
+    "Meritain": "Meritain",
+    "Meritain Health": "Meritain",
+    "Met": "Metlife",
+    "Metlife": "Metlife",
+    "Metropolitan": "Metropolitan",
+    "Moonlight Graham": "Moonlight Graham",
+    "Mutual Omaha": "Mutual Omaha",
+    "NECAIBEW Welfare Trust Fund": "NECAIBEW Welfare Trust Fund",
+    "NHW": "NHW",
+    "NTCA": "NTCA",
+    "NTCA Benefits": "NTCA",
+    "National Elevator Industry Health Benefit Plan": "National Elevator Industry Plan",
+    "National Elevator Industry Plan": "National Elevator Industry Plan",
+    "Network Health Wisconsin": "Network Health Wisconsin",
+    "Nippon Life Insurance": "Nippon Life Insurance",
+    "Novartis Corporation": "Novartis Corporation",
+    "OSF MedAdvantage": "OSF MedAdvantage",
+    "Oakland County Discount Plan": "Oakland County Discount Plan",
+    "Operating Engineers Local #49": "Operating Engineers Local #49",
+    "PACIFIC SOURCE": "PACIFIC SOURCE",
+    "PacificSource Health Plans": "PacificSource Health Plans",
+    "Paramount Dental": "Paramount Dental",
+    "Perio Membership Plan August": "Perio Membership Plan August",
+    "Physician's Mutual": "Physicians Mutual",
+    "Physicians Mutual": "Physicians Mutual",
+    "Plan for Health": "Plan for Health",
+    "Prairie States": "Prairie States",
+    "Principal": "Principal",
+    "Principlal": "Principal",
+    "Professional Benefits Administr": "Professional Benefits Administr",
+    "REGENCE BCBS": "REGENCE BCBS",
+    "Regarding Dentistry  Membership": "Regarding Dentistry  Membership",
+    "Reliance Standard": "Reliance Standard",
+    "Renaissance": "Renaissance",
+    "Renaissance Life and Health": "Renaissance",
+    "Renaissance, Dental": "Renaissance",
+    "SIHO": "SIHO",
+    "Secure Care Dental": "Secure Care Dental",
+    "Security Life Ins of America": "Security Life Ins of America",
+    "Simple Dental": "Simple Dental",
+    "Standard Life Insurance": "Standard Life Insurance",
+    "Strong Family Health": "Strong Family Health",
+    "Sunlife": "Sunlife",
+    "Superior Dental Care": "Superior Dental Care",
+    "THE UNITED FURNITURE WORKERS INSURANCE F": "THE UNITED FURNITURE WORKERS INSURANCE F",
+    "Team Care": "Teamcare",
+    "Teamcare": "Teamcare",
+    "Texas International Life Ins Co": "Texas International Life Ins Co",
+    "The Benefit Group": "The Benefit Group",
+    "Tricare": "Tricare",
+    "TruAssure Insurance Company": "TruAssure",
+    "UHC": "UHC",
+    "UMR": "UMR",
+    "US Health Group": "US Health Group",
+    "United Concordia": "UCCI",
+    "Unum": "Unum",
+    "WilsonMcShane Corporation": "WilsonMcShane Corporation",
 }
+
 
 def clean_insurance_name(name):
     """Remove spaces and special characters from the beginning and end of insurance name"""
     if not name or pd.isna(name):
         return name
-    
+
     name_str = str(name)
     # Remove spaces and special characters from start and end
     # Special characters: - . , ; : | / \ _ ( ) [ ] { } * # @ $ % ^ & + = ~ ` ' " < > ?
-    name_str = re.sub(r'^[\s\-.,;:|/\\_()\[\]{}*#@$%^&+=\~`\'"<>?]+', '', name_str)
-    name_str = re.sub(r'[\s\-.,;:|/\\_()\[\]{}*#@$%^&+=\~`\'"<>?]+$', '', name_str)
+    name_str = re.sub(r'^[\s\-.,;:|/\\_()\[\]{}*#@$%^&+=\~`\'"<>?]+', "", name_str)
+    name_str = re.sub(r'[\s\-.,;:|/\\_()\[\]{}*#@$%^&+=\~`\'"<>?]+$', "", name_str)
     return name_str.strip()
+
 
 def load_insurance_name_mapping():
     """Load insurance name mapping from Insurance Uniform Name.xlsx file and CORRECTED_LIST_MAPPINGS dictionary"""
     global _insurance_name_mapping, _insurance_name_mapping_loaded
-    
+
     if _insurance_name_mapping_loaded:
         return _insurance_name_mapping
-    
+
     _insurance_name_mapping = {}
     total_mappings = 0
-    
+
     # Load from Insurance Uniform Name.xlsx
-    mapping_file1 = 'Insurance Uniform Name.xlsx'
+    mapping_file1 = "Insurance Uniform Name.xlsx"
     try:
         if os.path.exists(mapping_file1):
             df = pd.read_excel(mapping_file1)
@@ -4041,27 +4128,33 @@ def load_insurance_name_mapping():
             # Create mapping dictionary: original name -> uniform name
             # Handle case-insensitive matching by storing both original and lowercase keys
             for _, row in df.iterrows():
-                original = str(row['Insurance']).strip() if pd.notna(row['Insurance']) else ''
-                uniform = str(row['Insurance New']).strip() if pd.notna(row['Insurance New']) else ''
-                
+                original = (
+                    str(row["Insurance"]).strip() if pd.notna(row["Insurance"]) else ""
+                )
+                uniform = (
+                    str(row["Insurance New"]).strip()
+                    if pd.notna(row["Insurance New"])
+                    else ""
+                )
+
                 if original and uniform:
                     # Clean both original and formatted names
                     original = clean_insurance_name(original)
                     uniform = clean_insurance_name(uniform)
-                    
+
                     if original and uniform:
                         # Store with original case
                         _insurance_name_mapping[original] = uniform
                         # Also store with lowercase for case-insensitive lookup
                         _insurance_name_mapping[original.lower()] = uniform
                         count += 1
-            
+
             total_mappings += count
         else:
             pass
     except Exception as e:
         pass
-    
+
     # Load from CORRECTED_LIST_MAPPINGS dictionary (stored directly in code)
     try:
         count = 0
@@ -4069,58 +4162,59 @@ def load_insurance_name_mapping():
             # Clean both original and formatted names
             original_clean = clean_insurance_name(original)
             formatted_clean = clean_insurance_name(formatted)
-            
+
             if original_clean and formatted_clean:
                 # Store with original case
                 _insurance_name_mapping[original_clean] = formatted_clean
                 # Also store with lowercase for case-insensitive lookup
                 _insurance_name_mapping[original_clean.lower()] = formatted_clean
                 count += 1
-        
+
         total_mappings += count
     except Exception as e:
         pass
-    
+
     if total_mappings > 0:
         pass
     else:
         pass
-    
+
     _insurance_name_mapping_loaded = True
     return _insurance_name_mapping
+
 
 def format_insurance_company_name(insurance_text):
     """Format insurance company name for better allocation matching - uses Insurance Uniform Name.xlsx mapping first"""
     global _formatted_insurance_names, _formatted_insurance_details
-    
+
     if pd.isna(insurance_text):
         return insurance_text
-    
+
     insurance_str = clean_insurance_name(insurance_text)
     if not insurance_str:
         return insurance_text  # Return original if cleaning results in empty
-    
+
     original_name = insurance_str  # Keep original for tracking
     matched_from_mapping = False  # Track if matched from mapping file
-    
+
     # Ensure insurance_str is a string
     if not isinstance(insurance_str, str):
-        insurance_str = str(insurance_str) if insurance_str is not None else ''
-    
+        insurance_str = str(insurance_str) if insurance_str is not None else ""
+
     # Handle special cases first (after cleaning)
-    if insurance_str.upper() == 'NO INSURANCE':
-        formatted = clean_insurance_name('No Insurance')
-    elif insurance_str.upper() == 'PATIENT NOT FOUND':
-        formatted = clean_insurance_name('PATIENT NOT FOUND')
-    elif insurance_str.upper() == 'DUPLICATE':
-        formatted = clean_insurance_name('DUPLICATE')
-    elif insurance_str.upper() == 'UNKNOWN':
-        formatted = clean_insurance_name('Unknown')
+    if insurance_str.upper() == "NO INSURANCE":
+        formatted = clean_insurance_name("No Insurance")
+    elif insurance_str.upper() == "PATIENT NOT FOUND":
+        formatted = clean_insurance_name("PATIENT NOT FOUND")
+    elif insurance_str.upper() == "DUPLICATE":
+        formatted = clean_insurance_name("DUPLICATE")
+    elif insurance_str.upper() == "UNKNOWN":
+        formatted = clean_insurance_name("Unknown")
     else:
         # Load insurance name mapping (will only load once)
         mapping = load_insurance_name_mapping()
         formatted = None
-        
+
         # Try exact match first (with original text)
         if insurance_str in mapping:
             formatted = clean_insurance_name(str(mapping[insurance_str]))
@@ -4129,107 +4223,172 @@ def format_insurance_company_name(insurance_text):
             # Extract company name before "Ph#" or phone numbers for matching
             if "Ph#" in insurance_str:
                 company_name = insurance_str.split("Ph#")[0]
-            elif re.search(r'Ph#:?-?\s*\(?\d{3}', insurance_str):
+            elif re.search(r"Ph#:?-?\s*\(?\d{3}", insurance_str):
                 # Handle various phone number patterns
-                company_name = re.split(r'Ph#:?-?\s*\(?\d', insurance_str)[0]
+                company_name = re.split(r"Ph#:?-?\s*\(?\d", insurance_str)[0]
             else:
                 company_name = insurance_str
-            
+
             # Clean the company name
             company_name = clean_insurance_name(company_name)
-            
+
             # Try matching with cleaned company name
             if company_name and company_name in mapping:
                 formatted = clean_insurance_name(str(mapping[company_name]))
                 matched_from_mapping = True
             elif company_name:
-                company_name_str = str(company_name) if not isinstance(company_name, str) else company_name
+                company_name_str = (
+                    str(company_name)
+                    if not isinstance(company_name, str)
+                    else company_name
+                )
                 if company_name_str.lower() in mapping:
-                    formatted = clean_insurance_name(str(mapping[company_name_str.lower()]))
+                    formatted = clean_insurance_name(
+                        str(mapping[company_name_str.lower()])
+                    )
                     matched_from_mapping = True
-            
+
             # Try matching original string (lowercase) as fallback
             if not formatted:
-                insurance_str_safe = str(insurance_str) if not isinstance(insurance_str, str) else insurance_str
+                insurance_str_safe = (
+                    str(insurance_str)
+                    if not isinstance(insurance_str, str)
+                    else insurance_str
+                )
                 if insurance_str_safe.lower() in mapping:
-                    formatted = clean_insurance_name(str(mapping[insurance_str_safe.lower()]))
+                    formatted = clean_insurance_name(
+                        str(mapping[insurance_str_safe.lower()])
+                    )
                     matched_from_mapping = True
-            
+
             # Remove "Primary" and "Secondary" text
             if not formatted and company_name:
-                company_name = re.sub(r'\s*\(Primary\)', '', company_name, flags=re.IGNORECASE)
-                company_name = re.sub(r'\s*\(Secondary\)', '', company_name, flags=re.IGNORECASE)
-                company_name = re.sub(r'\s*Primary', '', company_name, flags=re.IGNORECASE)
-                company_name = re.sub(r'\s*Secondary', '', company_name, flags=re.IGNORECASE)
+                company_name = re.sub(
+                    r"\s*\(Primary\)", "", company_name, flags=re.IGNORECASE
+                )
+                company_name = re.sub(
+                    r"\s*\(Secondary\)", "", company_name, flags=re.IGNORECASE
+                )
+                company_name = re.sub(
+                    r"\s*Primary", "", company_name, flags=re.IGNORECASE
+                )
+                company_name = re.sub(
+                    r"\s*Secondary", "", company_name, flags=re.IGNORECASE
+                )
                 company_name = clean_insurance_name(company_name)
-                
+
                 # Try matching again after removing Primary/Secondary
                 if company_name and company_name in mapping:
                     formatted = clean_insurance_name(str(mapping[company_name]))
                     matched_from_mapping = True
                 elif company_name:
-                    company_name_str = str(company_name) if not isinstance(company_name, str) else company_name
+                    company_name_str = (
+                        str(company_name)
+                        if not isinstance(company_name, str)
+                        else company_name
+                    )
                     if company_name_str.lower() in mapping:
-                        formatted = clean_insurance_name(str(mapping[company_name_str.lower()]))
+                        formatted = clean_insurance_name(
+                            str(mapping[company_name_str.lower()])
+                        )
                         matched_from_mapping = True
-        
+
         # If no match found in mapping, use fallback logic (existing code continues below)
         if not formatted:
             formatted = None  # Will be set by fallback logic
-    
+
     # Continue with fallback logic if no mapping match found
     if not formatted:
         # Use existing fallback formatting logic
         # State abbreviations mapping
         STATE_ABBREVIATIONS = {
-            'AL': 'Alabama', 'AK': 'Alaska', 'AR': 'Arkansas', 'AZ': 'Arizona',
-            'CA': 'California', 'CL': 'California', 'CO': 'Colorado', 'CT': 'Connecticut', 'DE': 'Delaware',
-            'DC': 'District of Columbia', 'FL': 'Florida', 'GA': 'Georgia', 'HI': 'Hawaii',
-            'ID': 'Idaho', 'IL': 'Illinois', 'IN': 'Indiana', 'IA': 'Iowa',
-            'KS': 'Kansas', 'KY': 'Kentucky', 'LA': 'Louisiana', 'ME': 'Maine',
-            'MD': 'Maryland', 'MA': 'Massachusetts', 'MI': 'Michigan', 'MN': 'Minnesota',
-            'MS': 'Mississippi', 'MO': 'Missouri', 'MT': 'Montana', 'NE': 'Nebraska',
-            'NV': 'Nevada', 'NH': 'New Hampshire', 'NJ': 'New Jersey', 'NM': 'New Mexico',
-            'NY': 'New York', 'NC': 'North Carolina', 'ND': 'North Dakota', 'OH': 'Ohio',
-            'OK': 'Oklahoma', 'OR': 'Oregon', 'PA': 'Pennsylvania', 'RI': 'Rhode Island',
-            'SC': 'South Carolina', 'SD': 'South Dakota', 'TN': 'Tennessee', 'TX': 'Texas',
-            'UT': 'Utah', 'VT': 'Vermont', 'VA': 'Virginia', 'WA': 'Washington',
-            'WV': 'West Virginia', 'WI': 'Wisconsin', 'WY': 'Wyoming'
+            "AL": "Alabama",
+            "AK": "Alaska",
+            "AR": "Arkansas",
+            "AZ": "Arizona",
+            "CA": "California",
+            "CL": "California",
+            "CO": "Colorado",
+            "CT": "Connecticut",
+            "DE": "Delaware",
+            "DC": "District of Columbia",
+            "FL": "Florida",
+            "GA": "Georgia",
+            "HI": "Hawaii",
+            "ID": "Idaho",
+            "IL": "Illinois",
+            "IN": "Indiana",
+            "IA": "Iowa",
+            "KS": "Kansas",
+            "KY": "Kentucky",
+            "LA": "Louisiana",
+            "ME": "Maine",
+            "MD": "Maryland",
+            "MA": "Massachusetts",
+            "MI": "Michigan",
+            "MN": "Minnesota",
+            "MS": "Mississippi",
+            "MO": "Missouri",
+            "MT": "Montana",
+            "NE": "Nebraska",
+            "NV": "Nevada",
+            "NH": "New Hampshire",
+            "NJ": "New Jersey",
+            "NM": "New Mexico",
+            "NY": "New York",
+            "NC": "North Carolina",
+            "ND": "North Dakota",
+            "OH": "Ohio",
+            "OK": "Oklahoma",
+            "OR": "Oregon",
+            "PA": "Pennsylvania",
+            "RI": "Rhode Island",
+            "SC": "South Carolina",
+            "SD": "South Dakota",
+            "TN": "Tennessee",
+            "TX": "Texas",
+            "UT": "Utah",
+            "VT": "Vermont",
+            "VA": "Virginia",
+            "WA": "Washington",
+            "WV": "West Virginia",
+            "WI": "Wisconsin",
+            "WY": "Wyoming",
         }
-        
+
         # Common state name typos and variations
         STATE_TYPO_CORRECTIONS = {
-            'californi': 'California',  # Missing last letter
-            'californa': 'California',  # Common typo
-            'californai': 'California',  # Letter order typo
-            'colarado': 'Colorado',  # Missing 'o' typo
-            'minnesotta': 'Minnesota',  # Extra 't' typo
+            "californi": "California",  # Missing last letter
+            "californa": "California",  # Common typo
+            "californai": "California",  # Letter order typo
+            "colarado": "Colorado",  # Missing 'o' typo
+            "minnesotta": "Minnesota",  # Extra 't' typo
         }
-        
+
         def expand_state_abbreviations(text):
             """Expand state abbreviations to full state names"""
             for abbr, full_name in STATE_ABBREVIATIONS.items():
-                pattern = r'\b' + re.escape(abbr) + r'\b'
+                pattern = r"\b" + re.escape(abbr) + r"\b"
                 text = re.sub(pattern, full_name, text, flags=re.IGNORECASE)
             return text
-        
+
         def correct_state_typos(text):
             """Correct common state name typos"""
             if not text:
                 return text
-            
+
             # Replace any occurrence of typo words with correct spelling (case-insensitive)
             for typo, correct in STATE_TYPO_CORRECTIONS.items():
-                pattern = r'\b' + re.escape(typo) + r'\b'
+                pattern = r"\b" + re.escape(typo) + r"\b"
                 text = re.sub(pattern, correct, text, flags=re.IGNORECASE)
-            
+
             return text
-        
+
         def format_state_name(state_text):
             """Format state name: first letter capital, rest lowercase (handles all caps, mixed case, etc.)"""
             if not state_text:
                 return state_text
-            
+
             # Handle multi-word state names (e.g., "NEW YORK" -> "New York", "NORTH CAROLINA" -> "North Carolina")
             words = state_text.split()
             formatted_words = []
@@ -4249,119 +4408,178 @@ def format_insurance_company_name(insurance_text):
                 else:
                     # Mixed case or other, convert to title case
                     formatted_words.append(word.capitalize())
-            
-            return ' '.join(formatted_words)
-        
+
+            return " ".join(formatted_words)
+
         # Handle Delta Dental variations - normalize to "DD {state}" format
-        if re.search(r'\bDD\b', company_name, re.IGNORECASE):
+        if re.search(r"\bDD\b", company_name, re.IGNORECASE):
             # Handle existing "DD" patterns like "DD California", "DD of California", "DD CA", "DD PLAN OF Wisconsin"
-            dd_match = re.search(r'\bDD\b\s+(?:plan\s+of\s+|of\s+)?(.+)', company_name, re.IGNORECASE)
+            dd_match = re.search(
+                r"\bDD\b\s+(?:plan\s+of\s+|of\s+)?(.+)", company_name, re.IGNORECASE
+            )
             if dd_match:
                 state = clean_insurance_name(dd_match.group(1))
                 # Remove "PLAN OF" if it appears in the state text
-                state = re.sub(r'\bplan\s+of\s+', '', state, flags=re.IGNORECASE)
+                state = re.sub(r"\bplan\s+of\s+", "", state, flags=re.IGNORECASE)
                 # Remove common suffixes
-                state = re.sub(r'\s*\(.*?\)', '', state)
+                state = re.sub(r"\s*\(.*?\)", "", state)
                 # Remove trailing periods, pipes, and other special characters
-                state = re.sub(r'[|.]+\s*$', '', state)
+                state = re.sub(r"[|.]+\s*$", "", state)
                 state = correct_state_typos(state)
                 state = expand_state_abbreviations(state)
                 state = format_state_name(state)
                 formatted = clean_insurance_name(f"DD {state}")
             else:
                 formatted = clean_insurance_name("DD")
-        elif re.search(r'delta\s+dental', company_name, re.IGNORECASE):
+        elif re.search(r"delta\s+dental", company_name, re.IGNORECASE):
             # Handle "Delta Dental" variations
-            delta_match = re.search(r'delta\s+dental\s+(?:of\s+)?(.+)', company_name, re.IGNORECASE)
+            delta_match = re.search(
+                r"delta\s+dental\s+(?:of\s+)?(.+)", company_name, re.IGNORECASE
+            )
             if delta_match:
                 state = clean_insurance_name(delta_match.group(1))
                 # Remove "PLAN OF" if it appears in the state text
-                state = re.sub(r'\bplan\s+of\s+', '', state, flags=re.IGNORECASE)
+                state = re.sub(r"\bplan\s+of\s+", "", state, flags=re.IGNORECASE)
                 # Remove common suffixes
-                state = re.sub(r'\s*\(.*?\)', '', state)
+                state = re.sub(r"\s*\(.*?\)", "", state)
                 # Remove trailing periods, pipes, and other special characters
-                state = re.sub(r'[|.]+\s*$', '', state)
+                state = re.sub(r"[|.]+\s*$", "", state)
                 state = correct_state_typos(state)
                 state = expand_state_abbreviations(state)
                 state = format_state_name(state)
                 formatted = clean_insurance_name(f"DD {state}")
             else:
                 formatted = clean_insurance_name("DD")
-        
+
         # Handle Anthem variations FIRST (before BCBS to avoid conflicts)
-        elif re.search(r'anthem|blue\s+cross.*anthem|anthem.*blue\s+cross', company_name, re.IGNORECASE):
+        elif re.search(
+            r"anthem|blue\s+cross.*anthem|anthem.*blue\s+cross",
+            company_name,
+            re.IGNORECASE,
+        ):
             formatted = clean_insurance_name("Anthem")
-        
+
         # Handle BCBS variations (including BC/BS with slash)
-        elif re.search(r'bc\s*/\s*bs|bcbs|bc\s+of|blue\s+cross|blue\s+shield|bcbbs', company_name, re.IGNORECASE):
+        elif re.search(
+            r"bc\s*/\s*bs|bcbs|bc\s+of|blue\s+cross|blue\s+shield|bcbbs",
+            company_name,
+            re.IGNORECASE,
+        ):
             # Check for "BCBS / BLUE SHEILD", "BCBS Blue Shiel", "BCBS Blue Shield" -> just "BCBS"
             # Handles: "shiel" (without 'd'), "shield" (correct spelling), "sheild" (misspelling)
-            if (re.search(r'bcbs\s*/\s*blue\s+(shiel|shield|sheild)', company_name, re.IGNORECASE) or
-                re.search(r'bcbs\s+blue\s+(shiel|shield|sheild)', company_name, re.IGNORECASE)):
+            if re.search(
+                r"bcbs\s*/\s*blue\s+(shiel|shield|sheild)", company_name, re.IGNORECASE
+            ) or re.search(
+                r"bcbs\s+blue\s+(shiel|shield|sheild)", company_name, re.IGNORECASE
+            ):
                 formatted = clean_insurance_name("BCBS")
             # Handle BCBBS typo
-            elif re.search(r'bcbbs', company_name, re.IGNORECASE):
+            elif re.search(r"bcbbs", company_name, re.IGNORECASE):
                 formatted = clean_insurance_name("BCBS")
             # Check for full "Blue Cross Blue Shield" pattern first
-            elif re.search(r'blue\s+cross\s+blue\s+shield', company_name, re.IGNORECASE):
-                bcbs_match = re.search(r'blue\s+cross\s+blue\s+shield\s+(?:of\s+)?(.+)', company_name, re.IGNORECASE)
+            elif re.search(
+                r"blue\s+cross\s+blue\s+shield", company_name, re.IGNORECASE
+            ):
+                bcbs_match = re.search(
+                    r"blue\s+cross\s+blue\s+shield\s+(?:of\s+)?(.+)",
+                    company_name,
+                    re.IGNORECASE,
+                )
                 if bcbs_match:
                     state = bcbs_match.group(1)
                     # Remove trailing dashes and extra text like "- federal", "- Federal", etc.
-                    state = re.sub(r'\s*-\s*(federal|Federal|FEDERAL).*$', '', state, flags=re.IGNORECASE)
+                    state = re.sub(
+                        r"\s*-\s*(federal|Federal|FEDERAL).*$",
+                        "",
+                        state,
+                        flags=re.IGNORECASE,
+                    )
                     # Remove common suffixes in parentheses
-                    state = re.sub(r'\s*\(.*?\)', '', state)
+                    state = re.sub(r"\s*\(.*?\)", "", state)
                     state = clean_insurance_name(state)
-                    state = re.sub(r'[|.]+\s*$', '', state)
+                    state = re.sub(r"[|.]+\s*$", "", state)
                     state = correct_state_typos(state)
                     state = expand_state_abbreviations(state)
                     state = format_state_name(state)
-                    formatted = clean_insurance_name(f"BCBS {state}") if state else clean_insurance_name("BCBS")
+                    formatted = (
+                        clean_insurance_name(f"BCBS {state}")
+                        if state
+                        else clean_insurance_name("BCBS")
+                    )
                 else:
                     formatted = clean_insurance_name("BCBS")
             # Handle BC/BS patterns
-            elif re.search(r'bc/bs', company_name, re.IGNORECASE):
-                bcbs_match = re.search(r'bc/bs\s+(?:of\s+)?(.+)', company_name, re.IGNORECASE)
+            elif re.search(r"bc/bs", company_name, re.IGNORECASE):
+                bcbs_match = re.search(
+                    r"bc/bs\s+(?:of\s+)?(.+)", company_name, re.IGNORECASE
+                )
                 if bcbs_match:
                     state = bcbs_match.group(1)
-                    state = re.sub(r'\s*-\s*(federal|Federal|FEDERAL).*$', '', state, flags=re.IGNORECASE)
-                    state = re.sub(r'\s*\(.*?\)', '', state)
+                    state = re.sub(
+                        r"\s*-\s*(federal|Federal|FEDERAL).*$",
+                        "",
+                        state,
+                        flags=re.IGNORECASE,
+                    )
+                    state = re.sub(r"\s*\(.*?\)", "", state)
                     state = clean_insurance_name(state)
-                    state = re.sub(r'[|.]+\s*$', '', state)
+                    state = re.sub(r"[|.]+\s*$", "", state)
                     state = correct_state_typos(state)
                     state = expand_state_abbreviations(state)
                     state = format_state_name(state)
-                    formatted = clean_insurance_name(f"BCBS {state}") if state else clean_insurance_name("BCBS")
+                    formatted = (
+                        clean_insurance_name(f"BCBS {state}")
+                        if state
+                        else clean_insurance_name("BCBS")
+                    )
                 else:
                     formatted = clean_insurance_name("BCBS")
             # Handle BC Of patterns
-            elif re.search(r'bc\s+of', company_name, re.IGNORECASE):
-                bcbs_match = re.search(r'bc\s+of\s+(.+)', company_name, re.IGNORECASE)
+            elif re.search(r"bc\s+of", company_name, re.IGNORECASE):
+                bcbs_match = re.search(r"bc\s+of\s+(.+)", company_name, re.IGNORECASE)
                 if bcbs_match:
                     state = bcbs_match.group(1)
-                    state = re.sub(r'\s*-\s*(federal|Federal|FEDERAL).*$', '', state, flags=re.IGNORECASE)
-                    state = re.sub(r'\s*\(.*?\)', '', state)
+                    state = re.sub(
+                        r"\s*-\s*(federal|Federal|FEDERAL).*$",
+                        "",
+                        state,
+                        flags=re.IGNORECASE,
+                    )
+                    state = re.sub(r"\s*\(.*?\)", "", state)
                     state = clean_insurance_name(state)
-                    state = re.sub(r'[|.]+\s*$', '', state)
+                    state = re.sub(r"[|.]+\s*$", "", state)
                     state = correct_state_typos(state)
                     state = expand_state_abbreviations(state)
                     state = format_state_name(state)
-                    formatted = clean_insurance_name(f"BCBS {state}") if state else clean_insurance_name("BCBS")
+                    formatted = (
+                        clean_insurance_name(f"BCBS {state}")
+                        if state
+                        else clean_insurance_name("BCBS")
+                    )
                 else:
                     formatted = clean_insurance_name("BCBS")
             # Handle other BCBS patterns
             else:
-                bcbs_match = re.search(r'(?:bcbs|blue\s+cross|blue\s+shield)\s+(?:of\s+)?(.+)', company_name, re.IGNORECASE)
+                bcbs_match = re.search(
+                    r"(?:bcbs|blue\s+cross|blue\s+shield)\s+(?:of\s+)?(.+)",
+                    company_name,
+                    re.IGNORECASE,
+                )
                 if bcbs_match:
                     state = bcbs_match.group(1)
                     # Remove trailing dashes and extra text like "- federal", "- Federal", etc.
-                    state = re.sub(r'\s*-\s*(federal|Federal|FEDERAL).*$', '', state, flags=re.IGNORECASE)
+                    state = re.sub(
+                        r"\s*-\s*(federal|Federal|FEDERAL).*$",
+                        "",
+                        state,
+                        flags=re.IGNORECASE,
+                    )
                     # Remove common suffixes in parentheses
-                    state = re.sub(r'\s*\(.*?\)', '', state)
+                    state = re.sub(r"\s*\(.*?\)", "", state)
                     # Remove trailing dashes and special characters
                     state = clean_insurance_name(state)
                     # Remove trailing periods, pipes, and other special characters
-                    state = re.sub(r'[|.]+\s*$', '', state)
+                    state = re.sub(r"[|.]+\s*$", "", state)
                     state = correct_state_typos(state)
                     state = expand_state_abbreviations(state)
                     state = format_state_name(state)
@@ -4371,87 +4589,99 @@ def format_insurance_company_name(insurance_text):
                         formatted = clean_insurance_name("BCBS")
                 else:
                     formatted = clean_insurance_name("BCBS")
-        
+
         # Handle other specific companies
-        elif re.search(r'metlife|met\s+life', company_name, re.IGNORECASE):
+        elif re.search(r"metlife|met\s+life", company_name, re.IGNORECASE):
             formatted = clean_insurance_name("Metlife")
-        elif re.search(r'cigna', company_name, re.IGNORECASE):
+        elif re.search(r"cigna", company_name, re.IGNORECASE):
             formatted = clean_insurance_name("Cigna")
-        elif re.search(r'aarp', company_name, re.IGNORECASE):
+        elif re.search(r"aarp", company_name, re.IGNORECASE):
             formatted = clean_insurance_name("AARP")
-        elif re.search(r'uhc|united\s*healthcare|united\s*health\s*care', company_name, re.IGNORECASE):
+        elif re.search(
+            r"uhc|united\s*healthcare|united\s*health\s*care",
+            company_name,
+            re.IGNORECASE,
+        ):
             formatted = clean_insurance_name("UHC")
-        elif re.search(r'teamcare', company_name, re.IGNORECASE):
+        elif re.search(r"teamcare", company_name, re.IGNORECASE):
             formatted = clean_insurance_name("Teamcare")
-        elif re.search(r'humana', company_name, re.IGNORECASE):
+        elif re.search(r"humana", company_name, re.IGNORECASE):
             formatted = clean_insurance_name("Humana")
-        elif re.search(r'aetna', company_name, re.IGNORECASE):
+        elif re.search(r"aetna", company_name, re.IGNORECASE):
             formatted = clean_insurance_name("Aetna")
-        elif re.search(r'guardian', company_name, re.IGNORECASE):
+        elif re.search(r"guardian", company_name, re.IGNORECASE):
             formatted = clean_insurance_name("Guardian")
-        elif re.search(r'g\s*e\s*h\s*a', company_name, re.IGNORECASE):
+        elif re.search(r"g\s*e\s*h\s*a", company_name, re.IGNORECASE):
             formatted = clean_insurance_name("GEHA")
-        elif re.search(r'principal', company_name, re.IGNORECASE):
+        elif re.search(r"principal", company_name, re.IGNORECASE):
             formatted = clean_insurance_name("Principal")
-        elif re.search(r'ameritas', company_name, re.IGNORECASE):
+        elif re.search(r"ameritas", company_name, re.IGNORECASE):
             formatted = clean_insurance_name("Ameritas")
-        elif re.search(r'physicians\s+mutual', company_name, re.IGNORECASE):
+        elif re.search(r"physicians\s+mutual", company_name, re.IGNORECASE):
             formatted = clean_insurance_name("Physicians Mutual")
-        elif re.search(r'mutual\s+of\s+omaha', company_name, re.IGNORECASE):
+        elif re.search(r"mutual\s+of\s+omaha", company_name, re.IGNORECASE):
             formatted = clean_insurance_name("Mutual Omaha")
-        elif re.search(r'sunlife|sun\s+life', company_name, re.IGNORECASE):
+        elif re.search(r"sunlife|sun\s+life", company_name, re.IGNORECASE):
             formatted = clean_insurance_name("Sunlife")
-        elif re.search(r'careington', company_name, re.IGNORECASE):
+        elif re.search(r"careington", company_name, re.IGNORECASE):
             formatted = clean_insurance_name("Careington Benefit Solutions")
-        elif re.search(r'automated\s+benefit', company_name, re.IGNORECASE):
+        elif re.search(r"automated\s+benefit", company_name, re.IGNORECASE):
             formatted = clean_insurance_name("Automated Benefit Services Inc")
-        elif re.search(r'regence', company_name, re.IGNORECASE):
+        elif re.search(r"regence", company_name, re.IGNORECASE):
             formatted = clean_insurance_name("REGENCE BCBS")
-        elif re.search(r'united\s+concordia', company_name, re.IGNORECASE):
+        elif re.search(r"united\s+concordia", company_name, re.IGNORECASE):
             formatted = clean_insurance_name("United Concordia")
-        elif re.search(r'medical\s+mutual', company_name, re.IGNORECASE):
+        elif re.search(r"medical\s+mutual", company_name, re.IGNORECASE):
             formatted = clean_insurance_name("Medical Mutual")
-        elif re.search(r'unum', company_name, re.IGNORECASE):
+        elif re.search(r"unum", company_name, re.IGNORECASE):
             formatted = clean_insurance_name("Unum")
-        elif re.search(r'wilson\s+mcshane', company_name, re.IGNORECASE):
+        elif re.search(r"wilson\s+mcshane", company_name, re.IGNORECASE):
             formatted = clean_insurance_name("Wilson McShane- Delta Dental")
-        elif re.search(r'dentaquest', company_name, re.IGNORECASE):
+        elif re.search(r"dentaquest", company_name, re.IGNORECASE):
             formatted = clean_insurance_name("Dentaquest")
-        elif re.search(r'umr', company_name, re.IGNORECASE):
+        elif re.search(r"umr", company_name, re.IGNORECASE):
             formatted = clean_insurance_name("UMR")
-        elif re.search(r'adn\s+administrators', company_name, re.IGNORECASE):
+        elif re.search(r"adn\s+administrators", company_name, re.IGNORECASE):
             formatted = clean_insurance_name("ADN Administrators")
-        elif re.search(r'beam', company_name, re.IGNORECASE):
+        elif re.search(r"beam", company_name, re.IGNORECASE):
             formatted = clean_insurance_name("Beam")
-        elif re.search(r'liberty(?:\s+dental)?', company_name, re.IGNORECASE):
+        elif re.search(r"liberty(?:\s+dental)?", company_name, re.IGNORECASE):
             formatted = clean_insurance_name("Liberty Dental Plan")
-        elif re.search(r'ucci', company_name, re.IGNORECASE):
+        elif re.search(r"ucci", company_name, re.IGNORECASE):
             formatted = clean_insurance_name("UCCI")
-        elif re.search(r'ccpoa|cc\s*poa|c\s+c\s+p\s+o\s+a', company_name, re.IGNORECASE):
+        elif re.search(
+            r"ccpoa|cc\s*poa|c\s+c\s+p\s+o\s+a", company_name, re.IGNORECASE
+        ):
             formatted = clean_insurance_name("CCPOA")
-        elif re.search(r'kansas\s+city', company_name, re.IGNORECASE):
+        elif re.search(r"kansas\s+city", company_name, re.IGNORECASE):
             formatted = clean_insurance_name("Kansas City")
-        elif re.search(r'the\s+guardian', company_name, re.IGNORECASE):
+        elif re.search(r"the\s+guardian", company_name, re.IGNORECASE):
             formatted = clean_insurance_name("The Guardian")
-        elif re.search(r'community\s+dental', company_name, re.IGNORECASE):
+        elif re.search(r"community\s+dental", company_name, re.IGNORECASE):
             formatted = clean_insurance_name("Community Dental Associates")
-        elif re.search(r'northeast\s+delta\s+dental', company_name, re.IGNORECASE):
+        elif re.search(r"northeast\s+delta\s+dental", company_name, re.IGNORECASE):
             formatted = clean_insurance_name("Northeast Delta Dental")
-        elif re.search(r'equitable', company_name, re.IGNORECASE):
+        elif re.search(r"equitable", company_name, re.IGNORECASE):
             formatted = clean_insurance_name("Equitable")
-        elif re.search(r'manhattan\s+life', company_name, re.IGNORECASE):
+        elif re.search(r"manhattan\s+life", company_name, re.IGNORECASE):
             formatted = clean_insurance_name("Manhattan Life")
-        elif re.search(r'standard\s+(?:life\s+)?insurance', company_name, re.IGNORECASE):
+        elif re.search(
+            r"standard\s+(?:life\s+)?insurance", company_name, re.IGNORECASE
+        ):
             formatted = clean_insurance_name("Standard Life Insurance")
-        elif re.search(r'keenan', company_name, re.IGNORECASE):
+        elif re.search(r"keenan", company_name, re.IGNORECASE):
             formatted = clean_insurance_name("Keenan")
-        elif re.search(r'plan\s+for\s+health', company_name, re.IGNORECASE):
+        elif re.search(r"plan\s+for\s+health", company_name, re.IGNORECASE):
             formatted = clean_insurance_name("Plan for Health")
-        elif re.search(r'conversion\s+default', company_name, re.IGNORECASE):
-            formatted = clean_insurance_name("CONVERSION DEFAULT - Do NOT Delete! Change Pt Ins!")
-        elif re.search(r'health\s*partners', company_name, re.IGNORECASE):
+        elif re.search(r"conversion\s+default", company_name, re.IGNORECASE):
+            formatted = clean_insurance_name(
+                "CONVERSION DEFAULT - Do NOT Delete! Change Pt Ins!"
+            )
+        elif re.search(r"health\s*partners", company_name, re.IGNORECASE):
             # Check if it has "of [State]" pattern
-            hp_match = re.search(r'health\s*partners\s+of\s+(.+)', company_name, re.IGNORECASE)
+            hp_match = re.search(
+                r"health\s*partners\s+of\s+(.+)", company_name, re.IGNORECASE
+            )
             if hp_match:
                 state = hp_match.group(1).strip()
                 state = clean_insurance_name(state)
@@ -4459,74 +4689,79 @@ def format_insurance_company_name(insurance_text):
                 formatted = clean_insurance_name(f"Health Partners {state}")
             else:
                 formatted = clean_insurance_name("Health Partners")
-        elif re.search(r'network\s+health', company_name, re.IGNORECASE):
+        elif re.search(r"network\s+health", company_name, re.IGNORECASE):
             # Check if it has "Wisconsin" in the name
-            if re.search(r'wisconsin', company_name, re.IGNORECASE):
+            if re.search(r"wisconsin", company_name, re.IGNORECASE):
                 formatted = clean_insurance_name("Network Health Wisconsin")
             else:
                 formatted = clean_insurance_name("Network Health Go")
         else:
             # If no specific pattern matches, return the cleaned company name
-            formatted = clean_insurance_name(company_name) if company_name else company_name
-    
+            formatted = (
+                clean_insurance_name(company_name) if company_name else company_name
+            )
+
     # Track formatted names (only if different from original)
     if formatted and formatted != original_name:
         if original_name not in _formatted_insurance_names:
             _formatted_insurance_names.add(original_name)
-            _formatted_insurance_details.append({
-                'original': original_name,
-                'formatted': formatted,
-                'from_mapping': matched_from_mapping
-            })
-    
+            _formatted_insurance_details.append(
+                {
+                    "original": original_name,
+                    "formatted": formatted,
+                    "from_mapping": matched_from_mapping,
+                }
+            )
+
     # Ensure final output is cleaned (remove any spaces/special chars before/after)
     return clean_insurance_name(formatted) if formatted else formatted
+
 
 def print_formatted_insurance_companies():
     """Print list of all formatted insurance companies to console"""
     global _formatted_insurance_details
-    
+
     if not _formatted_insurance_details:
         return
-    
-    
+
     # Group by source (mapping vs fallback)
-    from_mapping = [d for d in _formatted_insurance_details if d['from_mapping']]
-    from_fallback = [d for d in _formatted_insurance_details if not d['from_mapping']]
-    
+    from_mapping = [d for d in _formatted_insurance_details if d["from_mapping"]]
+    from_fallback = [d for d in _formatted_insurance_details if not d["from_mapping"]]
+
     if from_mapping:
         for i, detail in enumerate(from_mapping, 1):
             pass
-    
+
     if from_fallback:
         for i, detail in enumerate(from_fallback, 1):
             pass
-    
+
 
 # DD INS group mapping - these companies should be treated as part of "DD INS" or "INS" group
 DD_INS_GROUP = [
-    'DD California',
-    'DD Florida',
-    'DD Texas',
-    'DD Pennsylvania',
-    'DD New York',
-    'DD Alabama',
-    'DD Georgia',
-    'DD Delaware'
+    "DD California",
+    "DD Florida",
+    "DD Texas",
+    "DD Pennsylvania",
+    "DD New York",
+    "DD Alabama",
+    "DD Georgia",
+    "DD Delaware",
 ]
 
 # DD Toolkit group mapping - these companies should be treated as part of "DD Toolkit", "DD Toolkits", or "DD" group
 DD_TOOLKIT_GROUP = [
-    'DD New Mexico',
-    'DD Ohio',
-    'DD Indiana',
-    'DD Michigan',  # Note: user mentioned "Michigen" but correct spelling is "Michigan"
-    'DD Minnesota',
-    'DD Tennessee',
-    'DD Arizona',
-    'DD North Carolina',
-    'DD California Federal'
+    "DD New Mexico",
+    "DD Ohio",
+    "DD Indiana",
+    "DD Michigan",  # Note: user mentioned "Michigen" but correct spelling is "Michigan"
+    "DD Minnesota",
+    "DD Tennessee",
+    "DD Arizona",
+    "DD North Carolina",
+    "DD California Federal",
 ]
+
 
 def expand_insurance_groups(insurance_list_str):
     """
@@ -4534,48 +4769,54 @@ def expand_insurance_groups(insurance_list_str):
     Handles:
     - "DD INS" or "INS" -> expands to DD_INS_GROUP companies
     - "DD Toolkit", "DD Toolkits", or "DD" (when used as group) -> expands to DD_TOOLKIT_GROUP companies
-    
+
     Args:
         insurance_list_str: String containing insurance companies separated by ; , or |
-    
+
     Returns:
         String with group names expanded to individual companies
     """
     if pd.isna(insurance_list_str) or not insurance_list_str:
         return insurance_list_str
-    
+
     # Ensure input is a string
     if not isinstance(insurance_list_str, str):
-        insurance_list_str = str(insurance_list_str) if insurance_list_str is not None else ''
-    
+        insurance_list_str = (
+            str(insurance_list_str) if insurance_list_str is not None else ""
+        )
+
     value_str = str(insurance_list_str)
     # Split by common delimiters and ensure each component is a string
-    companies = [str(comp).strip() for comp in re.split(r'[;,\|]', value_str) if comp and str(comp).strip()]
-    
+    companies = [
+        str(comp).strip()
+        for comp in re.split(r"[;,\|]", value_str)
+        if comp and str(comp).strip()
+    ]
+
     expanded_companies = []
     has_dd_ins = False
     has_ins = False
     has_dd_toolkit = False
     has_dd_toolkits = False
     has_dd_group = False
-    
+
     for comp in companies:
-        comp_str = str(comp) if comp is not None else ''
+        comp_str = str(comp) if comp is not None else ""
         comp_lower = comp_str.lower().strip()
-        
+
         # Check for "DD INS" or "INS" (case-insensitive)
-        if comp_lower == 'dd ins' or comp_lower == 'ins':
-            if 'dd' in comp_lower:
+        if comp_lower == "dd ins" or comp_lower == "ins":
+            if "dd" in comp_lower:
                 has_dd_ins = True
             else:
                 has_ins = True
             # Don't add the group name itself, we'll add the group companies
         # Check for "DD Toolkit", "DD Toolkits", or "DD" (as group name)
-        elif comp_lower == 'dd toolkit':
+        elif comp_lower == "dd toolkit":
             has_dd_toolkit = True
-        elif comp_lower == 'dd toolkits':
+        elif comp_lower == "dd toolkits":
             has_dd_toolkits = True
-        elif comp_lower == 'dd':
+        elif comp_lower == "dd":
             # "DD" can be a group name OR a standalone company name
             # We'll treat it as a group name if it appears alone or with other groups
             # To be safe, we'll check if there are other group keywords nearby
@@ -4583,78 +4824,102 @@ def expand_insurance_groups(insurance_list_str):
         else:
             # Keep other companies as-is
             expanded_companies.append(comp)
-    
+
     # Add all DD INS group companies if DD INS or INS was found
     if has_dd_ins or has_ins:
         for dd_ins_company in DD_INS_GROUP:
             # Check if company is already in the list (case-insensitive)
-            if not any(str(existing).lower() == str(dd_ins_company).lower() for existing in expanded_companies):
+            if not any(
+                str(existing).lower() == str(dd_ins_company).lower()
+                for existing in expanded_companies
+            ):
                 expanded_companies.append(dd_ins_company)
-        expansion_type = 'DD INS' if has_dd_ins else 'INS'
-    
+        expansion_type = "DD INS" if has_dd_ins else "INS"
+
     # Add all DD Toolkit group companies if DD Toolkit/Toolkits/DD was found
     if has_dd_toolkit or has_dd_toolkits or has_dd_group:
         for dd_toolkit_company in DD_TOOLKIT_GROUP:
             # Check if company is already in the list (case-insensitive)
-            if not any(str(existing).lower() == str(dd_toolkit_company).lower() for existing in expanded_companies):
+            if not any(
+                str(existing).lower() == str(dd_toolkit_company).lower()
+                for existing in expanded_companies
+            ):
                 expanded_companies.append(dd_toolkit_company)
-        expansion_type = 'DD Toolkit' if has_dd_toolkit else ('DD Toolkits' if has_dd_toolkits else 'DD')
-    
+        expansion_type = (
+            "DD Toolkit"
+            if has_dd_toolkit
+            else ("DD Toolkits" if has_dd_toolkits else "DD")
+        )
+
     # Join back with semicolon
-    return '; '.join(expanded_companies) if expanded_companies else insurance_list_str
+    return "; ".join(expanded_companies) if expanded_companies else insurance_list_str
+
 
 def format_insurance_column_in_dataframe(df, column_name):
     """Format insurance company names in a DataFrame column"""
     if column_name not in df.columns:
         return df
-    
+
     original_count = len(df[column_name].dropna())
-    
+
     # Apply formatting
     df[column_name] = df[column_name].apply(format_insurance_company_name)
-    
+
     formatted_count = len(df[column_name].dropna())
-    
+
     return df
 
-def detect_and_assign_new_insurance_companies(data_df, agent_data, insurance_carrier_col, insurance_working_col, agent_name_col=None):
+
+def detect_and_assign_new_insurance_companies(
+    data_df,
+    agent_data,
+    insurance_carrier_col,
+    insurance_working_col,
+    agent_name_col=None,
+):
     """Detect new insurance companies in data file and automatically assign them to senior agents"""
     try:
         if not insurance_carrier_col or not insurance_working_col:
             return agent_data, []
-        
+
         # Get all insurance companies from data file
         data_insurance_companies = set()
         for _, row in data_df.iterrows():
             if pd.notna(row[insurance_carrier_col]):
                 company = str(row[insurance_carrier_col]).strip()
-                if company and company.lower() != 'unknown':
+                if company and company.lower() != "unknown":
                     data_insurance_companies.add(company)
-        
+
         # Get all insurance companies currently assigned to agents
         agent_insurance_companies = set()
         for _, row in agent_data.iterrows():
             if pd.notna(row[insurance_working_col]):
                 companies_str = str(row[insurance_working_col])
-                companies = [comp.strip() for comp in companies_str.replace(',', ';').replace('|', ';').split(';') if comp.strip()]
+                companies = [
+                    comp.strip()
+                    for comp in companies_str.replace(",", ";")
+                    .replace("|", ";")
+                    .split(";")
+                    if comp.strip()
+                ]
                 for comp in companies:
-                    if comp.lower() != 'senior':
+                    if comp.lower() != "senior":
                         agent_insurance_companies.add(comp)
-        
+
         # Find new insurance companies
         new_insurance_companies = data_insurance_companies - agent_insurance_companies
-        
+
         if not new_insurance_companies:
             return agent_data, []
-        
+
         # Find senior agents (those with 'senior' in their Insurance List column)
         senior_agents = []
         for idx, row in agent_data.iterrows():
             if pd.notna(row[insurance_working_col]):
                 companies_str = str(row[insurance_working_col])
-                if 'senior' in companies_str.lower():
+                if "senior" in companies_str.lower():
                     senior_agents.append(idx)
-        
+
         # Console log senior agents found
         if senior_agents:
             for idx in senior_agents:
@@ -4664,34 +4929,39 @@ def detect_and_assign_new_insurance_companies(data_df, agent_data, insurance_car
                     agent_name = f"Agent {idx}"
         else:
             pass
-        
+
         # Assign new insurance companies to senior agents
         updated_agents = []
         for idx, row in agent_data.iterrows():
             if idx in senior_agents:
                 # Add new insurance companies to senior agents
-                current_companies = str(row[insurance_working_col]) if pd.notna(row[insurance_working_col]) else ''
-                new_companies_str = '; '.join(new_insurance_companies)
-                
+                current_companies = (
+                    str(row[insurance_working_col])
+                    if pd.notna(row[insurance_working_col])
+                    else ""
+                )
+                new_companies_str = "; ".join(new_insurance_companies)
+
                 if current_companies:
                     updated_companies = f"{current_companies}; {new_companies_str}"
                 else:
                     updated_companies = new_companies_str
-                
+
                 # Update the row
                 row_copy = row.copy()
                 row_copy[insurance_working_col] = updated_companies
                 updated_agents.append(row_copy)
             else:
                 updated_agents.append(row)
-        
+
         # Convert back to DataFrame
         updated_agent_data = pd.DataFrame(updated_agents)
-        
+
         return updated_agent_data, list(new_insurance_companies)
-        
+
     except Exception as e:
         return agent_data, []
+
 
 def parse_excel_date(value):
     """
@@ -4704,32 +4974,32 @@ def parse_excel_date(value):
     """
     from datetime import datetime, timedelta, date
     import pandas as pd
-    
+
     if pd.isna(value):
         return None
-    
+
     # If it's already a date object (not datetime), return it
     if isinstance(value, date) and not isinstance(value, datetime):
         # Validate the date is in a reasonable range
         if 2000 <= value.year <= 2100:
             return value
         return None
-    
+
     # If it's already a datetime object, extract date
     if isinstance(value, datetime):
         if 2000 <= value.year <= 2100:
             return value.date()
         return None
-    
+
     # If it has a date() method (like pandas Timestamp), use it
-    if hasattr(value, 'date') and callable(value.date):
+    if hasattr(value, "date") and callable(value.date):
         try:
             date_obj = value.date()
             if isinstance(date_obj, date) and 2000 <= date_obj.year <= 2100:
                 return date_obj
         except (AttributeError, ValueError):
             pass
-    
+
     # Try to parse as Excel serial number (common on Windows)
     # Excel stores dates as days since 1899-12-30 (with a bug treating 1900 as leap year)
     try:
@@ -4737,7 +5007,7 @@ def parse_excel_date(value):
             # Excel serial number: days since 1899-12-30
             excel_epoch = datetime(1899, 12, 30)
             days = float(value)
-            
+
             # Only process if it looks like a reasonable Excel date serial number
             # Excel dates typically range from ~1 (1900-01-01) to ~73050 (2099-12-31)
             # But we only want dates from 2000 onwards to avoid false positives
@@ -4749,12 +5019,12 @@ def parse_excel_date(value):
                     return parsed_date.date()
     except (ValueError, TypeError, OverflowError, OSError):
         pass
-    
+
     # Try to parse string dates with explicit MM/DD/YYYY format first
     # This handles formats like "11/17/2025 12:00:00 AM" or "11/17/2025"
     if isinstance(value, str):
         value_str = str(value).strip()
-        
+
         # Try MM/DD/YYYY format (US format)
         # Handle formats like:
         # - "11/17/2025"
@@ -4762,17 +5032,17 @@ def parse_excel_date(value):
         # - "11/17/2025 12:00:00"
         try:
             # Remove time component if present
-            date_part = value_str.split()[0] if ' ' in value_str else value_str
-            
+            date_part = value_str.split()[0] if " " in value_str else value_str
+
             # Try MM/DD/YYYY format (US format)
-            if '/' in date_part:
-                parts = date_part.split('/')
+            if "/" in date_part:
+                parts = date_part.split("/")
                 if len(parts) == 3:
                     first, second, year = parts
                     first_int = int(first)
                     second_int = int(second)
                     year_int = int(year)
-                    
+
                     # Determine if it's MM/DD/YYYY or DD/MM/YYYY
                     # If first > 12, it must be DD/MM/YYYY (month can't be > 12 in MM/DD)
                     # If second > 12, it must be MM/DD/YYYY (day can't be > 12 in DD/MM)
@@ -4810,11 +5080,11 @@ def parse_excel_date(value):
                                 pass
         except (ValueError, TypeError, IndexError):
             pass
-    
+
     # Try pandas to_datetime with dayfirst=False to prefer MM/DD/YYYY format
     try:
         # Use dayfirst=False (default) to prefer MM/DD/YYYY over DD/MM/YYYY
-        parsed = pd.to_datetime(value, errors='coerce', dayfirst=False)
+        parsed = pd.to_datetime(value, errors="coerce", dayfirst=False)
         if pd.notna(parsed):
             parsed_date = parsed.to_pydatetime()
             # Filter out invalid dates (before 2000 or after 2100)
@@ -4822,96 +5092,107 @@ def parse_excel_date(value):
                 return parsed_date.date()
     except (ValueError, TypeError, OverflowError, OSError):
         pass
-    
+
     # If all parsing fails, return None
     return None
+
 
 def get_nth_business_day(start_date, n):
     """Get the nth business day from start_date"""
     from datetime import timedelta
-    
+
     current_date = start_date
     business_days_count = 0
-    
+
     while business_days_count < n:
         current_date += timedelta(days=1)
         # Check if it's a weekday (Monday=0, Sunday=6)
         if current_date.weekday() < 5:  # Monday to Friday
             business_days_count += 1
-    
+
     return current_date
+
 
 def process_allocation_files(allocation_df, data_df):
     """Process data file with priority assignment based on business days calendar"""
     try:
         from datetime import datetime, timedelta
         import pandas as pd
-        
+
         # Use data_df as the main file to process (ignore allocation_df for now)
         processed_df = data_df.copy()
-        
+
         # Find the appointment date column (case-insensitive search)
         appointment_date_col = None
         for col in processed_df.columns:
-            if 'appointment' in col.lower() and 'date' in col.lower():
+            if "appointment" in col.lower() and "date" in col.lower():
                 appointment_date_col = col
                 break
-        
+
         if appointment_date_col is None:
-            return f"❌ Error: 'Appointment Date' column not found in data file.\nAvailable columns: {list(processed_df.columns)}", None
-        
+            return (
+                f"❌ Error: 'Appointment Date' column not found in data file.\nAvailable columns: {list(processed_df.columns)}",
+                None,
+            )
+
         # Convert appointment date column to datetime and remove time component
         # Use robust date parsing that works consistently across Windows and Mac
         try:
-            processed_df[appointment_date_col] = processed_df[appointment_date_col].apply(parse_excel_date)
+            processed_df[appointment_date_col] = processed_df[
+                appointment_date_col
+            ].apply(parse_excel_date)
         except Exception as e:
             return f"❌ Error converting appointment dates: {str(e)}", None
-        
+
         # Get today's date
         today = datetime.now().date()
-        
+
         # Check if Priority Status column exists, if not create it
-        if 'Priority Status' not in processed_df.columns:
-            processed_df['Priority Status'] = ''
-        
+        if "Priority Status" not in processed_df.columns:
+            processed_df["Priority Status"] = ""
+
         # Convert Priority Status column to object type to avoid dtype warnings
-        processed_df['Priority Status'] = processed_df['Priority Status'].astype('object')
-        
+        processed_df["Priority Status"] = processed_df["Priority Status"].astype(
+            "object"
+        )
+
         # Calculate business day targets
         first_business_day = get_nth_business_day(today, 1)
         second_business_day = get_nth_business_day(today, 2)
         seventh_business_day = get_nth_business_day(today, 7)
-        
+
         # Count statistics
         total_rows = len(processed_df)
         first_priority_count = 0
         invalid_dates = 0
-        
+
         # Process each row
         for idx, row in processed_df.iterrows():
             appointment_date = row[appointment_date_col]
-            
+
             # Skip rows with invalid dates
             if pd.isna(appointment_date):
-                processed_df.at[idx, 'Priority Status'] = 'Invalid Date'
+                processed_df.at[idx, "Priority Status"] = "Invalid Date"
                 invalid_dates += 1
                 continue
-            
+
             # Convert to date if it's datetime
-            if hasattr(appointment_date, 'date'):
+            if hasattr(appointment_date, "date"):
                 appointment_date = appointment_date.date()
-            
+
             # Check if appointment date matches First Priority criteria
-            if (appointment_date == today or 
-                appointment_date == first_business_day or 
-                appointment_date == second_business_day or 
-                appointment_date == seventh_business_day):
-                processed_df.at[idx, 'Priority Status'] = 'First Priority'
+            if (
+                appointment_date == today
+                or appointment_date == first_business_day
+                or appointment_date == second_business_day
+                or appointment_date == seventh_business_day
+            ):
+                processed_df.at[idx, "Priority Status"] = "First Priority"
                 first_priority_count += 1
             else:
                 # Keep blank for now as requested
-                processed_df.at[idx, 'Priority Status'] = ''
-        
+                processed_df.at[idx, "Priority Status"] = ""
+
         # Generate result message
         result_message = f"""✅ Priority processing completed successfully!
 
@@ -4939,215 +5220,288 @@ def process_allocation_files(allocation_df, data_df):
 {processed_df[['Priority Status', appointment_date_col]].head(10).to_string()}
 
 💾 Ready to download the processed result file!"""
-        
+
         return result_message, processed_df
-        
+
     except Exception as e:
         return f"❌ Error during processing: {str(e)}", None
 
-def process_allocation_files_with_dates(allocation_df, data_df, selected_dates, custom_dates, appointment_dates, appointment_dates_second=None, receive_dates=None):
+
+def process_allocation_files_with_dates(
+    allocation_df,
+    data_df,
+    selected_dates,
+    custom_dates,
+    appointment_dates,
+    appointment_dates_second=None,
+    receive_dates=None,
+):
     """Process data file with priority assignment and generate agent allocation summary"""
     global agent_allocations_data
     try:
         from datetime import datetime, timedelta
         import pandas as pd
-        
+
         # Use data_df as the main file to process
         processed_df = data_df.copy()
-        
+
         # Find the appointment date column, receive date column, insurance carrier column, and remark column
         appointment_date_col = None
         receive_date_col = None
         insurance_carrier_col = None
         remark_col = None
         for col in processed_df.columns:
-            if 'appointment' in col.lower() and 'date' in col.lower():
+            if "appointment" in col.lower() and "date" in col.lower():
                 appointment_date_col = col
-            elif 'receive' in col.lower() and 'date' in col.lower():
+            elif "receive" in col.lower() and "date" in col.lower():
                 receive_date_col = col
-            elif 'dental' in col.lower() and 'primary' in col.lower() and 'ins' in col.lower() and 'carr' in col.lower():
+            elif (
+                "dental" in col.lower()
+                and "primary" in col.lower()
+                and "ins" in col.lower()
+                and "carr" in col.lower()
+            ):
                 insurance_carrier_col = col
-            elif col.lower() in ['remark', 'remarks']:
+            elif col.lower() in ["remark", "remarks"]:
                 remark_col = col
-        
+
         if appointment_date_col is None:
-            return f"❌ Error: 'Appointment Date' column not found in data file.\nAvailable columns: {list(processed_df.columns)}", None
-        
+            return (
+                f"❌ Error: 'Appointment Date' column not found in data file.\nAvailable columns: {list(processed_df.columns)}",
+                None,
+            )
+
         # Convert appointment date column to datetime and remove time component
         # Use robust date parsing that works consistently across Windows and Mac
         try:
-            processed_df[appointment_date_col] = processed_df[appointment_date_col].apply(parse_excel_date)
+            processed_df[appointment_date_col] = processed_df[
+                appointment_date_col
+            ].apply(parse_excel_date)
         except Exception as e:
             return f"❌ Error converting appointment dates: {str(e)}", None
-        
+
         # Parse receive date column if it exists (using robust date parsing)
         if receive_date_col and receive_date_col in processed_df.columns:
             try:
-                processed_df[receive_date_col] = processed_df[receive_date_col].apply(parse_excel_date)
+                processed_df[receive_date_col] = processed_df[receive_date_col].apply(
+                    parse_excel_date
+                )
             except Exception as e:
                 # If receive date parsing fails, log but don't fail the whole process
                 print(f"Warning: Error parsing receive dates: {str(e)}")
-        
+
         # Check if Priority Status column exists, if not create it
-        if 'Priority Status' not in processed_df.columns:
-            processed_df['Priority Status'] = ''
-        
+        if "Priority Status" not in processed_df.columns:
+            processed_df["Priority Status"] = ""
+
         # Convert Priority Status column to object type
-        processed_df['Priority Status'] = processed_df['Priority Status'].astype('object')
-        
+        processed_df["Priority Status"] = processed_df["Priority Status"].astype(
+            "object"
+        )
+
         # Build list of priority dates from selection (as strings)
         first_priority_dates = set(appointment_dates) if appointment_dates else set()
-        second_priority_dates = set(appointment_dates_second) if appointment_dates_second else set()
-        
+        second_priority_dates = (
+            set(appointment_dates_second) if appointment_dates_second else set()
+        )
+
         # Count statistics
         total_rows = len(processed_df)
         first_priority_count = 0
         second_priority_count = 0
         third_priority_count = 0
         invalid_dates = 0
-        
+
         # Collect Third Priority dates
         third_priority_dates_set = set()
-        
+
         # Process each row
         for idx, row in processed_df.iterrows():
             appointment_date = row[appointment_date_col]
-            
+
             # Skip rows with invalid dates
             if pd.isna(appointment_date):
-                processed_df.at[idx, 'Priority Status'] = 'Invalid Date'
+                processed_df.at[idx, "Priority Status"] = "Invalid Date"
                 invalid_dates += 1
                 continue
-            
+
             # Convert appointment date to string and handle different formats
             appointment_date_str = str(appointment_date)
-            
+
             # If it's a datetime string like '2025-11-03 00:00:00', extract just the date part
-            if ' ' in appointment_date_str:
-                appointment_date_str = appointment_date_str.split(' ')[0]
-            
+            if " " in appointment_date_str:
+                appointment_date_str = appointment_date_str.split(" ")[0]
+
             # Convert calendar dates (YYYY-MM-DD) to YYYY-MM-DD format for comparison
             def convert_calendar_to_original_format(calendar_date):
                 try:
                     from datetime import datetime
+
                     # Parse YYYY-MM-DD format
-                    dt = datetime.strptime(calendar_date, '%Y-%m-%d')
+                    dt = datetime.strptime(calendar_date, "%Y-%m-%d")
                     # Return in YYYY-MM-DD format for comparison
-                    return dt.strftime('%Y-%m-%d')
+                    return dt.strftime("%Y-%m-%d")
                 except:
                     return calendar_date
-            
+
             # Convert priority dates to YYYY-MM-DD format for comparison
             first_priority_dates_yyyy_mm_dd = set()
             for calendar_date in first_priority_dates:
                 converted_date = convert_calendar_to_original_format(calendar_date)
                 first_priority_dates_yyyy_mm_dd.add(converted_date)
-            
+
             second_priority_dates_yyyy_mm_dd = set()
             for calendar_date in second_priority_dates:
                 converted_date = convert_calendar_to_original_format(calendar_date)
                 second_priority_dates_yyyy_mm_dd.add(converted_date)
-            
+
             # Check if appointment date is in First Priority dates
             if appointment_date_str in first_priority_dates_yyyy_mm_dd:
                 # Additional filtering: check receive dates if provided
                 should_include = True
-                if receive_dates and receive_date_col and receive_date_col in processed_df.columns:
+                if (
+                    receive_dates
+                    and receive_date_col
+                    and receive_date_col in processed_df.columns
+                ):
                     receive_date = row[receive_date_col]
                     if not pd.isna(receive_date) and receive_date is not None:
                         # Convert receive date to string format for comparison
-                        receive_date_str = receive_date.strftime('%Y-%m-%d') if hasattr(receive_date, 'strftime') else str(receive_date)
-                        
+                        receive_date_str = (
+                            receive_date.strftime("%Y-%m-%d")
+                            if hasattr(receive_date, "strftime")
+                            else str(receive_date)
+                        )
+
                         # Convert receive dates to YYYY-MM-DD format for comparison
                         receive_dates_yyyy_mm_dd = set()
                         for calendar_date in receive_dates:
-                            converted_date = convert_calendar_to_original_format(calendar_date)
+                            converted_date = convert_calendar_to_original_format(
+                                calendar_date
+                            )
                             receive_dates_yyyy_mm_dd.add(converted_date)
-                        
+
                         # Only include if receive date is in selected receive dates
                         if receive_date_str not in receive_dates_yyyy_mm_dd:
                             should_include = False
-                
+
                 if should_include:
-                    processed_df.at[idx, 'Priority Status'] = 'First Priority'
+                    processed_df.at[idx, "Priority Status"] = "First Priority"
                     first_priority_count += 1
                 else:
                     # If receive date is not selected, assign to Second Priority
-                    processed_df.at[idx, 'Priority Status'] = 'Second Priority'
+                    processed_df.at[idx, "Priority Status"] = "Second Priority"
                     second_priority_count += 1
             # Check if appointment date is in Second Priority dates
             elif appointment_date_str in second_priority_dates_yyyy_mm_dd:
-                processed_df.at[idx, 'Priority Status'] = 'Second Priority'
+                processed_df.at[idx, "Priority Status"] = "Second Priority"
                 second_priority_count += 1
             else:
                 # All remaining dates get Third Priority
-                processed_df.at[idx, 'Priority Status'] = 'Third Priority'
+                processed_df.at[idx, "Priority Status"] = "Third Priority"
                 third_priority_count += 1
                 # Add to Third Priority dates set (convert back to calendar format for display)
                 try:
                     from datetime import datetime
-                    dt = datetime.strptime(appointment_date_str, '%Y-%m-%d')
-                    calendar_date = dt.strftime('%Y-%m-%d')
+
+                    dt = datetime.strptime(appointment_date_str, "%Y-%m-%d")
+                    calendar_date = dt.strftime("%Y-%m-%d")
                     third_priority_dates_set.add(calendar_date)
                 except:
                     # If conversion fails, use the original string
                     third_priority_dates_set.add(appointment_date_str)
-        
+
         # Generate agent allocation summary if allocation_df is provided
         agent_summary = ""
         if allocation_df is not None:
             try:
                 # Get the "main" sheet from allocation data, fallback to first sheet if "main" doesn't exist
                 agent_df = None
-                if 'main' in allocation_df:
-                    agent_df = allocation_df['main']
+                if "main" in allocation_df:
+                    agent_df = allocation_df["main"]
                 elif len(allocation_df) > 0:
                     agent_df = list(allocation_df.values())[0]
-                
+
                 if agent_df is None:
                     agent_summary = "\n⚠️ No sheets found in allocation file."
                     return processed_df, agent_summary
-                
-                # Find agent name, ID, counts, insurance list, exceptions, email, role, shift time, shift group, domain, and ins do not allocate columns
+
+                # Find agent name, ID, counts, insurance list, exceptions, email, role, shift time, shift group, domain, allocation preference, and ins do not allocate columns
                 agent_name_col = None
                 agent_id_col = None
-                counts_col = None
+                cc_col = None  # Current Capacity column (prioritized)
+                counts_col = None  # Fallback to TFD/Capacity/Count
                 insurance_working_col = None
                 insurance_needs_training_col = None
                 insurance_do_not_allocate_col = None
                 email_col = None
                 role_col = None
+                category_col = (
+                    None  # Category column for roles (Senior, Auditor, Junior, Trainee)
+                )
                 shift_time_col = None
                 shift_group_col = None
                 domain_col = None
+                allocation_preference_col = None
                 for col in agent_df.columns:
                     col_lower = col.lower()
-                    if 'agent' in col_lower and 'name' in col_lower:
+                    if "agent" in col_lower and "name" in col_lower:
                         agent_name_col = col
-                    elif col_lower == 'id':
+                    elif col_lower == "id":
                         agent_id_col = col
-                    elif col_lower == 'tfd':
-                        counts_col = col
-                    elif 'insurance' in col_lower and 'list' in col_lower:
+                    elif (
+                        col_lower == "cc"
+                        or col_lower == "current capacity"
+                        or (col_lower.startswith("cc") and "capacity" in col_lower)
+                    ):
+                        cc_col = col  # Current Capacity column (prioritized)
+                    elif (
+                        col_lower == "tfd"
+                        or col_lower == "capacity"
+                        or col_lower == "count"
+                    ):
+                        if not cc_col:  # Only use TFD/capacity/count if CC not found
+                            counts_col = (
+                                col  # Fallback to TFD/capacity/count if CC not found
+                            )
+                    elif "insurance" in col_lower and "list" in col_lower:
                         insurance_working_col = col
-                    elif 'exception' in col_lower:
+                    elif "exception" in col_lower:
                         insurance_needs_training_col = col
-                    elif ('ins' in col_lower or 'insurance' in col_lower) and ('do' in col_lower and 'not' in col_lower and 'allocate' in col_lower):
+                    elif ("ins" in col_lower or "insurance" in col_lower) and (
+                        "do" in col_lower
+                        and "not" in col_lower
+                        and "allocate" in col_lower
+                    ):
                         insurance_do_not_allocate_col = col
-                    elif 'email' in col_lower and 'id' in col_lower:
+                    elif "email" in col_lower and "id" in col_lower:
                         email_col = col
-                    elif col_lower == 'role' or col_lower == 'job role' or col_lower == 'position' or ('role' in col_lower and 'type' in col_lower):
+                    elif col_lower == "category":
+                        category_col = (
+                            col  # Category column (Senior, Auditor, Junior, Trainee)
+                        )
+                    elif (
+                        col_lower == "role"
+                        or col_lower == "job role"
+                        or col_lower == "position"
+                        or ("role" in col_lower and "type" in col_lower)
+                    ):
                         role_col = col
-                    elif 'shift' in col_lower and 'time' in col_lower:
+                    elif "shift" in col_lower and "time" in col_lower:
                         shift_time_col = col
-                    elif 'shift' in col_lower and 'group' in col_lower:
+                    elif "shift" in col_lower and "group" in col_lower:
                         shift_group_col = col
-                    elif col_lower == 'domain':
+                    elif col_lower == "domain":
                         domain_col = col
-                
-                if agent_name_col and counts_col:
+                    elif "allocation" in col_lower and "preference" in col_lower:
+                        allocation_preference_col = col
+
+                # Use CC column if available, otherwise fallback to counts_col
+                capacity_col = cc_col if cc_col else counts_col
+
+                if agent_name_col and capacity_col:
                     # Get agent data with their capacities and insurance capabilities
-                    columns_to_select = [agent_name_col, counts_col]
+                    columns_to_select = [agent_name_col, capacity_col]
                     if agent_id_col:
                         columns_to_select.append(agent_id_col)
                     if insurance_working_col:
@@ -5160,127 +5514,231 @@ def process_allocation_files_with_dates(allocation_df, data_df, selected_dates, 
                         columns_to_select.append(email_col)
                     if role_col:
                         columns_to_select.append(role_col)
+                    if category_col:
+                        columns_to_select.append(category_col)
                     if shift_time_col:
                         columns_to_select.append(shift_time_col)
                     if shift_group_col:
                         columns_to_select.append(shift_group_col)
                     if domain_col:
                         columns_to_select.append(domain_col)
-                    
-                    agent_data = agent_df[columns_to_select].dropna(subset=[agent_name_col, counts_col])
-                    
-                    # Filter out "Auditor" and "caller" roles
-                    if role_col:
-                        # Filter based on role column (case-insensitive)
-                        agent_data = agent_data[~agent_data[role_col].astype(str).str.lower().str.strip().isin(['auditor', 'caller'])]
+                    if allocation_preference_col:
+                        columns_to_select.append(allocation_preference_col)
+
+                    agent_data = agent_df[columns_to_select].dropna(
+                        subset=[agent_name_col, capacity_col]
+                    )
+
+                    # Filter out "Auditor" role based on Category column (priority) or role column (fallback)
+                    if category_col:
+                        # Filter based on Category column (case-insensitive)
+                        agent_data = agent_data[
+                            ~agent_data[category_col]
+                            .astype(str)
+                            .str.lower()
+                            .str.strip()
+                            .isin(["auditor"])
+                        ]
+                    elif role_col:
+                        # Fallback: Filter based on role column (case-insensitive)
+                        agent_data = agent_data[
+                            ~agent_data[role_col]
+                            .astype(str)
+                            .str.lower()
+                            .str.strip()
+                            .isin(["auditor", "caller"])
+                        ]
                     else:
-                        # If no role column found, check if agent name column contains these roles (case-insensitive)
-                        agent_data = agent_data[~agent_data[agent_name_col].astype(str).str.lower().str.strip().isin(['auditor', 'caller'])]
-                    
+                        # If no category or role column found, check if agent name column contains these roles (case-insensitive)
+                        agent_data = agent_data[
+                            ~agent_data[agent_name_col]
+                            .astype(str)
+                            .str.lower()
+                            .str.strip()
+                            .isin(["auditor", "caller"])
+                        ]
+
                     # Add empty columns if not found
                     if not insurance_working_col:
-                        agent_data['Insurance List'] = ''
-                        insurance_working_col = 'Insurance List'
-                    
+                        agent_data["Insurance List"] = ""
+                        insurance_working_col = "Insurance List"
+
                     # Detect and assign new insurance companies to senior agents
                     if insurance_carrier_col and insurance_working_col:
-                        agent_data, new_insurance_companies = detect_and_assign_new_insurance_companies(
-                            processed_df, agent_data, insurance_carrier_col, insurance_working_col, agent_name_col
+                        agent_data, new_insurance_companies = (
+                            detect_and_assign_new_insurance_companies(
+                                processed_df,
+                                agent_data,
+                                insurance_carrier_col,
+                                insurance_working_col,
+                                agent_name_col,
+                            )
                         )
                         if new_insurance_companies:
                             agent_summary += f"\n🆕 New insurance companies detected and assigned to senior agents: {', '.join(new_insurance_companies)}"
                     if not insurance_needs_training_col:
-                        agent_data['Exceptions'] = ''
-                        insurance_needs_training_col = 'Exceptions'
-                    
+                        agent_data["Exceptions"] = ""
+                        insurance_needs_training_col = "Exceptions"
+
                     total_agents = len(agent_data)
-                    
+
                     # Calculate total capacity with proper type conversion
                     total_capacity = 0
                     for _, row in agent_data.iterrows():
                         try:
-                            if pd.notna(row[counts_col]):
-                                capacity = int(float(str(row[counts_col]).replace(',', '')))
+                            if pd.notna(row[capacity_col]):
+                                capacity = int(
+                                    float(str(row[capacity_col]).replace(",", ""))
+                                )
                                 total_capacity += capacity
                         except (ValueError, TypeError):
                             continue
-                    
+
                     # Create capability-based allocation
                     agent_allocations = []
-                    
+
                     # First, prepare agent data with their capabilities
                     for _, row in agent_data.iterrows():
-                        agent_name = str(row[agent_name_col]).strip() if pd.notna(row[agent_name_col]) else 'Unknown'
-                        
+                        agent_name = (
+                            str(row[agent_name_col]).strip()
+                            if pd.notna(row[agent_name_col])
+                            else "Unknown"
+                        )
+
                         # Create unique agent_id: Use ID if available, otherwise use name + index as fallback
                         if agent_id_col and pd.notna(row[agent_id_col]):
                             agent_id = str(row[agent_id_col]).strip()
                         else:
                             # Fallback: Use name + row index to ensure uniqueness
                             agent_id = f"{agent_name}_{row.name}"
-                        
-                        # Handle different data types in counts column
+
+                        # Handle different data types in capacity column (CC or counts_col)
                         try:
-                            if pd.notna(row[counts_col]):
-                                capacity = int(float(str(row[counts_col]).replace(',', '')))
+                            if pd.notna(row[capacity_col]):
+                                capacity = int(
+                                    float(str(row[capacity_col]).replace(",", ""))
+                                )
                             else:
                                 capacity = 0
                         except (ValueError, TypeError):
                             capacity = 0
-                        
+
                         # Get insurance companies this agent can work with and check if senior
                         insurance_companies = []
                         is_senior = False
-                        if insurance_working_col and pd.notna(row[insurance_working_col]):
+
+                        # Check if agent is senior based on Category column (priority) or Insurance List
+                        if category_col and pd.notna(row[category_col]):
+                            agent_category = str(row[category_col]).strip().lower()
+                            if "senior" in agent_category:
+                                is_senior = True
+
+                        if insurance_working_col and pd.notna(
+                            row[insurance_working_col]
+                        ):
                             # Split by common delimiters and clean up
                             companies_str = str(row[insurance_working_col])
-                            companies = [comp.strip() for comp in companies_str.replace(',', ';').replace('|', ';').split(';') if comp.strip()]
-                            
-                            # Check if agent is senior
-                            if any('senior' in comp.lower() for comp in companies):
+                            companies = [
+                                comp.strip()
+                                for comp in companies_str.replace(",", ";")
+                                .replace("|", ";")
+                                .split(";")
+                                if comp.strip()
+                            ]
+
+                            # Check if agent is senior (if not already determined by Category)
+                            if not is_senior and any(
+                                "senior" in comp.lower() for comp in companies
+                            ):
                                 is_senior = True
+
+                            if is_senior:
                                 # For senior agents, they can work with any insurance company
-                                insurance_companies = ['ALL_COMPANIES']
+                                insurance_companies = ["ALL_COMPANIES"]
                             else:
                                 insurance_companies = companies
-                        
+
                         # Get insurance companies this agent needs training for
                         insurance_needs_training = []
-                        if insurance_needs_training_col and pd.notna(row[insurance_needs_training_col]):
+                        if insurance_needs_training_col and pd.notna(
+                            row[insurance_needs_training_col]
+                        ):
                             # Split by common delimiters and clean up
                             training_str = str(row[insurance_needs_training_col])
-                            training_companies = [comp.strip() for comp in training_str.replace(',', ';').replace('|', ';').split(';') if comp.strip()]
+                            training_companies = [
+                                comp.strip()
+                                for comp in training_str.replace(",", ";")
+                                .replace("|", ";")
+                                .split(";")
+                                if comp.strip()
+                            ]
                             insurance_needs_training = training_companies
-                        
+
                         # Get insurance companies this agent should NOT be allocated
                         insurance_do_not_allocate = []
-                        if insurance_do_not_allocate_col and pd.notna(row[insurance_do_not_allocate_col]):
+                        if insurance_do_not_allocate_col and pd.notna(
+                            row[insurance_do_not_allocate_col]
+                        ):
                             # Split by common delimiters and clean up
-                            do_not_allocate_str = str(row[insurance_do_not_allocate_col])
-                            do_not_allocate_companies = [comp.strip() for comp in do_not_allocate_str.replace(',', ';').replace('|', ';').split(';') if comp.strip()]
+                            do_not_allocate_str = str(
+                                row[insurance_do_not_allocate_col]
+                            )
+                            do_not_allocate_companies = [
+                                comp.strip()
+                                for comp in do_not_allocate_str.replace(",", ";")
+                                .replace("|", ";")
+                                .split(";")
+                                if comp.strip()
+                            ]
                             # Format insurance company names for matching
                             for comp in do_not_allocate_companies:
                                 formatted_comp = format_insurance_company_name(comp)
                                 insurance_do_not_allocate.append(formatted_comp)
-                        
+
                         # Get agent email
-                        agent_email = ''
+                        agent_email = ""
                         if email_col and pd.notna(row[email_col]):
                             agent_email = str(row[email_col]).strip()
-                        
+
                         # Get domain value
                         agent_domain = None
                         if domain_col and pd.notna(row[domain_col]):
                             agent_domain = str(row[domain_col]).strip().upper()
-                        
+
+                        # Get allocation preference value and check if it contains PB
+                        allocation_preference = None
+                        has_pb_preference = False
+                        if allocation_preference_col and pd.notna(
+                            row[allocation_preference_col]
+                        ):
+                            allocation_preference_raw = row[allocation_preference_col]
+                            allocation_preference = (
+                                str(allocation_preference_raw).strip().upper()
+                            )
+                            # Check if allocation preference is exactly "PB" or contains "PB"
+                            # This handles values like "PB", "PB+NTC", "MIX+PB", etc.
+                            has_pb_preference = (
+                                allocation_preference == "PB"
+                                or "PB" in allocation_preference
+                            )
+                        # Debug: Store raw allocation preference for troubleshooting
+                        allocation_preference_raw_value = (
+                            str(row[allocation_preference_col]).strip()
+                            if allocation_preference_col
+                            and pd.notna(row[allocation_preference_col])
+                            else None
+                        )
+
                         # Get shift group (1=day, 2=afternoon, 3=night) to help parse ambiguous times
                         shift_group = None
                         if shift_group_col and pd.notna(row[shift_group_col]):
                             try:
-                                shift_group = int(float(str(row[shift_group_col]).strip()))
+                                shift_group = int(
+                                    float(str(row[shift_group_col]).strip())
+                                )
                             except (ValueError, TypeError):
                                 shift_group = None
-                        
+
                         # Parse shift time (could be a range like "10-7pm", "1-10pm", "7-5 am")
                         shift_start_time = None
                         if shift_time_col and pd.notna(row[shift_time_col]):
@@ -5288,44 +5746,52 @@ def process_allocation_files_with_dates(allocation_df, data_df, selected_dates, 
                             try:
                                 from datetime import time as dt_time
                                 import re
-                                
+
                                 # Try parsing various time formats
                                 if isinstance(row[shift_time_col], pd.Timestamp):
                                     shift_start_time = row[shift_time_col].time()
-                                elif '-' in shift_time_str:
+                                elif "-" in shift_time_str:
                                     # Parse time range (e.g., "10-7pm", "1-10pm", "7-5 am", "10am-7pm")
                                     # Extract start time (first part before the dash)
-                                    parts = shift_time_str.split('-')
+                                    parts = shift_time_str.split("-")
                                     if len(parts) >= 2:
                                         start_time_str = parts[0].strip()
                                         end_time_str = parts[1].strip()
-                                        
+
                                         # Check if end time has AM/PM indicator
-                                        has_end_am = 'am' in end_time_str.lower()
-                                        has_end_pm = 'pm' in end_time_str.lower()
-                                        has_start_am = 'am' in start_time_str.lower()
-                                        has_start_pm = 'pm' in start_time_str.lower()
-                                        
+                                        has_end_am = "am" in end_time_str.lower()
+                                        has_end_pm = "pm" in end_time_str.lower()
+                                        has_start_am = "am" in start_time_str.lower()
+                                        has_start_pm = "pm" in start_time_str.lower()
+
                                         # Extract start hour (could be just a number like "10" or "7")
-                                        start_match = re.search(r'(\d{1,2})', start_time_str)
+                                        start_match = re.search(
+                                            r"(\d{1,2})", start_time_str
+                                        )
                                         if start_match:
                                             hour = int(start_match.group(1))
                                             minute = 0  # Default to 0 minutes if not specified
-                                            
+
                                             # Check for explicit AM/PM in start time
                                             if has_start_am:
                                                 if hour == 12:
                                                     hour = 0  # 12 AM = 0
                                             elif has_start_pm:
                                                 if hour != 12:
-                                                    hour += 12  # Convert to 24-hour format
+                                                    hour += (
+                                                        12  # Convert to 24-hour format
+                                                    )
                                             else:
                                                 # No AM/PM in start time - infer from context using Shift Group if available
                                                 # Extract end hour for comparison
-                                                end_match = re.search(r'(\d{1,2})', end_time_str)
+                                                end_match = re.search(
+                                                    r"(\d{1,2})", end_time_str
+                                                )
                                                 if end_match:
-                                                    end_hour_12 = int(end_match.group(1))  # 12-hour format
-                                                    
+                                                    end_hour_12 = int(
+                                                        end_match.group(1)
+                                                    )  # 12-hour format
+
                                                     # Use Shift Group to help determine AM/PM (1=day, 2=afternoon, 3=night)
                                                     if shift_group == 1:
                                                         # Day shift: typically starts in AM (morning, e.g., 8-5pm, 10-7pm)
@@ -5344,7 +5810,9 @@ def process_allocation_files_with_dates(allocation_df, data_df, selected_dates, 
                                                         else:
                                                             # Start < end, likely PM (e.g., "1-10pm" = 1 PM to 10 PM, "6-10pm" = 6 PM to 10 PM)
                                                             if hour != 12:
-                                                                hour += 12  # Convert to PM
+                                                                hour += (
+                                                                    12  # Convert to PM
+                                                                )
                                                     elif shift_group == 3:
                                                         # Night shift: can start in PM and go into AM (e.g., 7-5 am, 10-7am)
                                                         if has_end_am:
@@ -5364,7 +5832,7 @@ def process_allocation_files_with_dates(allocation_df, data_df, selected_dates, 
                                                             else:
                                                                 # Hour >= end, might be early AM (unusual but possible)
                                                                 pass  # Keep as AM
-                                                    
+
                                                     # If no shift group, use original logic
                                                     if shift_group is None:
                                                         # Infer start time AM/PM using original heuristics
@@ -5386,7 +5854,10 @@ def process_allocation_files_with_dates(allocation_df, data_df, selected_dates, 
                                                             # End is PM
                                                             # If start hour < end hour (both in 12-hour format), likely both PM (e.g., "1-10pm")
                                                             # If start hour >= end hour, likely start AM and end PM (e.g., "10-7pm", "9-5pm")
-                                                            if hour >= end_hour_12 and hour < 12:
+                                                            if (
+                                                                hour >= end_hour_12
+                                                                and hour < 12
+                                                            ):
                                                                 # Start hour is >= end hour, likely AM (day shift)
                                                                 pass  # Keep as is (AM)
                                                             elif hour < end_hour_12:
@@ -5399,73 +5870,106 @@ def process_allocation_files_with_dates(allocation_df, data_df, selected_dates, 
                                                                     hour = 12  # Noon to noon (unlikely but handle it)
                                                                 else:
                                                                     hour = 12  # 12 PM (noon)
-                                            
+
                                             # Check for minutes in start time (e.g., "10:30-7pm")
-                                            minute_match = re.search(r':(\d{2})', start_time_str)
+                                            minute_match = re.search(
+                                                r":(\d{2})", start_time_str
+                                            )
                                             if minute_match:
                                                 minute = int(minute_match.group(1))
-                                            
-                                            shift_start_time = dt_time(hour % 24, minute)
-                                        
-                                elif ':' in shift_time_str:
+
+                                            shift_start_time = dt_time(
+                                                hour % 24, minute
+                                            )
+
+                                elif ":" in shift_time_str:
                                     # Parse single time string (e.g., "09:00", "9:00 AM", "09:00:00")
-                                    time_match = re.search(r'(\d{1,2}):(\d{2})', shift_time_str)
+                                    time_match = re.search(
+                                        r"(\d{1,2}):(\d{2})", shift_time_str
+                                    )
                                     if time_match:
                                         hour = int(time_match.group(1))
                                         minute = int(time_match.group(2))
                                         # Check for AM/PM
-                                        if 'pm' in shift_time_str.lower() and hour != 12:
+                                        if (
+                                            "pm" in shift_time_str.lower()
+                                            and hour != 12
+                                        ):
                                             hour += 12
-                                        elif 'am' in shift_time_str.lower() and hour == 12:
+                                        elif (
+                                            "am" in shift_time_str.lower()
+                                            and hour == 12
+                                        ):
                                             hour = 0
                                         shift_start_time = dt_time(hour, minute)
                             except Exception as e:
                                 shift_start_time = None
-                        
+
                         # Store original shift time for admin review
                         original_shift_time = None
                         if shift_time_col and pd.notna(row[shift_time_col]):
                             original_shift_time = str(row[shift_time_col]).strip()
-                        
-                        agent_allocations.append({
-                            'id': agent_id,  # Unique identifier (ID column or name + index)
-                            'name': agent_name,  # Display name
-                            'capacity': capacity,
-                            'allocated': 0,
-                            'email': agent_email,
-                            'insurance_companies': insurance_companies,
-                            'insurance_needs_training': insurance_needs_training,
-                            'insurance_do_not_allocate': insurance_do_not_allocate,  # Insurance companies this agent should NOT be allocated
-                            'is_senior': is_senior,
-                            'shift_start_time': shift_start_time.strftime('%H:%M') if shift_start_time else None,  # Store as HH:MM string
-                            'shift_time_original': original_shift_time,  # Original shift time value from Excel
-                            'shift_group': shift_group,  # Shift group (1=day, 2=afternoon, 3=night)
-                            'domain': agent_domain,  # Domain value (e.g., 'PB')
-                            'row_indices': [],
-                            # New field to enforce single-insurance allocation rule
-                            'assigned_insurance': None
-                        })
-                    
+
+                        agent_allocations.append(
+                            {
+                                "id": agent_id,  # Unique identifier (ID column or name + index)
+                                "name": agent_name,  # Display name
+                                "capacity": capacity,
+                                "allocated": 0,
+                                "email": agent_email,
+                                "insurance_companies": insurance_companies,
+                                "insurance_needs_training": insurance_needs_training,
+                                "insurance_do_not_allocate": insurance_do_not_allocate,  # Insurance companies this agent should NOT be allocated
+                                "is_senior": is_senior,
+                                "shift_start_time": (
+                                    shift_start_time.strftime("%H:%M")
+                                    if shift_start_time
+                                    else None
+                                ),  # Store as HH:MM string
+                                "shift_time_original": original_shift_time,  # Original shift time value from Excel
+                                "shift_group": shift_group,  # Shift group (1=day, 2=afternoon, 3=night)
+                                "domain": agent_domain,  # Domain value (e.g., 'PB')
+                                "has_pb_preference": has_pb_preference,  # Whether allocation preference contains "PB"
+                                "allocation_preference_raw": (
+                                    allocation_preference_raw_value
+                                    if "allocation_preference_raw_value" in locals()
+                                    else None
+                                ),  # Raw allocation preference value for debugging
+                                "row_indices": [],
+                                # New field to enforce single-insurance allocation rule
+                                "assigned_insurance": None,
+                            }
+                        )
+
                     # Now allocate rows based on insurance company matching and priority
-                    unmatched_insurance_companies = set()  # Initialize for use in summary
+                    unmatched_insurance_companies = (
+                        set()
+                    )  # Initialize for use in summary
                     if insurance_carrier_col:
                         # Step 1: Identify all insurance companies in the data and all agent insurance companies
                         all_data_insurance_companies = set()
                         all_agent_insurance_companies = set()
-                        
+
                         for idx, row in processed_df.iterrows():
-                            insurance_carrier = str(row[insurance_carrier_col]).strip() if pd.notna(row[insurance_carrier_col]) else 'Unknown'
-                            if insurance_carrier and insurance_carrier.lower() != 'unknown':
+                            insurance_carrier = (
+                                str(row[insurance_carrier_col]).strip()
+                                if pd.notna(row[insurance_carrier_col])
+                                else "Unknown"
+                            )
+                            if (
+                                insurance_carrier
+                                and insurance_carrier.lower() != "unknown"
+                            ):
                                 all_data_insurance_companies.add(insurance_carrier)
-                        
+
                         # Collect all insurance companies from non-senior agents (normalize to lowercase for comparison)
                         agent_insurance_lower = set()
                         for agent in agent_allocations:
-                            if not agent['is_senior'] and agent['insurance_companies']:
-                                for comp in agent['insurance_companies']:
-                                    if comp != 'ALL_COMPANIES':
+                            if not agent["is_senior"] and agent["insurance_companies"]:
+                                for comp in agent["insurance_companies"]:
+                                    if comp != "ALL_COMPANIES":
                                         agent_insurance_lower.add(comp.strip().lower())
-                        
+
                         # Identify unmatched insurance companies (not in any non-senior agent's list)
                         # Compare case-insensitively
                         unmatched_insurance_companies = set()
@@ -5474,642 +5978,1305 @@ def process_allocation_files_with_dates(allocation_df, data_df, selected_dates, 
                             # Check if this insurance company matches any agent's insurance companies
                             is_matched = False
                             for agent_comp_lower in agent_insurance_lower:
-                                if data_comp_lower in agent_comp_lower or agent_comp_lower in data_comp_lower:
+                                if (
+                                    data_comp_lower in agent_comp_lower
+                                    or agent_comp_lower in data_comp_lower
+                                ):
                                     is_matched = True
                                     break
                             if not is_matched:
                                 unmatched_insurance_companies.add(data_comp)
-                        
+
                         # Get all senior agents
-                        senior_agents = [a for a in agent_allocations if a['is_senior']]
-                        
+                        senior_agents = [a for a in agent_allocations if a["is_senior"]]
+
                         # Step 2: Group data by insurance carrier and priority
                         data_by_insurance_priority = {}
                         unmatched_data_by_priority = {}
                         matched_data_by_insurance_priority = {}
-                        
+
                         for idx, row in processed_df.iterrows():
-                            insurance_carrier = str(row[insurance_carrier_col]).strip() if pd.notna(row[insurance_carrier_col]) else 'Unknown'
-                            priority = row.get('Priority Status', 'Unknown')
-                            
-                            if insurance_carrier.lower() == 'unknown' or not insurance_carrier:
-                                insurance_carrier = 'Unknown'
-                            
+                            insurance_carrier = (
+                                str(row[insurance_carrier_col]).strip()
+                                if pd.notna(row[insurance_carrier_col])
+                                else "Unknown"
+                            )
+                            priority = row.get("Priority Status", "Unknown")
+
+                            if (
+                                insurance_carrier.lower() == "unknown"
+                                or not insurance_carrier
+                            ):
+                                insurance_carrier = "Unknown"
+
                             # Separate unmatched and matched insurance companies
                             # Unknown insurance is always unmatched (senior only)
                             # First Priority is always senior only (for both matched and unmatched)
-                            is_unmatched = (insurance_carrier in unmatched_insurance_companies or 
-                                          insurance_carrier == 'Unknown')
-                            
+                            is_unmatched = (
+                                insurance_carrier in unmatched_insurance_companies
+                                or insurance_carrier == "Unknown"
+                            )
+
                             if is_unmatched:
                                 # Store unmatched insurance companies separately (highest priority)
                                 if insurance_carrier not in unmatched_data_by_priority:
                                     unmatched_data_by_priority[insurance_carrier] = {}
-                                if priority not in unmatched_data_by_priority[insurance_carrier]:
-                                    unmatched_data_by_priority[insurance_carrier][priority] = []
-                                unmatched_data_by_priority[insurance_carrier][priority].append(idx)
+                                if (
+                                    priority
+                                    not in unmatched_data_by_priority[insurance_carrier]
+                                ):
+                                    unmatched_data_by_priority[insurance_carrier][
+                                        priority
+                                    ] = []
+                                unmatched_data_by_priority[insurance_carrier][
+                                    priority
+                                ].append(idx)
                             else:
                                 # Store matched insurance companies normally
-                                if insurance_carrier not in matched_data_by_insurance_priority:
-                                    matched_data_by_insurance_priority[insurance_carrier] = {}
-                                if priority not in matched_data_by_insurance_priority[insurance_carrier]:
-                                    matched_data_by_insurance_priority[insurance_carrier][priority] = []
-                                matched_data_by_insurance_priority[insurance_carrier][priority].append(idx)
-                            
+                                if (
+                                    insurance_carrier
+                                    not in matched_data_by_insurance_priority
+                                ):
+                                    matched_data_by_insurance_priority[
+                                        insurance_carrier
+                                    ] = {}
+                                if (
+                                    priority
+                                    not in matched_data_by_insurance_priority[
+                                        insurance_carrier
+                                    ]
+                                ):
+                                    matched_data_by_insurance_priority[
+                                        insurance_carrier
+                                    ][priority] = []
+                                matched_data_by_insurance_priority[insurance_carrier][
+                                    priority
+                                ].append(idx)
+
                             # Also keep full data structure for reference
                             if insurance_carrier not in data_by_insurance_priority:
                                 data_by_insurance_priority[insurance_carrier] = {}
-                            if priority not in data_by_insurance_priority[insurance_carrier]:
-                                data_by_insurance_priority[insurance_carrier][priority] = []
-                            data_by_insurance_priority[insurance_carrier][priority].append(idx)
-                        
+                            if (
+                                priority
+                                not in data_by_insurance_priority[insurance_carrier]
+                            ):
+                                data_by_insurance_priority[insurance_carrier][
+                                    priority
+                                ] = []
+                            data_by_insurance_priority[insurance_carrier][
+                                priority
+                            ].append(idx)
+
                         # Initialize INS and Toolkit group tracking (used across all allocation steps)
                         ins_group_allocations = {}  # {agent_name: count}
                         toolkit_group_allocations = {}  # {agent_name: count}
                         ins_group_companies = set(DD_INS_GROUP)
                         toolkit_group_companies = set(DD_TOOLKIT_GROUP)
-                        
+
                         # Identify agents with INS or Toolkit groups
                         # After expansion, DD INS/INS becomes the actual companies, so we check if agent has any DD_INS_GROUP companies
                         agents_with_ins = []
                         agents_with_toolkit = []
-                        
+
                         # Convert to sets for faster lookup
                         ins_group_set = set([c.upper() for c in DD_INS_GROUP])
                         toolkit_group_set = set([c.upper() for c in DD_TOOLKIT_GROUP])
-                        
+
                         for agent in agent_allocations:
-                            insurance_list = agent.get('insurance_companies', [])
-                            agent_id = agent.get('id', agent.get('name', 'Unknown'))
-                            agent_name = agent.get('name', 'Unknown')
-                            
+                            insurance_list = agent.get("insurance_companies", [])
+                            agent_id = agent.get("id", agent.get("name", "Unknown"))
+                            agent_name = agent.get("name", "Unknown")
+
                             if insurance_list:
                                 # Convert to uppercase set for comparison
-                                agent_insurance_set = set([c.upper().strip() for c in insurance_list if c and c != 'ALL_COMPANIES'])
-                                
+                                agent_insurance_set = set(
+                                    [
+                                        c.upper().strip()
+                                        for c in insurance_list
+                                        if c and c != "ALL_COMPANIES"
+                                    ]
+                                )
+
                                 # Debug: Show first few agents' insurance companies
                                 if len(agents_with_ins) + len(agents_with_toolkit) < 5:
                                     pass
-                                
+
                                 # Check if agent has any DD_INS_GROUP companies
-                                has_ins_group = bool(agent_insurance_set.intersection(ins_group_set))
+                                has_ins_group = bool(
+                                    agent_insurance_set.intersection(ins_group_set)
+                                )
                                 if has_ins_group:
                                     agents_with_ins.append(agent_name)
                                     ins_group_allocations[agent_id] = 0
-                                
+
                                 # Check if agent has any DD_TOOLKIT_GROUP companies
-                                has_toolkit_group = bool(agent_insurance_set.intersection(toolkit_group_set))
+                                has_toolkit_group = bool(
+                                    agent_insurance_set.intersection(toolkit_group_set)
+                                )
                                 if has_toolkit_group:
                                     agents_with_toolkit.append(agent_name)
                                     toolkit_group_allocations[agent_id] = 0
                             else:
                                 if len(agents_with_ins) + len(agents_with_toolkit) < 5:
                                     pass
-                        
-                        
+
+                        # Initialize Agent Name column if it doesn't exist
+                        if "Agent Name" not in processed_df.columns:
+                            processed_df["Agent Name"] = ""
+
+                        # Step 2.5: Global NTBP Allocation - Allocate all NTBP remark rows globally
+                        # Allocate NTBP rows to agents with PB in Allocation Preference column
+                        # Use CC column for current capacity
+                        all_ntbp_rows = []
+                        if remark_col and remark_col in processed_df.columns:
+                            for idx in processed_df.index:
+                                # Skip already allocated rows
+                                if idx in [
+                                    i
+                                    for ag in agent_allocations
+                                    for i in ag["row_indices"]
+                                ]:
+                                    continue
+                                if pd.notna(processed_df.at[idx, remark_col]):
+                                    row_remark = (
+                                        str(processed_df.at[idx, remark_col])
+                                        .strip()
+                                        .upper()
+                                    )
+                                    if row_remark == "NTBP":
+                                        all_ntbp_rows.append(idx)
+
+                        # Find agents with PB in Allocation Preference column (NOT domain)
+                        # Only agents with "PB" in their Allocation Preference column should get NTBP work
+                        agents_with_pb_preference = []
+                        pb_agent_names = []
+                        for a in agent_allocations:
+                            # Check has_pb_preference flag (set when "PB" is in Allocation Preference column)
+                            # This flag is set during agent data preparation based on Allocation Preference column
+                            if a.get("has_pb_preference", False):
+                                agents_with_pb_preference.append(a)
+                                pb_agent_names.append(a.get("name", "Unknown"))
+
+                        # Debug output for troubleshooting
+                        if all_ntbp_rows:
+                            if not agents_with_pb_preference:
+                                # No agents with PB preference found - NTBP rows will remain unallocated
+                                # Check if allocation preference column was detected
+                                if allocation_preference_col:
+                                    agent_summary += f"\n⚠️ Warning: Found {len(all_ntbp_rows)} NTBP rows but no agents with 'PB' in Allocation Preference column '{allocation_preference_col}'. NTBP rows will remain unallocated."
+                                else:
+                                    agent_summary += f"\n⚠️ Warning: Found {len(all_ntbp_rows)} NTBP rows but 'Allocation Preference' column not found. NTBP rows will remain unallocated."
+                            else:
+                                agent_summary += f"\n✅ Found {len(agents_with_pb_preference)} agent(s) with PB preference ({', '.join(pb_agent_names[:5])}{'...' if len(pb_agent_names) > 5 else ''}) for {len(all_ntbp_rows)} NTBP rows"
+
+                        # Only allocate NTBP rows if we have PB preference agents
+                        # If no PB preference agents exist, NTBP rows will remain unallocated
+                        # (they should NOT be allocated to other agents in later steps)
+                        if agents_with_pb_preference and all_ntbp_rows:
+                            # Calculate total capacity of PB preference agents (from CC column)
+                            total_pb_capacity = sum(
+                                a["capacity"] - a["allocated"]
+                                for a in agents_with_pb_preference
+                            )
+
+                            if len(all_ntbp_rows) >= total_pb_capacity:
+                                # Distribute equally when NTBP count >= total capacity
+                                # Round-robin distribution: assign rows one by one to each agent in turn
+                                # Filter to only agents with available capacity
+                                available_pb_agents = [
+                                    a
+                                    for a in agents_with_pb_preference
+                                    if a["capacity"] > a["allocated"]
+                                ]
+
+                                if available_pb_agents:
+                                    agent_idx = 0
+                                    for ntbp_row_idx in all_ntbp_rows:
+                                        # Find next available agent with capacity (round-robin)
+                                        # Keep trying until we find an agent with capacity or exhaust all options
+                                        assigned = False
+                                        max_attempts = (
+                                            len(available_pb_agents) * 10
+                                        )  # Increased attempts
+                                        attempts = 0
+
+                                        while attempts < max_attempts and not assigned:
+                                            # Refresh available agents list in case some filled up
+                                            available_pb_agents = [
+                                                a
+                                                for a in agents_with_pb_preference
+                                                if a["capacity"] > a["allocated"]
+                                            ]
+
+                                            if not available_pb_agents:
+                                                # No more capacity available - stop allocation
+                                                break
+
+                                            agent = available_pb_agents[
+                                                agent_idx % len(available_pb_agents)
+                                            ]
+
+                                            if agent["capacity"] > agent["allocated"]:
+                                                agent["row_indices"].append(
+                                                    ntbp_row_idx
+                                                )
+                                                agent["allocated"] += 1
+                                                processed_df.at[
+                                                    ntbp_row_idx, "Agent Name"
+                                                ] = agent["name"]
+                                                assigned = True
+                                                agent_idx += (
+                                                    1  # Move to next agent for next row
+                                                )
+                                                break
+                                            else:
+                                                # This agent is full, try next one
+                                                agent_idx += 1
+
+                                            attempts += 1
+
+                                        # If we couldn't assign this row, check if any agents still have capacity
+                                        if not assigned:
+                                            # Final check - refresh available agents
+                                            available_pb_agents = [
+                                                a
+                                                for a in agents_with_pb_preference
+                                                if a["capacity"] > a["allocated"]
+                                            ]
+                                            if not available_pb_agents:
+                                                # No more capacity - stop allocation
+                                                break
+                            else:
+                                # If NTBP rows are fewer than total capacity, allocate ALL to a single agent
+                                available_pb_agents = [
+                                    a
+                                    for a in agents_with_pb_preference
+                                    if a["capacity"] > a["allocated"]
+                                ]
+                                if available_pb_agents:
+                                    # Sort by remaining capacity (highest first) to pick best agent
+                                    available_pb_agents.sort(
+                                        key=lambda x: x["capacity"] - x["allocated"],
+                                        reverse=True,
+                                    )
+                                    # Allocate ALL NTBP rows, starting with the agent with highest capacity
+                                    # If that agent fills up, continue with next agent
+                                    remaining_ntbp_rows = all_ntbp_rows.copy()
+                                    for agent in available_pb_agents:
+                                        if not remaining_ntbp_rows:
+                                            break
+                                        available = (
+                                            agent["capacity"] - agent["allocated"]
+                                        )
+                                        if available > 0:
+                                            rows_to_assign = min(
+                                                available, len(remaining_ntbp_rows)
+                                            )
+                                            if rows_to_assign > 0:
+                                                assigned = remaining_ntbp_rows[
+                                                    :rows_to_assign
+                                                ]
+                                                agent["row_indices"].extend(assigned)
+                                                agent["allocated"] += rows_to_assign
+                                                for idx in assigned:
+                                                    processed_df.at[
+                                                        idx, "Agent Name"
+                                                    ] = agent["name"]
+                                                remaining_ntbp_rows = (
+                                                    remaining_ntbp_rows[rows_to_assign:]
+                                                )
+
                         # Step 3: FIRST PRIORITY - Allocate First Priority matched work to senior agents FIRST
                         # This takes precedence over unmatched insurance
-                        
+
                         # Check senior agent remaining capacity before Step 3
-                        senior_capacity_before = sum(a['capacity'] - a['allocated'] for a in senior_agents)
-                        
+                        senior_capacity_before = sum(
+                            a["capacity"] - a["allocated"] for a in senior_agents
+                        )
+
                         # ONLY process First Priority matched work for senior agents
-                        priority = 'First Priority'
+                        priority = "First Priority"
                         # Collect all unallocated First Priority matched work across all insurance carriers
-                        priority_work = []  # List of (insurance_carrier, row_index) tuples
-                        for insurance_carrier, priority_data in matched_data_by_insurance_priority.items():
+                        priority_work = (
+                            []
+                        )  # List of (insurance_carrier, row_index) tuples
+                        for (
+                            insurance_carrier,
+                            priority_data,
+                        ) in matched_data_by_insurance_priority.items():
                             if priority in priority_data:
                                 row_indices = priority_data[priority]
                                 # Get unallocated indices for this insurance carrier and priority
-                                unallocated_indices = [idx for idx in row_indices if idx not in [i for ag in agent_allocations for i in ag['row_indices']]]
+                                unallocated_indices = [
+                                    idx
+                                    for idx in row_indices
+                                    if idx
+                                    not in [
+                                        i
+                                        for ag in agent_allocations
+                                        for i in ag["row_indices"]
+                                    ]
+                                ]
                                 for idx in unallocated_indices:
                                     priority_work.append((insurance_carrier, idx))
-                        
+
                         if priority_work:
                             pass
-                            
+
                             # Allocate all First Priority matched work to senior agents, maximizing capacity utilization
                             # But apply Domain/Remark rule: NTBP rows only to PB agents, PB agents only get NTBP rows
-                            
+
                             # Separate priority work into NTBP and non-NTBP
+                            # IMPORTANT: NTBP rows should have been allocated in Step 2.5 to PB preference agents
+                            # Skip NTBP rows here - they should only go to PB preference agents, not senior agents
                             ntbp_priority_work = []
                             non_ntbp_priority_work = []
-                            
+
                             if remark_col and remark_col in processed_df.columns:
                                 for insurance_carrier, row_idx in priority_work:
+                                    # Skip if already allocated (should have been allocated in Step 2.5)
+                                    if row_idx in [
+                                        i
+                                        for ag in agent_allocations
+                                        for i in ag["row_indices"]
+                                    ]:
+                                        continue
+
                                     row_remark = None
                                     if pd.notna(processed_df.at[row_idx, remark_col]):
-                                        row_remark = str(processed_df.at[row_idx, remark_col]).strip().upper()
-                                    
-                                    if row_remark == 'NTBP':
-                                        ntbp_priority_work.append((insurance_carrier, row_idx))
+                                        row_remark = (
+                                            str(processed_df.at[row_idx, remark_col])
+                                            .strip()
+                                            .upper()
+                                        )
+
+                                    if row_remark == "NTBP":
+                                        # NTBP rows should only go to PB preference agents (allocated in Step 2.5)
+                                        # Skip them here - don't allocate to senior agents
+                                        continue
                                     else:
-                                        non_ntbp_priority_work.append((insurance_carrier, row_idx))
+                                        non_ntbp_priority_work.append(
+                                            (insurance_carrier, row_idx)
+                                        )
                             else:
                                 # If no remark column, all rows are non-NTBP
                                 non_ntbp_priority_work = priority_work.copy()
-                            
+
                             # Separate senior agents into PB and non-PB
-                            pb_senior_agents = [a for a in senior_agents if a.get('domain') and str(a.get('domain')).strip().upper() == 'PB']
-                            non_pb_senior_agents = [a for a in senior_agents if not (a.get('domain') and str(a.get('domain')).strip().upper() == 'PB')]
-                            
-                            # Allocate NTBP priority work only to PB senior agents
-                            work_idx = 0
-                            while work_idx < len(ntbp_priority_work):
-                                available_pb_seniors = [a for a in pb_senior_agents if (a['capacity'] - a['allocated']) > 0]
-                                if not available_pb_seniors:
-                                    break
-                                
-                                available_pb_seniors.sort(key=lambda x: x['capacity'] - x['allocated'], reverse=True)
-                                
-                                for senior_agent in available_pb_seniors:
-                                    if work_idx >= len(ntbp_priority_work):
-                                        break
-                                    
-                                    available_capacity = senior_agent['capacity'] - senior_agent['allocated']
-                                    if available_capacity <= 0:
-                                        continue
-                                    
-                                    # Collect rows that can be allocated to this agent (checking "do not allocate" list)
-                                    assignable_rows = []
-                                    rows_processed = 0
-                                    for i in range(work_idx, min(work_idx + available_capacity, len(ntbp_priority_work))):
-                                        insurance_carrier, row_idx = ntbp_priority_work[i]
-                                        rows_processed += 1
-                                        
-                                        # Check if this insurance company is in the agent's "do not allocate" list
-                                        should_not_allocate = False
-                                        if senior_agent.get('insurance_do_not_allocate'):
-                                            insurance_carrier_str = str(insurance_carrier) if insurance_carrier else ''
-                                            for do_not_allocate_comp in senior_agent['insurance_do_not_allocate']:
-                                                do_not_allocate_comp_str = str(do_not_allocate_comp) if do_not_allocate_comp else ''
-                                                if insurance_carrier_str and do_not_allocate_comp_str:
-                                                    if (insurance_carrier_str.lower() in do_not_allocate_comp_str.lower() or 
-                                                        do_not_allocate_comp_str.lower() in insurance_carrier_str.lower() or
-                                                        insurance_carrier_str == do_not_allocate_comp_str):
-                                                        should_not_allocate = True
-                                                        break
-                                        
-                                        # Only add row if agent can be allocated this insurance company
-                                        if not should_not_allocate:
-                                            assignable_rows.append((insurance_carrier, row_idx))
-                                    
-                                    rows_to_assign = len(assignable_rows)
-                                    
-                                    if rows_to_assign > 0:
-                                        agent_id = senior_agent.get('id', senior_agent.get('name', 'Unknown'))
-                                        for insurance_carrier, row_idx in assignable_rows:
-                                            senior_agent['row_indices'].append(row_idx)
-                                            
-                                            if agent_id in ins_group_allocations:
-                                                insurance_carrier_upper = insurance_carrier.upper().strip()
-                                                if any(insurance_carrier_upper == ic.upper().strip() for ic in DD_INS_GROUP):
-                                                    ins_group_allocations[agent_id] += 1
-                                            if agent_id in toolkit_group_allocations:
-                                                insurance_carrier_upper = insurance_carrier.upper().strip()
-                                                if any(insurance_carrier_upper == ic.upper().strip() for ic in DD_TOOLKIT_GROUP):
-                                                    toolkit_group_allocations[agent_id] += 1
-                                        
-                                        senior_agent['allocated'] += rows_to_assign
-                                    
-                                    # Increment work_idx by number of rows processed (including skipped ones)
-                                    work_idx += rows_processed
-                            
+                            # Check both domain == 'PB' and allocation preference contains 'PB'
+                            pb_senior_agents = [
+                                a
+                                for a in senior_agents
+                                if (
+                                    (
+                                        a.get("domain")
+                                        and str(a.get("domain")).strip().upper() == "PB"
+                                    )
+                                    or a.get("has_pb_preference", False)
+                                )
+                            ]
+                            non_pb_senior_agents = [
+                                a
+                                for a in senior_agents
+                                if not (
+                                    (
+                                        a.get("domain")
+                                        and str(a.get("domain")).strip().upper() == "PB"
+                                    )
+                                    or a.get("has_pb_preference", False)
+                                )
+                            ]
+
+                            # NTBP rows should have been allocated in Step 2.5 to PB preference agents only
+                            # Skip NTBP allocation here - ntbp_priority_work should be empty since we skip NTBP rows above
+                            # NTBP rows are NOT allocated in Step 3 - they should only go to PB preference agents (Step 2.5)
+
                             # Allocate non-NTBP priority work only to non-PB senior agents
                             work_idx = 0
                             while work_idx < len(non_ntbp_priority_work):
-                                available_non_pb_seniors = [a for a in non_pb_senior_agents if (a['capacity'] - a['allocated']) > 0]
+                                available_non_pb_seniors = [
+                                    a
+                                    for a in non_pb_senior_agents
+                                    if (a["capacity"] - a["allocated"]) > 0
+                                ]
                                 if not available_non_pb_seniors:
                                     break
-                                
-                                available_non_pb_seniors.sort(key=lambda x: x['capacity'] - x['allocated'], reverse=True)
-                                
+
+                                available_non_pb_seniors.sort(
+                                    key=lambda x: x["capacity"] - x["allocated"],
+                                    reverse=True,
+                                )
+
                                 for senior_agent in available_non_pb_seniors:
                                     if work_idx >= len(non_ntbp_priority_work):
                                         break
-                                    
-                                    available_capacity = senior_agent['capacity'] - senior_agent['allocated']
+
+                                    available_capacity = (
+                                        senior_agent["capacity"]
+                                        - senior_agent["allocated"]
+                                    )
                                     if available_capacity <= 0:
                                         continue
-                                    
+
                                     # Collect rows that can be allocated to this agent (checking "do not allocate" list)
                                     assignable_rows = []
                                     rows_processed = 0
-                                    for i in range(work_idx, min(work_idx + available_capacity, len(non_ntbp_priority_work))):
-                                        insurance_carrier, row_idx = non_ntbp_priority_work[i]
+                                    for i in range(
+                                        work_idx,
+                                        min(
+                                            work_idx + available_capacity,
+                                            len(non_ntbp_priority_work),
+                                        ),
+                                    ):
+                                        insurance_carrier, row_idx = (
+                                            non_ntbp_priority_work[i]
+                                        )
                                         rows_processed += 1
-                                        
+
                                         # Check if this insurance company is in the agent's "do not allocate" list
                                         should_not_allocate = False
-                                        if senior_agent.get('insurance_do_not_allocate'):
-                                            insurance_carrier_str = str(insurance_carrier) if insurance_carrier else ''
-                                            for do_not_allocate_comp in senior_agent['insurance_do_not_allocate']:
-                                                do_not_allocate_comp_str = str(do_not_allocate_comp) if do_not_allocate_comp else ''
-                                                if insurance_carrier_str and do_not_allocate_comp_str:
-                                                    if (insurance_carrier_str.lower() in do_not_allocate_comp_str.lower() or 
-                                                        do_not_allocate_comp_str.lower() in insurance_carrier_str.lower() or
-                                                        insurance_carrier_str == do_not_allocate_comp_str):
+                                        if senior_agent.get(
+                                            "insurance_do_not_allocate"
+                                        ):
+                                            insurance_carrier_str = (
+                                                str(insurance_carrier)
+                                                if insurance_carrier
+                                                else ""
+                                            )
+                                            for do_not_allocate_comp in senior_agent[
+                                                "insurance_do_not_allocate"
+                                            ]:
+                                                do_not_allocate_comp_str = (
+                                                    str(do_not_allocate_comp)
+                                                    if do_not_allocate_comp
+                                                    else ""
+                                                )
+                                                if (
+                                                    insurance_carrier_str
+                                                    and do_not_allocate_comp_str
+                                                ):
+                                                    if (
+                                                        insurance_carrier_str.lower()
+                                                        in do_not_allocate_comp_str.lower()
+                                                        or do_not_allocate_comp_str.lower()
+                                                        in insurance_carrier_str.lower()
+                                                        or insurance_carrier_str
+                                                        == do_not_allocate_comp_str
+                                                    ):
                                                         should_not_allocate = True
                                                         break
-                                        
+
                                         # Only add row if agent can be allocated this insurance company
                                         if not should_not_allocate:
-                                            assignable_rows.append((insurance_carrier, row_idx))
-                                    
+                                            assignable_rows.append(
+                                                (insurance_carrier, row_idx)
+                                            )
+
                                     rows_to_assign = len(assignable_rows)
-                                    
+
                                     if rows_to_assign > 0:
-                                        agent_id = senior_agent.get('id', senior_agent.get('name', 'Unknown'))
-                                        for insurance_carrier, row_idx in assignable_rows:
-                                            senior_agent['row_indices'].append(row_idx)
-                                            
+                                        agent_id = senior_agent.get(
+                                            "id", senior_agent.get("name", "Unknown")
+                                        )
+                                        for (
+                                            insurance_carrier,
+                                            row_idx,
+                                        ) in assignable_rows:
+                                            senior_agent["row_indices"].append(row_idx)
+
                                             if agent_id in ins_group_allocations:
-                                                insurance_carrier_upper = insurance_carrier.upper().strip()
-                                                if any(insurance_carrier_upper == ic.upper().strip() for ic in DD_INS_GROUP):
+                                                insurance_carrier_upper = (
+                                                    insurance_carrier.upper().strip()
+                                                )
+                                                if any(
+                                                    insurance_carrier_upper
+                                                    == ic.upper().strip()
+                                                    for ic in DD_INS_GROUP
+                                                ):
                                                     ins_group_allocations[agent_id] += 1
                                             if agent_id in toolkit_group_allocations:
-                                                insurance_carrier_upper = insurance_carrier.upper().strip()
-                                                if any(insurance_carrier_upper == ic.upper().strip() for ic in DD_TOOLKIT_GROUP):
-                                                    toolkit_group_allocations[agent_id] += 1
-                                        
-                                        senior_agent['allocated'] += rows_to_assign
-                                    
+                                                insurance_carrier_upper = (
+                                                    insurance_carrier.upper().strip()
+                                                )
+                                                if any(
+                                                    insurance_carrier_upper
+                                                    == ic.upper().strip()
+                                                    for ic in DD_TOOLKIT_GROUP
+                                                ):
+                                                    toolkit_group_allocations[
+                                                        agent_id
+                                                    ] += 1
+
+                                        senior_agent["allocated"] += rows_to_assign
+
                                     # Increment work_idx by number of rows processed (including skipped ones)
                                     work_idx += rows_processed
-                                
+
                                 # Log progress
-                                if work_idx % 50 == 0 and work_idx < len(non_ntbp_priority_work):
+                                if work_idx % 50 == 0 and work_idx < len(
+                                    non_ntbp_priority_work
+                                ):
                                     pass
-                            
+
                         else:
                             pass
-                        
+
                         # Note: Second/Third Priority matched work will be allocated to non-seniors in Step 5
-                        senior_capacity_after = sum(a['capacity'] - a['allocated'] for a in senior_agents)
-                        
+                        senior_capacity_after = sum(
+                            a["capacity"] - a["allocated"] for a in senior_agents
+                        )
+
                         # Step 4: Allocate unmatched insurance companies to senior agents (after First Priority matched work)
                         if unmatched_insurance_companies and senior_agents:
-                            for insurance_carrier, priority_data in unmatched_data_by_priority.items():
+                            for (
+                                insurance_carrier,
+                                priority_data,
+                            ) in unmatched_data_by_priority.items():
                                 # Process by priority order
-                                for priority in ['First Priority', 'Second Priority', 'Third Priority']:
+                                for priority in [
+                                    "First Priority",
+                                    "Second Priority",
+                                    "Third Priority",
+                                ]:
                                     if priority in priority_data:
                                         row_indices = priority_data[priority]
-                                        
+
                                         # Only senior agents can handle unmatched insurance
-                                        available_senior_agents = [a for a in senior_agents if (a['capacity'] - a['allocated']) > 0]
-                                        
+                                        available_senior_agents = [
+                                            a
+                                            for a in senior_agents
+                                            if (a["capacity"] - a["allocated"]) > 0
+                                        ]
+
                                         # Filter row indices based on Domain/Remark rule: NTBP rows only go to PB agents
                                         filtered_row_indices = []
-                                        if remark_col and remark_col in processed_df.columns:
+                                        if (
+                                            remark_col
+                                            and remark_col in processed_df.columns
+                                        ):
                                             for row_idx in row_indices:
                                                 row_remark = None
-                                                if pd.notna(processed_df.at[row_idx, remark_col]):
-                                                    row_remark = str(processed_df.at[row_idx, remark_col]).strip().upper()
-                                                
-                                                row_is_ntbp = (row_remark == 'NTBP')
-                                                
+                                                if pd.notna(
+                                                    processed_df.at[row_idx, remark_col]
+                                                ):
+                                                    row_remark = (
+                                                        str(
+                                                            processed_df.at[
+                                                                row_idx, remark_col
+                                                            ]
+                                                        )
+                                                        .strip()
+                                                        .upper()
+                                                    )
+
+                                                row_is_ntbp = row_remark == "NTBP"
+
                                                 # For unmatched insurance, we'll filter agents later, but keep all rows for now
                                                 # The actual filtering will happen when assigning to specific agents
                                                 filtered_row_indices.append(row_idx)
                                         else:
                                             filtered_row_indices = row_indices
-                                        
-                                        if available_senior_agents and filtered_row_indices:
+
+                                        if (
+                                            available_senior_agents
+                                            and filtered_row_indices
+                                        ):
                                             # Distribute unmatched insurance rows among senior agents by priority
                                             # Sort by remaining capacity (highest first)
-                                            available_senior_agents.sort(key=lambda x: x['capacity'] - x['allocated'], reverse=True)
-                                            
+                                            available_senior_agents.sort(
+                                                key=lambda x: x["capacity"]
+                                                - x["allocated"],
+                                                reverse=True,
+                                            )
+
                                             # Allocate to senior agents up to their capacity
                                             row_idx = 0
                                             for senior_agent in available_senior_agents:
                                                 if row_idx >= len(filtered_row_indices):
                                                     break
-                                                
+
                                                 # Check if this insurance company is in the agent's "do not allocate" list
                                                 should_not_allocate = False
-                                                if senior_agent.get('insurance_do_not_allocate'):
-                                                    for do_not_allocate_comp in senior_agent['insurance_do_not_allocate']:
-                                                        if (insurance_carrier.lower() in do_not_allocate_comp.lower() or 
-                                                            do_not_allocate_comp.lower() in insurance_carrier.lower() or
-                                                            insurance_carrier == do_not_allocate_comp):
+                                                if senior_agent.get(
+                                                    "insurance_do_not_allocate"
+                                                ):
+                                                    for (
+                                                        do_not_allocate_comp
+                                                    ) in senior_agent[
+                                                        "insurance_do_not_allocate"
+                                                    ]:
+                                                        if (
+                                                            insurance_carrier.lower()
+                                                            in do_not_allocate_comp.lower()
+                                                            or do_not_allocate_comp.lower()
+                                                            in insurance_carrier.lower()
+                                                            or insurance_carrier
+                                                            == do_not_allocate_comp
+                                                        ):
                                                             should_not_allocate = True
                                                             break
-                                                
+
                                                 # Skip this agent if insurance company is in their "do not allocate" list
                                                 if should_not_allocate:
                                                     continue
-                                                
-                                                available_capacity = senior_agent['capacity'] - senior_agent['allocated']
+
+                                                available_capacity = (
+                                                    senior_agent["capacity"]
+                                                    - senior_agent["allocated"]
+                                                )
                                                 if available_capacity > 0:
                                                     # Filter rows based on Domain/Remark rule for this specific agent
-                                                    agent_domain = senior_agent.get('domain')
-                                                    agent_is_pb = (agent_domain is not None and agent_domain.upper() == 'PB')
-                                                    
+                                                    agent_domain = senior_agent.get(
+                                                        "domain"
+                                                    )
+                                                    agent_has_pb_pref = (
+                                                        senior_agent.get(
+                                                            "has_pb_preference", False
+                                                        )
+                                                    )
+                                                    # Agent is PB if domain is 'PB' OR allocation preference contains 'PB'
+                                                    agent_is_pb = (
+                                                        agent_domain is not None
+                                                        and agent_domain.upper() == "PB"
+                                                    ) or agent_has_pb_pref
+
                                                     # Collect rows that match this agent's domain requirement
                                                     matching_rows = []
-                                                    for check_idx in range(row_idx, min(row_idx + available_capacity, len(filtered_row_indices))):
-                                                        actual_row_idx = filtered_row_indices[check_idx]
+                                                    for check_idx in range(
+                                                        row_idx,
+                                                        min(
+                                                            row_idx
+                                                            + available_capacity,
+                                                            len(filtered_row_indices),
+                                                        ),
+                                                    ):
+                                                        actual_row_idx = (
+                                                            filtered_row_indices[
+                                                                check_idx
+                                                            ]
+                                                        )
                                                         row_remark = None
-                                                        if remark_col and remark_col in processed_df.columns and pd.notna(processed_df.at[actual_row_idx, remark_col]):
-                                                            row_remark = str(processed_df.at[actual_row_idx, remark_col]).strip().upper()
-                                                        
-                                                        row_is_ntbp = (row_remark == 'NTBP')
-                                                        
-                                                        # Rule: NTBP rows only go to PB agents, and PB agents only get NTBP rows (irrespective of priority)
-                                                        if row_is_ntbp and agent_is_pb:
-                                                            # NTBP row and PB agent - match
-                                                            matching_rows.append(actual_row_idx)
-                                                        elif not row_is_ntbp and not agent_is_pb:
+                                                        if (
+                                                            remark_col
+                                                            and remark_col
+                                                            in processed_df.columns
+                                                            and pd.notna(
+                                                                processed_df.at[
+                                                                    actual_row_idx,
+                                                                    remark_col,
+                                                                ]
+                                                            )
+                                                        ):
+                                                            row_remark = (
+                                                                str(
+                                                                    processed_df.at[
+                                                                        actual_row_idx,
+                                                                        remark_col,
+                                                                    ]
+                                                                )
+                                                                .strip()
+                                                                .upper()
+                                                            )
+
+                                                        row_is_ntbp = (
+                                                            row_remark == "NTBP"
+                                                        )
+
+                                                        # IMPORTANT: NTBP rows should ONLY be allocated in Step 2.5 to PB preference agents
+                                                        # Skip NTBP rows here - they should not be allocated in Step 4
+                                                        if row_is_ntbp:
+                                                            # Skip NTBP rows - they should only go to PB preference agents (Step 2.5)
+                                                            continue
+                                                        elif (
+                                                            not row_is_ntbp
+                                                            and not agent_is_pb
+                                                        ):
                                                             # Non-NTBP row and non-PB agent - match
-                                                            matching_rows.append(actual_row_idx)
-                                                        # Otherwise: NTBP row with non-PB agent, or non-NTBP row with PB agent - no match
-                                                    
+                                                            matching_rows.append(
+                                                                actual_row_idx
+                                                            )
+                                                        # Otherwise: non-NTBP row with PB agent - no match (PB agents should only get NTBP, but NTBP is handled in Step 2.5)
+
                                                     rows_to_assign = len(matching_rows)
                                                     if rows_to_assign > 0:
-                                                        agent_id = senior_agent.get('id', senior_agent.get('name', 'Unknown'))
+                                                        agent_id = senior_agent.get(
+                                                            "id",
+                                                            senior_agent.get(
+                                                                "name", "Unknown"
+                                                            ),
+                                                        )
                                                         # Track INS and Toolkit group allocations (case-insensitive)
-                                                        insurance_carrier_upper = insurance_carrier.upper().strip()
-                                                        for assigned_row_idx in matching_rows:
-                                                            if agent_id in ins_group_allocations:
-                                                                if any(insurance_carrier_upper == ic.upper().strip() for ic in DD_INS_GROUP):
-                                                                    ins_group_allocations[agent_id] += 1
-                                                            if agent_id in toolkit_group_allocations:
-                                                                if any(insurance_carrier_upper == ic.upper().strip() for ic in DD_TOOLKIT_GROUP):
-                                                                    toolkit_group_allocations[agent_id] += 1
-                                                        
-                                                        senior_agent['row_indices'].extend(matching_rows)
-                                                        senior_agent['allocated'] += rows_to_assign
+                                                        insurance_carrier_upper = (
+                                                            insurance_carrier.upper().strip()
+                                                        )
+                                                        for (
+                                                            assigned_row_idx
+                                                        ) in matching_rows:
+                                                            if (
+                                                                agent_id
+                                                                in ins_group_allocations
+                                                            ):
+                                                                if any(
+                                                                    insurance_carrier_upper
+                                                                    == ic.upper().strip()
+                                                                    for ic in DD_INS_GROUP
+                                                                ):
+                                                                    ins_group_allocations[
+                                                                        agent_id
+                                                                    ] += 1
+                                                            if (
+                                                                agent_id
+                                                                in toolkit_group_allocations
+                                                            ):
+                                                                if any(
+                                                                    insurance_carrier_upper
+                                                                    == ic.upper().strip()
+                                                                    for ic in DD_TOOLKIT_GROUP
+                                                                ):
+                                                                    toolkit_group_allocations[
+                                                                        agent_id
+                                                                    ] += 1
+
+                                                        senior_agent[
+                                                            "row_indices"
+                                                        ].extend(matching_rows)
+                                                        senior_agent[
+                                                            "allocated"
+                                                        ] += rows_to_assign
                                                         row_idx += len(matching_rows)
-                                            
+
                                             # If there are remaining unmatched rows that couldn't fit in senior capacity
                                             # they will be handled later or logged
                                             if row_idx < len(row_indices):
                                                 pass
-                        
+
                         # Step 5: Allocate remaining matched insurance companies to capable agents (normal allocation)
-                        
-                        for insurance_carrier, priority_data in matched_data_by_insurance_priority.items():
+
+                        for (
+                            insurance_carrier,
+                            priority_data,
+                        ) in matched_data_by_insurance_priority.items():
                             # Process First Priority first (senior agents get priority)
-                            for priority in ['First Priority', 'Second Priority', 'Third Priority']:
+                            for priority in [
+                                "First Priority",
+                                "Second Priority",
+                                "Third Priority",
+                            ]:
                                 if priority in priority_data:
                                     row_indices = priority_data[priority]
-                                    
+
                                     # Filter out already allocated rows
-                                    unallocated_row_indices = [idx for idx in row_indices if idx not in [i for ag in agent_allocations for i in ag['row_indices']]]
-                                    
+                                    unallocated_row_indices = [
+                                        idx
+                                        for idx in row_indices
+                                        if idx
+                                        not in [
+                                            i
+                                            for ag in agent_allocations
+                                            for i in ag["row_indices"]
+                                        ]
+                                    ]
+
+                                    # Exclude NTBP rows - they should only go to PB preference agents (allocated in Step 2.5)
+                                    if (
+                                        remark_col
+                                        and remark_col in processed_df.columns
+                                    ):
+                                        filtered_indices = []
+                                        for idx in unallocated_row_indices:
+                                            if pd.notna(
+                                                processed_df.at[idx, remark_col]
+                                            ):
+                                                row_remark = (
+                                                    str(
+                                                        processed_df.at[idx, remark_col]
+                                                    )
+                                                    .strip()
+                                                    .upper()
+                                                )
+                                                if row_remark == "NTBP":
+                                                    # Skip NTBP rows - they should only go to PB preference agents
+                                                    continue
+                                            filtered_indices.append(idx)
+                                        unallocated_row_indices = filtered_indices
+
                                     if not unallocated_row_indices:
                                         continue
-                                    
+
                                     # For First Priority and Unknown insurance, ONLY consider senior agents
                                     # For Second/Third Priority, EXCLUDE senior agents (they should only get First Priority)
-                                    if priority == 'First Priority' or insurance_carrier == 'Unknown':
+                                    if (
+                                        priority == "First Priority"
+                                        or insurance_carrier == "Unknown"
+                                    ):
                                         # First Priority and Unknown: ONLY senior agents
-                                        agents_to_check = [a for a in agent_allocations if a['is_senior']]
+                                        agents_to_check = [
+                                            a
+                                            for a in agent_allocations
+                                            if a["is_senior"]
+                                        ]
                                         if not agents_to_check:
                                             continue
                                     else:
                                         # Second/Third Priority: EXCLUDE senior agents - they should only handle First Priority work
-                                        agents_to_check = [a for a in agent_allocations if not a['is_senior']]
+                                        agents_to_check = [
+                                            a
+                                            for a in agent_allocations
+                                            if not a["is_senior"]
+                                        ]
                                         if not agents_to_check:
                                             continue
-                                    
+
                                     # Find agents who can work with this insurance company
                                     capable_agents = []
                                     for agent in agents_to_check:
                                         # Skip if agent is at capacity
-                                        if agent['capacity'] - agent['allocated'] <= 0:
+                                        if agent["capacity"] - agent["allocated"] <= 0:
                                             continue
-                                        
+
                                         # Check if agent can work with this insurance company
                                         can_work = False
-                                        
+
                                         # First check if this insurance company is in the agent's "do not allocate" list
                                         should_not_allocate = False
-                                        if agent.get('insurance_do_not_allocate'):
-                                            insurance_carrier_str = str(insurance_carrier) if insurance_carrier else ''
-                                            for do_not_allocate_comp in agent['insurance_do_not_allocate']:
-                                                do_not_allocate_comp_str = str(do_not_allocate_comp) if do_not_allocate_comp else ''
-                                                if insurance_carrier_str and do_not_allocate_comp_str:
-                                                    if (insurance_carrier_str.lower() in do_not_allocate_comp_str.lower() or 
-                                                        do_not_allocate_comp_str.lower() in insurance_carrier_str.lower() or
-                                                        insurance_carrier_str == do_not_allocate_comp_str):
+                                        if agent.get("insurance_do_not_allocate"):
+                                            insurance_carrier_str = (
+                                                str(insurance_carrier)
+                                                if insurance_carrier
+                                                else ""
+                                            )
+                                            for do_not_allocate_comp in agent[
+                                                "insurance_do_not_allocate"
+                                            ]:
+                                                do_not_allocate_comp_str = (
+                                                    str(do_not_allocate_comp)
+                                                    if do_not_allocate_comp
+                                                    else ""
+                                                )
+                                                if (
+                                                    insurance_carrier_str
+                                                    and do_not_allocate_comp_str
+                                                ):
+                                                    if (
+                                                        insurance_carrier_str.lower()
+                                                        in do_not_allocate_comp_str.lower()
+                                                        or do_not_allocate_comp_str.lower()
+                                                        in insurance_carrier_str.lower()
+                                                        or insurance_carrier_str
+                                                        == do_not_allocate_comp_str
+                                                    ):
                                                         should_not_allocate = True
                                                         break
-                                        
+
                                         # If agent should not be allocated this insurance company, skip them
                                         if should_not_allocate:
                                             continue
-                                        
+
                                         # Senior agents can work with any insurance company (unless in do not allocate list)
-                                        if agent['is_senior']:
+                                        if agent["is_senior"]:
                                             can_work = True
-                                        elif not agent['insurance_companies']:  # If no specific companies listed, can work with any
+                                        elif not agent[
+                                            "insurance_companies"
+                                        ]:  # If no specific companies listed, can work with any
                                             can_work = True
                                         else:
                                             # Check if insurance carrier matches any of the agent's working companies
-                                            for comp in agent['insurance_companies']:
-                                                if (insurance_carrier.lower() in comp.lower() or 
-                                                    comp.lower() in insurance_carrier.lower() or
-                                                    insurance_carrier == comp):
+                                            for comp in agent["insurance_companies"]:
+                                                if (
+                                                    insurance_carrier.lower()
+                                                    in comp.lower()
+                                                    or comp.lower()
+                                                    in insurance_carrier.lower()
+                                                    or insurance_carrier == comp
+                                                ):
                                                     can_work = True
                                                     break
-                                        
+
                                         # Check if agent needs training for this insurance company
                                         needs_training = False
-                                        if agent['insurance_needs_training']:
-                                            for training_comp in agent['insurance_needs_training']:
-                                                if (insurance_carrier.lower() in training_comp.lower() or 
-                                                    training_comp.lower() in insurance_carrier.lower() or
-                                                    insurance_carrier == training_comp):
+                                        if agent["insurance_needs_training"]:
+                                            for training_comp in agent[
+                                                "insurance_needs_training"
+                                            ]:
+                                                if (
+                                                    insurance_carrier.lower()
+                                                    in training_comp.lower()
+                                                    or training_comp.lower()
+                                                    in insurance_carrier.lower()
+                                                    or insurance_carrier
+                                                    == training_comp
+                                                ):
                                                     needs_training = True
                                                     break
-                                        
+
                                         # Agent is capable if they can work AND don't need training
                                         # Domain/Remark filtering will happen when assigning rows
                                         if can_work and not needs_training:
                                             capable_agents.append(agent)
-                                    
+
                                     if capable_agents:
                                         # For First Priority and Unknown, verify we only have seniors
-                                        if priority == 'First Priority' or insurance_carrier == 'Unknown':
+                                        if (
+                                            priority == "First Priority"
+                                            or insurance_carrier == "Unknown"
+                                        ):
                                             # Double-check: filter to only seniors with capacity
-                                            available_senior = [a for a in capable_agents if a['is_senior'] and (a['capacity'] - a['allocated']) > 0]
+                                            available_senior = [
+                                                a
+                                                for a in capable_agents
+                                                if a["is_senior"]
+                                                and (a["capacity"] - a["allocated"]) > 0
+                                            ]
                                             if available_senior:
                                                 capable_agents = available_senior
                                             else:
                                                 # No senior capacity available - skip allocation (keep unassigned)
                                                 continue
-                                        
-                                        # Sticky distribution: keep same carrier per agent until exhausted, then allow new carriers
-                                        # Separate rows into NTBP and non-NTBP respecting Domain/Remark rule
-                                        ntbp_rows = []
+
+                                        # IMPORTANT: NTBP rows should ONLY be allocated in Step 2.5 to PB preference agents
+                                        # Filter out any NTBP rows that might have slipped through - they should remain unallocated
+                                        # if not allocated in Step 2.5
                                         non_ntbp_rows = []
-                                        if remark_col and remark_col in processed_df.columns:
+                                        if (
+                                            remark_col
+                                            and remark_col in processed_df.columns
+                                        ):
                                             for r_idx in unallocated_row_indices:
                                                 row_remark = None
-                                                if pd.notna(processed_df.at[r_idx, remark_col]):
-                                                    row_remark = str(processed_df.at[r_idx, remark_col]).strip().upper()
-                                                if row_remark == 'NTBP':
-                                                    ntbp_rows.append(r_idx)
+                                                if pd.notna(
+                                                    processed_df.at[r_idx, remark_col]
+                                                ):
+                                                    row_remark = (
+                                                        str(
+                                                            processed_df.at[
+                                                                r_idx, remark_col
+                                                            ]
+                                                        )
+                                                        .strip()
+                                                        .upper()
+                                                    )
+                                                # Skip NTBP rows - they should only go to PB preference agents (Step 2.5)
+                                                if row_remark == "NTBP":
+                                                    continue  # Skip NTBP rows completely
                                                 else:
                                                     non_ntbp_rows.append(r_idx)
                                         else:
-                                            non_ntbp_rows = unallocated_row_indices.copy()
-                                        # Partition capable agents by PB domain
-                                        pb_agents = [a for a in capable_agents if a.get('domain') and str(a.get('domain')).strip().upper() == 'PB']
-                                        non_pb_agents = [a for a in capable_agents if not (a.get('domain') and str(a.get('domain')).strip().upper() == 'PB')]
-                                        
+                                            non_ntbp_rows = (
+                                                unallocated_row_indices.copy()
+                                            )
+
+                                        # Only process non-NTBP rows
+                                        # Partition capable agents by PB domain or allocation preference
+                                        pb_agents = [
+                                            a
+                                            for a in capable_agents
+                                            if (
+                                                (
+                                                    a.get("domain")
+                                                    and str(a.get("domain"))
+                                                    .strip()
+                                                    .upper()
+                                                    == "PB"
+                                                )
+                                                or a.get("has_pb_preference", False)
+                                            )
+                                        ]
+                                        non_pb_agents = [
+                                            a
+                                            for a in capable_agents
+                                            if not (
+                                                (
+                                                    a.get("domain")
+                                                    and str(a.get("domain"))
+                                                    .strip()
+                                                    .upper()
+                                                    == "PB"
+                                                )
+                                                or a.get("has_pb_preference", False)
+                                            )
+                                        ]
+
                                         def sticky_assign(rows, agents, carrier):
                                             if not rows or not agents:
                                                 return
                                             # Phase 1: agents already on this carrier or unassigned
-                                            phase1_agents = [a for a in agents if (a.get('assigned_insurance') in (None, carrier)) and (a['capacity'] - a['allocated']) > 0]
+                                            phase1_agents = [
+                                                a
+                                                for a in agents
+                                                if (
+                                                    a.get("assigned_insurance")
+                                                    in (None, carrier)
+                                                )
+                                                and (a["capacity"] - a["allocated"]) > 0
+                                            ]
                                             # Sort by remaining capacity desc to maximize concentration
-                                            phase1_agents.sort(key=lambda a: a['capacity'] - a['allocated'], reverse=True)
+                                            phase1_agents.sort(
+                                                key=lambda a: a["capacity"]
+                                                - a["allocated"],
+                                                reverse=True,
+                                            )
                                             row_pos = 0
                                             while row_pos < len(rows) and phase1_agents:
                                                 for agent in phase1_agents:
                                                     if row_pos >= len(rows):
                                                         break
-                                                    remaining = agent['capacity'] - agent['allocated']
+                                                    remaining = (
+                                                        agent["capacity"]
+                                                        - agent["allocated"]
+                                                    )
                                                     if remaining <= 0:
                                                         continue
-                                                    take = min(remaining, len(rows) - row_pos)
+                                                    take = min(
+                                                        remaining, len(rows) - row_pos
+                                                    )
                                                     if take <= 0:
                                                         continue
-                                                    slice_rows = rows[row_pos:row_pos + take]
-                                                    agent['row_indices'].extend(slice_rows)
-                                                    agent['allocated'] += take
-                                                    if agent.get('assigned_insurance') is None:
-                                                        agent['assigned_insurance'] = carrier
+                                                    slice_rows = rows[
+                                                        row_pos : row_pos + take
+                                                    ]
+                                                    agent["row_indices"].extend(
+                                                        slice_rows
+                                                    )
+                                                    agent["allocated"] += take
+                                                    if (
+                                                        agent.get("assigned_insurance")
+                                                        is None
+                                                    ):
+                                                        agent["assigned_insurance"] = (
+                                                            carrier
+                                                        )
                                                     # Track group allocations
-                                                    agent_id = agent.get('id', agent.get('name', 'Unknown'))
-                                                    carrier_upper = carrier.upper().strip()
-                                                    if agent_id in ins_group_allocations:
-                                                        if any(carrier_upper == ic.upper().strip() for ic in DD_INS_GROUP):
-                                                            ins_group_allocations[agent_id] += take
-                                                    if agent_id in toolkit_group_allocations:
-                                                        if any(carrier_upper == ic.upper().strip() for ic in DD_TOOLKIT_GROUP):
-                                                            toolkit_group_allocations[agent_id] += take
+                                                    agent_id = agent.get(
+                                                        "id",
+                                                        agent.get("name", "Unknown"),
+                                                    )
+                                                    carrier_upper = (
+                                                        carrier.upper().strip()
+                                                    )
+                                                    if (
+                                                        agent_id
+                                                        in ins_group_allocations
+                                                    ):
+                                                        if any(
+                                                            carrier_upper
+                                                            == ic.upper().strip()
+                                                            for ic in DD_INS_GROUP
+                                                        ):
+                                                            ins_group_allocations[
+                                                                agent_id
+                                                            ] += take
+                                                    if (
+                                                        agent_id
+                                                        in toolkit_group_allocations
+                                                    ):
+                                                        if any(
+                                                            carrier_upper
+                                                            == ic.upper().strip()
+                                                            for ic in DD_TOOLKIT_GROUP
+                                                        ):
+                                                            toolkit_group_allocations[
+                                                                agent_id
+                                                            ] += take
                                                     row_pos += take
                                             # Phase 2: remaining rows can go to agents with different carrier if their primary exhausted
                                             if row_pos < len(rows):
-                                                phase2_agents = [a for a in agents if a.get('assigned_insurance') not in (None, carrier) and (a['capacity'] - a['allocated']) > 0]
-                                                phase2_agents.sort(key=lambda a: a['capacity'] - a['allocated'], reverse=True)
-                                                while row_pos < len(rows) and phase2_agents:
+                                                phase2_agents = [
+                                                    a
+                                                    for a in agents
+                                                    if a.get("assigned_insurance")
+                                                    not in (None, carrier)
+                                                    and (a["capacity"] - a["allocated"])
+                                                    > 0
+                                                ]
+                                                phase2_agents.sort(
+                                                    key=lambda a: a["capacity"]
+                                                    - a["allocated"],
+                                                    reverse=True,
+                                                )
+                                                while (
+                                                    row_pos < len(rows)
+                                                    and phase2_agents
+                                                ):
                                                     for agent in phase2_agents:
                                                         if row_pos >= len(rows):
                                                             break
-                                                        remaining = agent['capacity'] - agent['allocated']
+                                                        remaining = (
+                                                            agent["capacity"]
+                                                            - agent["allocated"]
+                                                        )
                                                         if remaining <= 0:
                                                             continue
-                                                        take = min(remaining, len(rows) - row_pos)
+                                                        take = min(
+                                                            remaining,
+                                                            len(rows) - row_pos,
+                                                        )
                                                         if take <= 0:
                                                             continue
-                                                        slice_rows = rows[row_pos:row_pos + take]
-                                                        agent['row_indices'].extend(slice_rows)
-                                                        agent['allocated'] += take
+                                                        slice_rows = rows[
+                                                            row_pos : row_pos + take
+                                                        ]
+                                                        agent["row_indices"].extend(
+                                                            slice_rows
+                                                        )
+                                                        agent["allocated"] += take
                                                         # Do NOT change assigned_insurance here (keep original primary)
-                                                        agent_id = agent.get('id', agent.get('name', 'Unknown'))
-                                                        carrier_upper = carrier.upper().strip()
-                                                        if agent_id in ins_group_allocations:
-                                                            if any(carrier_upper == ic.upper().strip() for ic in DD_INS_GROUP):
-                                                                ins_group_allocations[agent_id] += take
-                                                        if agent_id in toolkit_group_allocations:
-                                                            if any(carrier_upper == ic.upper().strip() for ic in DD_TOOLKIT_GROUP):
-                                                                toolkit_group_allocations[agent_id] += take
+                                                        agent_id = agent.get(
+                                                            "id",
+                                                            agent.get(
+                                                                "name", "Unknown"
+                                                            ),
+                                                        )
+                                                        carrier_upper = (
+                                                            carrier.upper().strip()
+                                                        )
+                                                        if (
+                                                            agent_id
+                                                            in ins_group_allocations
+                                                        ):
+                                                            if any(
+                                                                carrier_upper
+                                                                == ic.upper().strip()
+                                                                for ic in DD_INS_GROUP
+                                                            ):
+                                                                ins_group_allocations[
+                                                                    agent_id
+                                                                ] += take
+                                                        if (
+                                                            agent_id
+                                                            in toolkit_group_allocations
+                                                        ):
+                                                            if any(
+                                                                carrier_upper
+                                                                == ic.upper().strip()
+                                                                for ic in DD_TOOLKIT_GROUP
+                                                            ):
+                                                                toolkit_group_allocations[
+                                                                    agent_id
+                                                                ] += take
                                                         row_pos += take
-                                        # Execute sticky assignment respecting NTBP rules
-                                        if ntbp_rows:
-                                            sticky_assign(ntbp_rows, pb_agents, insurance_carrier)
+
+                                        # Execute sticky assignment for non-NTBP rows only
+                                        # NTBP rows should have been allocated in Step 2.5 to PB preference agents only
+                                        # If any NTBP rows remain unallocated, they will stay unallocated (not assigned to non-PB agents)
                                         if non_ntbp_rows:
-                                            sticky_assign(non_ntbp_rows, non_pb_agents, insurance_carrier)
+                                            sticky_assign(
+                                                non_ntbp_rows,
+                                                non_pb_agents,
+                                                insurance_carrier,
+                                            )
                     else:
                         # Fallback: if no insurance carrier column, use simple capacity-based allocation
-                        # But still apply Domain/Remark rule
-                        # Separate rows into NTBP and non-NTBP
-                        ntbp_rows = []
+                        # IMPORTANT: NTBP rows should ONLY be allocated in Step 2.5 to PB preference agents
+                        # Skip NTBP rows here - they should remain unallocated if not allocated in Step 2.5
                         non_ntbp_rows = []
-                        
+
                         if remark_col and remark_col in processed_df.columns:
                             for idx in range(total_rows):
+                                # Skip already allocated rows (should have been allocated in Step 2.5)
+                                if idx in [
+                                    i
+                                    for ag in agent_allocations
+                                    for i in ag["row_indices"]
+                                ]:
+                                    continue
+
                                 row_remark = None
                                 if pd.notna(processed_df.at[idx, remark_col]):
-                                    row_remark = str(processed_df.at[idx, remark_col]).strip().upper()
-                                
-                                if row_remark == 'NTBP':
-                                    ntbp_rows.append(idx)
+                                    row_remark = (
+                                        str(processed_df.at[idx, remark_col])
+                                        .strip()
+                                        .upper()
+                                    )
+
+                                # Skip NTBP rows - they should only go to PB preference agents (Step 2.5)
+                                if row_remark == "NTBP":
+                                    continue
                                 else:
                                     non_ntbp_rows.append(idx)
                         else:
                             # If no remark column, all rows are non-NTBP
-                            non_ntbp_rows = list(range(total_rows))
-                        
-                        # Separate agents into PB and non-PB
-                        pb_agents = [a for a in agent_allocations if a.get('domain') and str(a.get('domain')).strip().upper() == 'PB']
-                        non_pb_agents = [a for a in agent_allocations if not (a.get('domain') and str(a.get('domain')).strip().upper() == 'PB')]
-                        
-                        # Allocate NTBP rows only to PB agents
+                            # But still skip already allocated rows
+                            non_ntbp_rows = [
+                                idx
+                                for idx in range(total_rows)
+                                if idx
+                                not in [
+                                    i
+                                    for ag in agent_allocations
+                                    for i in ag["row_indices"]
+                                ]
+                            ]
+
+                        # Allocate non-NTBP rows to all available agents (capacity-based)
                         row_idx = 0
-                        for agent in pb_agents:
-                            if row_idx >= len(ntbp_rows):
-                                break
-                            available_capacity = agent['capacity']
-                            actual_allocation = min(available_capacity, len(ntbp_rows) - row_idx)
-                            if actual_allocation > 0:
-                                agent['row_indices'] = ntbp_rows[row_idx:row_idx + actual_allocation]
-                                agent['allocated'] = actual_allocation
-                                row_idx += actual_allocation
-                        
-                        # Allocate non-NTBP rows only to non-PB agents
-                        row_idx = 0
-                        for agent in non_pb_agents:
+                        for agent in agent_allocations:
                             if row_idx >= len(non_ntbp_rows):
                                 break
-                            available_capacity = agent['capacity']
-                            actual_allocation = min(available_capacity, len(non_ntbp_rows) - row_idx)
-                            if actual_allocation > 0:
-                                agent['row_indices'] = non_ntbp_rows[row_idx:row_idx + actual_allocation]
-                                agent['allocated'] = actual_allocation
-                                row_idx += actual_allocation
-                    
+                            available_capacity = agent["capacity"] - agent["allocated"]
+                            if available_capacity > 0:
+                                actual_allocation = min(
+                                    available_capacity, len(non_ntbp_rows) - row_idx
+                                )
+                                if actual_allocation > 0:
+                                    agent["row_indices"].extend(
+                                        non_ntbp_rows[
+                                            row_idx : row_idx + actual_allocation
+                                        ]
+                                    )
+                                    agent["allocated"] += actual_allocation
+                                    row_idx += actual_allocation
+
                     # Soft stickiness rule: prefer keeping same insurance per agent, allow adding new carrier only after
                     # existing carrier rows are exhausted. Actual assignment handled in Step 5 logic.
                     # Here we just set assigned_insurance for agents that currently have a single carrier.
                     if insurance_carrier_col:
                         for agent in agent_allocations:
-                            indices = agent.get('row_indices', [])
+                            indices = agent.get("row_indices", [])
                             if not indices:
                                 continue
                             carrier_groups = {}
                             for idx in indices:
                                 if idx < len(processed_df):
-                                    carrier = processed_df.at[idx, insurance_carrier_col]
+                                    carrier = processed_df.at[
+                                        idx, insurance_carrier_col
+                                    ]
                                     carrier_groups.setdefault(carrier, 0)
                                     carrier_groups[carrier] += 1
                             if len(carrier_groups) == 1:
-                                agent['assigned_insurance'] = next(iter(carrier_groups.keys()))
-                            elif agent.get('assigned_insurance') is None and carrier_groups:
+                                agent["assigned_insurance"] = next(
+                                    iter(carrier_groups.keys())
+                                )
+                            elif (
+                                agent.get("assigned_insurance") is None
+                                and carrier_groups
+                            ):
                                 # Tentatively choose dominant carrier as primary
-                                dominant = max(carrier_groups.items(), key=lambda kv: kv[1])[0]
-                                agent['assigned_insurance'] = dominant
+                                dominant = max(
+                                    carrier_groups.items(), key=lambda kv: kv[1]
+                                )[0]
+                                agent["assigned_insurance"] = dominant
                     # Sort agents by name for display
-                    agent_allocations.sort(key=lambda x: x['name'])
-                    
+                    agent_allocations.sort(key=lambda x: x["name"])
+
                     # Calculate total allocated rows
-                    total_allocated = sum(agent['allocated'] for agent in agent_allocations)
-                    
+                    total_allocated = sum(
+                        agent["allocated"] for agent in agent_allocations
+                    )
+
                     # Print INS and Toolkit group allocation summary
                     # Ensure dictionaries exist (they should be initialized earlier)
-                    if 'ins_group_allocations' not in locals():
+                    if "ins_group_allocations" not in locals():
                         ins_group_allocations = {}
-                    if 'toolkit_group_allocations' not in locals():
+                    if "toolkit_group_allocations" not in locals():
                         toolkit_group_allocations = {}
-                    
+
                     if ins_group_allocations:
                         total_ins = sum(ins_group_allocations.values())
                         # Create mapping from agent_id to agent_name for display
-                        agent_id_to_name = {a.get('id', a.get('name')): a.get('name') for a in agent_allocations}
+                        agent_id_to_name = {
+                            a.get("id", a.get("name")): a.get("name")
+                            for a in agent_allocations
+                        }
                         for agent_id, count in sorted(ins_group_allocations.items()):
                             agent_name = agent_id_to_name.get(agent_id, agent_id)
                             pass
@@ -6117,51 +7284,62 @@ def process_allocation_files_with_dates(allocation_df, data_df, selected_dates, 
                             pass
                     else:
                         pass
-                    
+
                     if toolkit_group_allocations:
                         total_toolkit = sum(toolkit_group_allocations.values())
                         # Create mapping from agent_id to agent_name for display
-                        agent_id_to_name = {a.get('id', a.get('name')): a.get('name') for a in agent_allocations}
-                        for agent_id, count in sorted(toolkit_group_allocations.items()):
+                        agent_id_to_name = {
+                            a.get("id", a.get("name")): a.get("name")
+                            for a in agent_allocations
+                        }
+                        for agent_id, count in sorted(
+                            toolkit_group_allocations.items()
+                        ):
                             agent_name = agent_id_to_name.get(agent_id, agent_id)
                             pass
                         if total_toolkit == 0:
                             pass
                     else:
                         pass
-                    
+
                     # Add Agent Name column to processed_df based on allocation
                     # Initialize Agent Name column if it doesn't exist
-                    if 'Agent Name' not in processed_df.columns:
-                        processed_df['Agent Name'] = ''
-                    
+                    if "Agent Name" not in processed_df.columns:
+                        processed_df["Agent Name"] = ""
+
                     # Set agent name for each allocated row
                     for agent in agent_allocations:
-                        agent_name = agent['name']
-                        row_indices = agent.get('row_indices', [])
+                        agent_name = agent["name"]
+                        row_indices = agent.get("row_indices", [])
                         if row_indices:
                             # Filter to only valid indices within the dataframe
-                            valid_indices = [idx for idx in row_indices if idx < len(processed_df)]
+                            valid_indices = [
+                                idx for idx in row_indices if idx < len(processed_df)
+                            ]
                             if valid_indices:
                                 # Set agent name for all rows allocated to this agent
-                                processed_df.loc[valid_indices, 'Agent Name'] = agent_name
-                    
+                                processed_df.loc[valid_indices, "Agent Name"] = (
+                                    agent_name
+                                )
+
                     # Store agent allocations data globally for individual downloads
                     agent_allocations_data = agent_allocations
-                    
+
                     # Also store for reminder system
                     global agent_allocations_for_reminders
                     agent_allocations_for_reminders = agent_allocations
-                    
+
                     # Calculate allocation statistics
-                    total_allocated = sum(a['allocated'] for a in agent_allocations)
-                    agents_with_work = len([a for a in agent_allocations if a['allocated'] > 0])
-                    
+                    total_allocated = sum(a["allocated"] for a in agent_allocations)
+                    agents_with_work = len(
+                        [a for a in agent_allocations if a["allocated"] > 0]
+                    )
+
                     # Get unmatched insurance companies info (if it exists from allocation process)
                     unmatched_info = ""
                     if insurance_carrier_col and unmatched_insurance_companies:
                         unmatched_info = f"\n🔴 Unmatched Insurance Companies ({len(unmatched_insurance_companies)}): {', '.join(sorted(list(unmatched_insurance_companies))[:5])}{'...' if len(unmatched_insurance_companies) > 5 else ''}\n   ⚠️ These companies were assigned ONLY to senior agents with highest priority."
-                    
+
                     agent_summary = f"""
 👥 Agent Allocation Summary (Capability-Based):
 - Total Agents: {total_agents}
@@ -6178,32 +7356,42 @@ def process_allocation_files_with_dates(allocation_df, data_df, selected_dates, 
 """
                     for i, agent in enumerate(agent_allocations):
                         insurance_info = ""
-                        senior_info = " (Senior Agent)" if agent['is_senior'] else ""
-                        
-                        if agent['is_senior']:
+                        senior_info = " (Senior Agent)" if agent["is_senior"] else ""
+
+                        if agent["is_senior"]:
                             insurance_info = " (Can work: Any insurance company)"
-                        elif agent['insurance_companies']:
+                        elif agent["insurance_companies"]:
                             insurance_info = f" (Can work: {', '.join(agent['insurance_companies'][:2])}{'...' if len(agent['insurance_companies']) > 2 else ''})"
-                        
-                        if agent['insurance_needs_training']:
+
+                        if agent["insurance_needs_training"]:
                             training_info = f" (Needs training: {', '.join(agent['insurance_needs_training'][:2])}{'...' if len(agent['insurance_needs_training']) > 2 else ''})"
                             insurance_info += training_info
-                        
-                        primary = agent.get('assigned_insurance')
+
+                        primary = agent.get("assigned_insurance")
                         # Derive secondary carriers (those allocated rows not matching primary)
                         secondary = []
-                        if primary and 'assigned_insurance' in agent and insurance_carrier_col:
+                        if (
+                            primary
+                            and "assigned_insurance" in agent
+                            and insurance_carrier_col
+                        ):
                             allocated_carriers = set()
-                            for ridx in agent.get('row_indices', []):
+                            for ridx in agent.get("row_indices", []):
                                 if ridx < len(processed_df):
-                                    allocated_carriers.add(processed_df.at[ridx, insurance_carrier_col])
+                                    allocated_carriers.add(
+                                        processed_df.at[ridx, insurance_carrier_col]
+                                    )
                             secondary = [c for c in allocated_carriers if c != primary]
                         primary_info = f" | Primary: {primary}" if primary else ""
-                        secondary_info = f" | Secondary: {', '.join(secondary[:2])}{'...' if len(secondary) > 2 else ''}" if secondary else ""
+                        secondary_info = (
+                            f" | Secondary: {', '.join(secondary[:2])}{'...' if len(secondary) > 2 else ''}"
+                            if secondary
+                            else ""
+                        )
                         agent_summary += f"  {i+1}. {agent['name']}: {agent['allocated']}/{agent['capacity']} rows{senior_info}{insurance_info}{primary_info}{secondary_info}\n"
-                    
+
                     # Calculate priority distribution based on actual allocations
-                    total_allocated = sum(a['allocated'] for a in agent_allocations)
+                    total_allocated = sum(a["allocated"] for a in agent_allocations)
                     if total_allocated > 0:
                         agent_summary += f"""
 📊 Priority Distribution (Based on Actual Allocations):
@@ -6215,15 +7403,21 @@ def process_allocation_files_with_dates(allocation_df, data_df, selected_dates, 
 """
                     else:
                         agent_summary += "\n⚠️ No rows could be allocated due to capacity constraints."
-                        
+
                 elif not agent_name_col:
-                    agent_summary = "\n⚠️ Agent Name column not found in allocation file."
+                    agent_summary = (
+                        "\n⚠️ Agent Name column not found in allocation file."
+                    )
                 elif not counts_col:
                     agent_summary = "\n⚠️ TFD column not found in allocation file."
-                
+
                 # Add information about insurance matching
                 if insurance_carrier_col and insurance_working_col:
-                    training_info = f" and '{insurance_needs_training_col}'" if insurance_needs_training_col else ""
+                    training_info = (
+                        f" and '{insurance_needs_training_col}'"
+                        if insurance_needs_training_col
+                        else ""
+                    )
                     agent_summary += f"\n✅ Insurance capability matching enabled using '{insurance_working_col}'{training_info} and '{insurance_carrier_col}' columns."
                 elif insurance_carrier_col and not insurance_working_col:
                     agent_summary += f"\n⚠️ Insurance carrier column '{insurance_carrier_col}' found, but 'Insurance List' column not found in allocation file."
@@ -6231,27 +7425,45 @@ def process_allocation_files_with_dates(allocation_df, data_df, selected_dates, 
                     agent_summary += f"\n⚠️ 'Insurance List' column found, but 'Dental Primary Ins Carr' column not found in data file."
                 else:
                     agent_summary += f"\nℹ️ Insurance capability matching disabled - using simple capacity-based allocation."
-                
+
                 # Add information about training filtering
                 if insurance_needs_training_col:
                     agent_summary += f"\n🎓 Training-based filtering enabled - agents will not be assigned work for insurance companies they need training for."
-                
+
                 # Add information about senior agents
-                senior_count = sum(1 for agent in agent_allocations if agent['is_senior'])
+                senior_count = sum(
+                    1 for agent in agent_allocations if agent["is_senior"]
+                )
                 if senior_count > 0:
-                    unmatched_note = f" Unmatched insurance companies ({len(unmatched_insurance_companies)}) are assigned ONLY to senior agents with highest priority." if unmatched_insurance_companies else ""
+                    unmatched_note = (
+                        f" Unmatched insurance companies ({len(unmatched_insurance_companies)}) are assigned ONLY to senior agents with highest priority."
+                        if unmatched_insurance_companies
+                        else ""
+                    )
                     agent_summary += f"\n👑 Senior agents detected: {senior_count} - Senior agents can work with any insurance company and get priority for First Priority cases.{unmatched_note}"
             except Exception as e:
                 agent_summary = f"\n⚠️ Error processing agent allocation: {str(e)}"
-        
+
         # Generate result message
         first_priority_dates_list = sorted(list(first_priority_dates))
         second_priority_dates_list = sorted(list(second_priority_dates))
         third_priority_dates_list = sorted(list(third_priority_dates_set))
-        first_priority_dates_str = ', '.join(first_priority_dates_list) if first_priority_dates_list else 'None'
-        second_priority_dates_str = ', '.join(second_priority_dates_list) if second_priority_dates_list else 'None'
-        third_priority_dates_str = ', '.join(third_priority_dates_list) if third_priority_dates_list else 'None'
-        
+        first_priority_dates_str = (
+            ", ".join(first_priority_dates_list)
+            if first_priority_dates_list
+            else "None"
+        )
+        second_priority_dates_str = (
+            ", ".join(second_priority_dates_list)
+            if second_priority_dates_list
+            else "None"
+        )
+        third_priority_dates_str = (
+            ", ".join(third_priority_dates_list)
+            if third_priority_dates_list
+            else "None"
+        )
+
         result_message = f"""✅ Priority processing completed successfully!
 
 📊 Processing Statistics:
@@ -6269,259 +7481,279 @@ def process_allocation_files_with_dates(allocation_df, data_df, selected_dates, 
 📅 Based on column: '{appointment_date_col}'{agent_summary}
 
 💾 Ready to download the processed result file!"""
-        
+
         return result_message, processed_df
-        
+
     except Exception as e:
         return f"❌ Error during processing: {str(e)}", None
 
-@app.route('/')
+
+@app.route("/")
 @login_required
 def index():
     global allocation_data, data_file_data, allocation_filename, data_filename, processing_result
     global agent_processing_result, agent_allocations_data
-    
+
     # Get current user
-    user = get_user_by_username(session.get('user_id'))
-    
+    user = get_user_by_username(session.get("user_id"))
+
     # Load agent work files if user is an agent
     agent_work_files = None
-    if user and user.role == 'agent':
+    if user and user.role == "agent":
         agent_work_files = get_agent_work_files(user.id)
-    
-    current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    
+
+    current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
     # Load all agent work files for admin view
     all_agent_work_files = None
-    if user and user.role == 'admin':
+    if user and user.role == "admin":
         all_agent_work_files = get_all_agent_work_files()
-    
-    return render_template_string(HTML_TEMPLATE, 
-                                allocation_data=allocation_data, 
-                                data_file_data=data_file_data,
-                                allocation_filename=allocation_filename,
-                                data_filename=data_filename,
-                                processing_result=processing_result,
-                                agent_processing_result=agent_processing_result,
-                                agent_allocations_data=agent_allocations_data,
-                                agent_work_files=agent_work_files,
-                                all_agent_work_files=all_agent_work_files,
-                                current_time=current_time)
 
-@app.route('/login', methods=['GET', 'POST'])
+    return render_template_string(
+        HTML_TEMPLATE,
+        allocation_data=allocation_data,
+        data_file_data=data_file_data,
+        allocation_filename=allocation_filename,
+        data_filename=data_filename,
+        processing_result=processing_result,
+        agent_processing_result=agent_processing_result,
+        agent_allocations_data=agent_allocations_data,
+        agent_work_files=agent_work_files,
+        all_agent_work_files=all_agent_work_files,
+        current_time=current_time,
+    )
+
+
+@app.route("/login", methods=["GET", "POST"])
 def login():
-    if request.method == 'POST':
-        username = request.form.get('username')
-        password = request.form.get('password')
-        
+    if request.method == "POST":
+        username = request.form.get("username")
+        password = request.form.get("password")
+
         # Try database authentication first
         user = get_user_by_username(username)
         if user and user.check_password(password):
             # Update last login
             user.last_login = datetime.utcnow()
             db.session.commit()
-            
+
             # Create database session
             session_data = {
-                'user_id': user.username,
-                'user_role': user.role,
-                'user_name': user.name,
-                'user_email': user.email
+                "user_id": user.username,
+                "user_role": user.role,
+                "user_name": user.name,
+                "user_email": user.email,
             }
             db_session = create_user_session(user.id, session_data)
-            
+
             # Set Flask session
-            session['db_session_id'] = db_session.id
+            session["db_session_id"] = db_session.id
             session.update(session_data)
-            
-            return redirect(url_for('dashboard'))
+
+            return redirect(url_for("dashboard"))
         else:
-            flash('Invalid username or password. Please try again.', 'error')
-    
+            flash("Invalid username or password. Please try again.", "error")
+
     return render_template_string(LOGIN_TEMPLATE, GOOGLE_CLIENT_ID=GOOGLE_CLIENT_ID)
 
-@app.route('/google-login')
+
+@app.route("/google-login")
 def google_login():
     """Initiate Google OAuth login"""
     if not GOOGLE_CLIENT_ID:
-        flash('Google OAuth is not configured. Please contact administrator to set up Google OAuth for agent login.', 'error')
-        return redirect(url_for('login'))
-    
+        flash(
+            "Google OAuth is not configured. Please contact administrator to set up Google OAuth for agent login.",
+            "error",
+        )
+        return redirect(url_for("login"))
+
     # Get Google OAuth configuration
     google_provider_cfg = get_google_provider_cfg()
     if not google_provider_cfg:
-        flash('Unable to connect to Google OAuth service. Please check your internet connection and try again.', 'error')
-        return redirect(url_for('login'))
-    
+        flash(
+            "Unable to connect to Google OAuth service. Please check your internet connection and try again.",
+            "error",
+        )
+        return redirect(url_for("login"))
+
     authorization_endpoint = google_provider_cfg["authorization_endpoint"]
-    
+
     # Get the exact callback URL using url_for to ensure consistency
-    callback_url = url_for('callback', _external=True)
-    
+    callback_url = url_for("callback", _external=True)
+
     # Force HTTPS for production (Railway/Heroku)
-    if os.environ.get('DATABASE_URL') or os.environ.get('RAILWAY_ENVIRONMENT'):
+    if os.environ.get("DATABASE_URL") or os.environ.get("RAILWAY_ENVIRONMENT"):
         # Ensure callback URL uses HTTPS in production
-        if callback_url.startswith('http://'):
-            callback_url = callback_url.replace('http://', 'https://', 1)
-    
+        if callback_url.startswith("http://"):
+            callback_url = callback_url.replace("http://", "https://", 1)
+
     # Create request URI with properly URL-encoded redirect_uri
-    redirect_uri_encoded = quote(callback_url, safe='')
+    redirect_uri_encoded = quote(callback_url, safe="")
     request_uri = f"{authorization_endpoint}?client_id={GOOGLE_CLIENT_ID}&redirect_uri={redirect_uri_encoded}&scope=openid email profile&response_type=code"
-    
+
     return redirect(request_uri)
 
-@app.route('/callback')
+
+@app.route("/callback")
 def callback():
     """Handle Google OAuth callback"""
     if not GOOGLE_CLIENT_ID or not GOOGLE_CLIENT_SECRET:
-        flash('Google OAuth is not configured. Please contact administrator.', 'error')
-        return redirect(url_for('login'))
-    
+        flash("Google OAuth is not configured. Please contact administrator.", "error")
+        return redirect(url_for("login"))
+
     # Get authorization code from the request
     code = request.args.get("code")
     if not code:
-        flash('Authorization failed. Please try again.', 'error')
-        return redirect(url_for('login'))
-    
+        flash("Authorization failed. Please try again.", "error")
+        return redirect(url_for("login"))
+
     try:
         # Get Google OAuth configuration
         google_provider_cfg = get_google_provider_cfg()
         if not google_provider_cfg:
-            flash('Unable to connect to Google OAuth service. Please try again later.', 'error')
-            return redirect(url_for('login'))
-        
+            flash(
+                "Unable to connect to Google OAuth service. Please try again later.",
+                "error",
+            )
+            return redirect(url_for("login"))
+
         token_endpoint = google_provider_cfg["token_endpoint"]
-        
+
         # Get the exact callback URL using url_for to match what was sent initially
-        callback_url = url_for('callback', _external=True)
-        
+        callback_url = url_for("callback", _external=True)
+
         # Force HTTPS for production (Railway/Heroku) - must match what was sent in initial request
-        if os.environ.get('DATABASE_URL') or os.environ.get('RAILWAY_ENVIRONMENT'):
+        if os.environ.get("DATABASE_URL") or os.environ.get("RAILWAY_ENVIRONMENT"):
             # Ensure callback URL uses HTTPS in production
-            if callback_url.startswith('http://'):
-                callback_url = callback_url.replace('http://', 'https://', 1)
-        
+            if callback_url.startswith("http://"):
+                callback_url = callback_url.replace("http://", "https://", 1)
+
         # Exchange code for token
         token_data = {
-            'code': code,
-            'client_id': GOOGLE_CLIENT_ID,
-            'client_secret': GOOGLE_CLIENT_SECRET,
-            'redirect_uri': callback_url,
-            'grant_type': 'authorization_code'
+            "code": code,
+            "client_id": GOOGLE_CLIENT_ID,
+            "client_secret": GOOGLE_CLIENT_SECRET,
+            "redirect_uri": callback_url,
+            "grant_type": "authorization_code",
         }
-        
+
         token_response = req.post(
             token_endpoint,
             data=token_data,
-            headers={'Content-Type': 'application/x-www-form-urlencoded'}
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
         )
-        
+
         # Parse the tokens
         if token_response.status_code != 200:
-            flash('Failed to exchange authorization code for token. Please try again.', 'error')
-            return redirect(url_for('login'))
-            
+            flash(
+                "Failed to exchange authorization code for token. Please try again.",
+                "error",
+            )
+            return redirect(url_for("login"))
+
         tokens = token_response.json()
-        
-        if 'id_token' not in tokens:
-            flash('No ID token received from Google. Please try again.', 'error')
-            return redirect(url_for('login'))
-        
+
+        if "id_token" not in tokens:
+            flash("No ID token received from Google. Please try again.", "error")
+            return redirect(url_for("login"))
+
         # Verify the token
-        google_user_info = verify_google_token(tokens['id_token'])
-        
+        google_user_info = verify_google_token(tokens["id_token"])
+
         if not google_user_info:
-            flash('Token verification failed. Please try again.', 'error')
-            return redirect(url_for('login'))
-        
+            flash("Token verification failed. Please try again.", "error")
+            return redirect(url_for("login"))
+
         # Get or create user
         user = get_or_create_google_user(google_user_info)
-        
+
         if not user.is_active:
-            flash('Your account is inactive. Please contact administrator.', 'error')
-            return redirect(url_for('login'))
-        
+            flash("Your account is inactive. Please contact administrator.", "error")
+            return redirect(url_for("login"))
+
         # Update last login
         user.last_login = datetime.utcnow()
         db.session.commit()
-        
+
         # Create database session
         session_data = {
-            'user_id': user.email,  # Use email as user_id for OAuth users
-            'user_role': user.role,
-            'user_name': user.name,
-            'user_email': user.email
+            "user_id": user.email,  # Use email as user_id for OAuth users
+            "user_role": user.role,
+            "user_name": user.name,
+            "user_email": user.email,
         }
         db_session = create_user_session(user.id, session_data)
-        
-        # Set Flask session
-        session['db_session_id'] = db_session.id
-        session.update(session_data)
-        
-        return redirect(url_for('dashboard'))
-        
-    except Exception as e:
-        flash('Authentication failed. Please try again.', 'error')
-        return redirect(url_for('login'))
 
-@app.route('/logout')
+        # Set Flask session
+        session["db_session_id"] = db_session.id
+        session.update(session_data)
+
+        return redirect(url_for("dashboard"))
+
+    except Exception as e:
+        flash("Authentication failed. Please try again.", "error")
+        return redirect(url_for("login"))
+
+
+@app.route("/logout")
 def logout():
     # Clean up database session
-    db_session_id = session.get('db_session_id')
+    db_session_id = session.get("db_session_id")
     if db_session_id:
         delete_user_session(db_session_id)
-    
+
     # Clear Flask session
     session.clear()
-    flash('You have been logged out successfully.', 'success')
-    return redirect(url_for('login'))
+    flash("You have been logged out successfully.", "success")
+    return redirect(url_for("login"))
 
-@app.route('/dashboard')
+
+@app.route("/dashboard")
 @login_required
 def dashboard():
-    return redirect(url_for('index'))
+    return redirect(url_for("index"))
 
 
-@app.route('/upload_allocation', methods=['POST'])
+@app.route("/upload_allocation", methods=["POST"])
 @admin_required
 def upload_allocation_file():
     global allocation_data, allocation_filename, processing_result
-    
-    if 'file' not in request.files:
-        flash('No file provided', 'error')
-        return redirect('/')
-    
-    file = request.files['file']
-    if file.filename == '':
-        flash('No file selected', 'error')
-        return redirect('/')
-    
+
+    if "file" not in request.files:
+        flash("No file provided", "error")
+        return redirect("/")
+
+    file = request.files["file"]
+    if file.filename == "":
+        flash("No file selected", "error")
+        return redirect("/")
+
     try:
         # Save uploaded file temporarily
         filename = secure_filename(file.filename)
         file.save(filename)
-        
+
         # Load Excel file
         # Use parse_dates=False to prevent automatic date parsing that differs between Windows and Mac
         allocation_data = pd.read_excel(filename, sheet_name=None, parse_dates=False)
-        
+
         # Focus on "main" sheet if it exists, otherwise use all sheets
         sheets_to_process = {}
-        if 'main' in allocation_data:
-            sheets_to_process['main'] = allocation_data['main']
+        if "main" in allocation_data:
+            sheets_to_process["main"] = allocation_data["main"]
         else:
             sheets_to_process = allocation_data
-        
+
         # Format insurance company names in "Insurance List" column for better allocation matching
         for sheet_name, df in sheets_to_process.items():
             # Find the Insurance List column (case-insensitive)
             insurance_working_col = None
             for col in df.columns:
                 col_str = str(col) if not isinstance(col, str) else col
-                if 'insurance' in col_str.lower() and 'list' in col_str.lower():
+                if "insurance" in col_str.lower() and "list" in col_str.lower():
                     insurance_working_col = col
                     break
-            
+
             if insurance_working_col:
                 # Format each value in Insurance List column (which may contain multiple companies separated by ; or ,)
                 def format_insurance_list(value):
@@ -6529,152 +7761,188 @@ def upload_allocation_file():
                         return value
                     value_str = str(value)
                     # Split by common delimiters
-                    companies = [comp.strip() for comp in re.split(r'[;,\|]', value_str) if comp.strip()]
+                    companies = [
+                        comp.strip()
+                        for comp in re.split(r"[;,\|]", value_str)
+                        if comp.strip()
+                    ]
                     # Format each company name, but preserve "senior" keyword and group names for expansion
                     formatted_companies = []
                     for comp in companies:
-                        comp_str = str(comp) if comp is not None else ''
+                        comp_str = str(comp) if comp is not None else ""
                         comp_lower = comp_str.lower()
-                        if 'senior' in comp_lower:
+                        if "senior" in comp_lower:
                             formatted_companies.append(comp)  # Keep senior as-is
-                        elif (comp_lower == 'dd ins' or comp_lower == 'ins' or 
-                              comp_lower == 'dd toolkit' or comp_lower == 'dd toolkits' or 
-                              comp_lower == 'dd'):
+                        elif (
+                            comp_lower == "dd ins"
+                            or comp_lower == "ins"
+                            or comp_lower == "dd toolkit"
+                            or comp_lower == "dd toolkits"
+                            or comp_lower == "dd"
+                        ):
                             # Keep group names as-is for later expansion
                             formatted_companies.append(comp)
                         else:
                             formatted = format_insurance_company_name(comp)
                             formatted_companies.append(formatted)
                     # Join back with semicolon
-                    return '; '.join(formatted_companies)
-                
+                    return "; ".join(formatted_companies)
+
                 # First format the insurance names
-                df[insurance_working_col] = df[insurance_working_col].apply(format_insurance_list)
-                
+                df[insurance_working_col] = df[insurance_working_col].apply(
+                    format_insurance_list
+                )
+
                 # Then expand insurance groups (DD INS/INS and DD Toolkit/Toolkits/DD)
-                df[insurance_working_col] = df[insurance_working_col].apply(expand_insurance_groups)
-                
-                if 'main' in allocation_data:
-                    allocation_data['main'] = df
+                df[insurance_working_col] = df[insurance_working_col].apply(
+                    expand_insurance_groups
+                )
+
+                if "main" in allocation_data:
+                    allocation_data["main"] = df
                 else:
                     allocation_data[sheet_name] = df
-        
+
         allocation_filename = filename
-        
+
         # Update allocation_data to only include processed sheets
-        if 'main' in allocation_data:
-            allocation_data = {'main': allocation_data['main']}
-        
+        if "main" in allocation_data:
+            allocation_data = {"main": allocation_data["main"]}
+
         processing_result = f"✅ Allocation file uploaded successfully! Loaded {len(allocation_data)} sheet(s): {', '.join(list(allocation_data.keys()))}"
-        flash(f'Allocation file uploaded successfully! Loaded {len(allocation_data)} sheet(s): {", ".join(list(allocation_data.keys()))}', 'success')
-        
+        flash(
+            f'Allocation file uploaded successfully! Loaded {len(allocation_data)} sheet(s): {", ".join(list(allocation_data.keys()))}',
+            "success",
+        )
+
         # Clean up uploaded file
         if os.path.exists(filename):
             os.remove(filename)
-        
-        return redirect('/')
-        
+
+        return redirect("/")
+
     except Exception as e:
         processing_result = f"❌ Error uploading allocation file: {str(e)}"
-        flash(f'Error uploading allocation file: {str(e)}', 'error')
+        flash(f"Error uploading allocation file: {str(e)}", "error")
         # Clean up uploaded file on error
-        if 'filename' in locals() and os.path.exists(filename):
+        if "filename" in locals() and os.path.exists(filename):
             os.remove(filename)
-        return redirect('/')
+        return redirect("/")
 
-@app.route('/upload_data', methods=['POST'])
+
+@app.route("/upload_data", methods=["POST"])
 @admin_required
 def upload_data_file():
     global data_file_data, data_filename, processing_result
-    
-    if 'file' not in request.files:
-        flash('No file provided', 'error')
-        return redirect('/')
-    
-    file = request.files['file']
-    if file.filename == '':
-        flash('No file selected', 'error')
-        return redirect('/')
-    
+
+    if "file" not in request.files:
+        flash("No file provided", "error")
+        return redirect("/")
+
+    file = request.files["file"]
+    if file.filename == "":
+        flash("No file selected", "error")
+        return redirect("/")
+
     try:
         # Reset tracking for new file
         global _formatted_insurance_names, _formatted_insurance_details
         _formatted_insurance_names = set()
         _formatted_insurance_details = []
-        
+
         # Save uploaded file temporarily
         filename = secure_filename(file.filename)
         file.save(filename)
-        
+
         # Load Excel file
         # Use parse_dates=False to prevent automatic date parsing that differs between Windows and Mac
         data_file_data = pd.read_excel(filename, sheet_name=None, parse_dates=False)
-        
+
         # Format insurance company names in "Dental Primary Ins Carr" column for better allocation
         for sheet_name, df in data_file_data.items():
             # Find the insurance carrier column (case-insensitive)
             insurance_col = None
             for col in df.columns:
-                if 'dental' in col.lower() and 'primary' in col.lower() and 'ins' in col.lower() and 'carr' in col.lower():
+                if (
+                    "dental" in col.lower()
+                    and "primary" in col.lower()
+                    and "ins" in col.lower()
+                    and "carr" in col.lower()
+                ):
                     insurance_col = col
                     break
-            
+
             if insurance_col:
-                data_file_data[sheet_name] = format_insurance_column_in_dataframe(df.copy(), insurance_col)
-        
+                data_file_data[sheet_name] = format_insurance_column_in_dataframe(
+                    df.copy(), insurance_col
+                )
+
         data_filename = filename
-        
+
         processing_result = f"✅ Data file uploaded successfully! Loaded {len(data_file_data)} sheets: {', '.join(list(data_file_data.keys()))}"
-        flash(f'Data file uploaded successfully! Loaded {len(data_file_data)} sheets: {", ".join(list(data_file_data.keys()))}', 'success')
-        
+        flash(
+            f'Data file uploaded successfully! Loaded {len(data_file_data)} sheets: {", ".join(list(data_file_data.keys()))}',
+            "success",
+        )
+
         # Print formatted insurance companies list
         print_formatted_insurance_companies()
-        
+
         # Clean up uploaded file
         if os.path.exists(filename):
             os.remove(filename)
-        
-        return redirect('/')
-        
+
+        return redirect("/")
+
     except Exception as e:
         processing_result = f"❌ Error uploading data file: {str(e)}"
-        flash(f'Error uploading data file: {str(e)}', 'error')
+        flash(f"Error uploading data file: {str(e)}", "error")
         # Clean up uploaded file on error
-        if 'filename' in locals() and os.path.exists(filename):
+        if "filename" in locals() and os.path.exists(filename):
             os.remove(filename)
-        return redirect('/')
+        return redirect("/")
 
 
-@app.route('/process_files', methods=['POST'])
+@app.route("/process_files", methods=["POST"])
 @admin_required
 def process_files():
     global allocation_data, data_file_data, processing_result, agent_processing_result, agent_allocations_data
-    
+
     if not data_file_data:
         processing_result = "❌ Error: Please upload data file first"
-        return render_template_string(HTML_TEMPLATE, 
-                                    allocation_data=allocation_data, 
-                                    data_file_data=data_file_data,
-                                    allocation_filename=allocation_filename,
-                                    data_filename=data_filename,
-                                    processing_result=processing_result,
-                                    agent_processing_result=agent_processing_result,
-                                    agent_allocations_data=agent_allocations_data)
-    
+        return render_template_string(
+            HTML_TEMPLATE,
+            allocation_data=allocation_data,
+            data_file_data=data_file_data,
+            allocation_filename=allocation_filename,
+            data_filename=data_filename,
+            processing_result=processing_result,
+            agent_processing_result=agent_processing_result,
+            agent_allocations_data=agent_allocations_data,
+        )
+
     try:
         # Get the first sheet from data file
         data_df = list(data_file_data.values())[0]
-        
+
         # Get selected appointment dates from calendar
-        appointment_dates = request.form.getlist('appointment_dates')
-        appointment_dates_second = request.form.getlist('appointment_dates_second')
-        receive_dates = request.form.getlist('receive_dates')
-        debug_count = request.form.get('debug_selected_count', '0')
-        debug_count_second = request.form.get('debug_selected_count_second', '0')
-        
+        appointment_dates = request.form.getlist("appointment_dates")
+        appointment_dates_second = request.form.getlist("appointment_dates_second")
+        receive_dates = request.form.getlist("receive_dates")
+        debug_count = request.form.get("debug_selected_count", "0")
+        debug_count_second = request.form.get("debug_selected_count_second", "0")
+
         # Process the data file with selected dates and allocation data
-        result_message, processed_df = process_allocation_files_with_dates(allocation_data, data_df, [], '', appointment_dates, appointment_dates_second, receive_dates)
-        
+        result_message, processed_df = process_allocation_files_with_dates(
+            allocation_data,
+            data_df,
+            [],
+            "",
+            appointment_dates,
+            appointment_dates_second,
+            receive_dates,
+        )
+
         if processed_df is not None:
             # Store the result for download
             processing_result = result_message
@@ -6682,82 +7950,93 @@ def process_files():
             data_file_data[list(data_file_data.keys())[0]] = processed_df
         else:
             processing_result = result_message
-        
-        return render_template_string(HTML_TEMPLATE, 
-                                    allocation_data=allocation_data, 
-                                    data_file_data=data_file_data,
-                                    allocation_filename=allocation_filename,
-                                    data_filename=data_filename,
-                                    processing_result=processing_result,
-                                    agent_processing_result=agent_processing_result,
-                                    agent_allocations_data=agent_allocations_data)
-        
+
+        return render_template_string(
+            HTML_TEMPLATE,
+            allocation_data=allocation_data,
+            data_file_data=data_file_data,
+            allocation_filename=allocation_filename,
+            data_filename=data_filename,
+            processing_result=processing_result,
+            agent_processing_result=agent_processing_result,
+            agent_allocations_data=agent_allocations_data,
+        )
+
     except Exception as e:
         processing_result = f"❌ Error processing data file: {str(e)}"
-        return render_template_string(HTML_TEMPLATE, 
-                                    allocation_data=allocation_data, 
-                                    data_file_data=data_file_data,
-                                    allocation_filename=allocation_filename,
-                                    data_filename=data_filename,
-                                    processing_result=processing_result,
-                                    agent_processing_result=agent_processing_result,
-                                    agent_allocations_data=agent_allocations_data)
+        return render_template_string(
+            HTML_TEMPLATE,
+            allocation_data=allocation_data,
+            data_file_data=data_file_data,
+            allocation_filename=allocation_filename,
+            data_filename=data_filename,
+            processing_result=processing_result,
+            agent_processing_result=agent_processing_result,
+            agent_allocations_data=agent_allocations_data,
+        )
 
-@app.route('/download_result', methods=['POST'])
+
+@app.route("/download_result", methods=["POST"])
 @admin_required
 def download_result():
     global data_file_data, data_filename, agent_allocations_data, agent_insurance_agent_names
-    
+
     if not data_file_data:
-        return jsonify({'error': 'No data to download'}), 400
-    
-    filename = request.form.get('filename', '').strip()
+        return jsonify({"error": "No data to download"}), 400
+
+    filename = request.form.get("filename", "").strip()
     if not filename:
-        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = f"processed_data_{timestamp}.xlsx"
-    
+
     try:
         # Create a temporary file
-        temp_fd, temp_path = tempfile.mkstemp(suffix='.xlsx')
-        
+        temp_fd, temp_path = tempfile.mkstemp(suffix=".xlsx")
+
         try:
-            with pd.ExcelWriter(temp_path, engine='openpyxl') as writer:
+            with pd.ExcelWriter(temp_path, engine="openpyxl") as writer:
                 # Write all existing sheets
                 for sheet_name, df in data_file_data.items():
                     # Create a copy of the dataframe to avoid modifying the original
                     df_copy = df.copy()
-                    
+
                     # Find appointment date and received date columns and format them as MM/DD/YYYY
                     for col in df_copy.columns:
-                        if ('appointment' in col.lower() and 'date' in col.lower()) or ('receive' in col.lower() and 'date' in col.lower()):
+                        if ("appointment" in col.lower() and "date" in col.lower()) or (
+                            "receive" in col.lower() and "date" in col.lower()
+                        ):
                             # Convert to datetime and then format as MM/DD/YYYY (no time)
-                            df_copy[col] = pd.to_datetime(df_copy[col], errors='coerce').dt.strftime('%m/%d/%Y')
-                    
+                            df_copy[col] = pd.to_datetime(
+                                df_copy[col], errors="coerce"
+                            ).dt.strftime("%m/%d/%Y")
+
                     df_copy.to_excel(writer, sheet_name=sheet_name, index=False)
-                
+
                 # Create Agent Count Summary sheet
                 # Get the processed dataframe
-                processed_df = list(data_file_data.values())[0] if data_file_data else None
-                
+                processed_df = (
+                    list(data_file_data.values())[0] if data_file_data else None
+                )
+
                 if processed_df is not None:
                     # Check if Agent Name column exists
                     agent_name_col = None
                     for col in processed_df.columns:
-                        if 'agent' in col.lower() and 'name' in col.lower():
+                        if "agent" in col.lower() and "name" in col.lower():
                             agent_name_col = col
                             break
-                    
+
                     if agent_name_col:
                         # Count allocations by agent name
                         agent_counts = {}
-                        
+
                         # Find Remark column
                         remark_col = None
                         for col in processed_df.columns:
-                            if 'remark' in col.lower():
+                            if "remark" in col.lower():
                                 remark_col = col
                                 break
-                        
+
                         # Count each row once - prioritize Remark column for NTC and Not to work
                         for idx, row in processed_df.iterrows():
                             # Check Remark column first for NTC and Not to work
@@ -6765,13 +8044,19 @@ def download_result():
                                 remark_value = row.get(remark_col)
                                 if pd.notna(remark_value):
                                     remark_str = str(remark_value).strip().upper()
-                                    if remark_str == 'NTC':
-                                        agent_counts['NTC'] = agent_counts.get('NTC', 0) + 1
+                                    if remark_str == "NTC":
+                                        agent_counts["NTC"] = (
+                                            agent_counts.get("NTC", 0) + 1
+                                        )
                                         continue  # Skip agent name counting for this row
-                                    elif 'NOT TO WORK' in remark_str.replace('-', ' ').replace('_', ' '):
-                                        agent_counts['Not to work'] = agent_counts.get('Not to work', 0) + 1
+                                    elif "NOT TO WORK" in remark_str.replace(
+                                        "-", " "
+                                    ).replace("_", " "):
+                                        agent_counts["Not to work"] = (
+                                            agent_counts.get("Not to work", 0) + 1
+                                        )
                                         continue  # Skip agent name counting for this row
-                            
+
                             # Count by Agent Name (if not already counted as NTC or Not to work)
                             if agent_name_col in processed_df.columns:
                                 agent_name_value = row.get(agent_name_col)
@@ -6779,58 +8064,86 @@ def download_result():
                                     agent_name_str = str(agent_name_value).strip()
                                     # Check if it's NTC or Not to work in Agent Name column
                                     agent_name_upper = agent_name_str.upper()
-                                    if agent_name_upper == 'NTC':
-                                        agent_counts['NTC'] = agent_counts.get('NTC', 0) + 1
-                                    elif 'NOT TO WORK' in agent_name_upper.replace('-', ' ').replace('_', ' '):
-                                        agent_counts['Not to work'] = agent_counts.get('Not to work', 0) + 1
+                                    if agent_name_upper == "NTC":
+                                        agent_counts["NTC"] = (
+                                            agent_counts.get("NTC", 0) + 1
+                                        )
+                                    elif "NOT TO WORK" in agent_name_upper.replace(
+                                        "-", " "
+                                    ).replace("_", " "):
+                                        agent_counts["Not to work"] = (
+                                            agent_counts.get("Not to work", 0) + 1
+                                        )
                                     else:
                                         # Regular agent name
-                                        agent_counts[agent_name_str] = agent_counts.get(agent_name_str, 0) + 1
-                        
+                                        agent_counts[agent_name_str] = (
+                                            agent_counts.get(agent_name_str, 0) + 1
+                                        )
+
                         # Convert to list of tuples and sort by count (descending)
-                        summary_list = [(row_label, count) for row_label, count in agent_counts.items()]
-                        summary_list.sort(key=lambda x: x[1], reverse=True)  # Sort by count in descending order
-                        
+                        summary_list = [
+                            (row_label, count)
+                            for row_label, count in agent_counts.items()
+                        ]
+                        summary_list.sort(
+                            key=lambda x: x[1], reverse=True
+                        )  # Sort by count in descending order
+
                         # Calculate grand total
                         grand_total = sum(count for _, count in summary_list)
-                        
+
                         # Create summary dataframe
                         if summary_list:
-                            summary_df = pd.DataFrame(summary_list, columns=['Row Labels', 'Count of Agent Name'])
+                            summary_df = pd.DataFrame(
+                                summary_list,
+                                columns=["Row Labels", "Count of Agent Name"],
+                            )
                             # Add grand total row
-                            grand_total_row = pd.DataFrame([['Grand Total', grand_total]], columns=['Row Labels', 'Count of Agent Name'])
-                            summary_df = pd.concat([summary_df, grand_total_row], ignore_index=True)
+                            grand_total_row = pd.DataFrame(
+                                [["Grand Total", grand_total]],
+                                columns=["Row Labels", "Count of Agent Name"],
+                            )
+                            summary_df = pd.concat(
+                                [summary_df, grand_total_row], ignore_index=True
+                            )
                         else:
                             # Create empty summary with just grand total
-                            summary_df = pd.DataFrame([['Grand Total', 0]], columns=['Row Labels', 'Count of Agent Name'])
-                        
+                            summary_df = pd.DataFrame(
+                                [["Grand Total", 0]],
+                                columns=["Row Labels", "Count of Agent Name"],
+                            )
+
                         # Write summary sheet
-                        summary_df.to_excel(writer, sheet_name='Agent Count Summary', index=False)
-                
+                        summary_df.to_excel(
+                            writer, sheet_name="Agent Count Summary", index=False
+                        )
+
                 # Create Priority Status sheet
                 if processed_df is not None:
                     # Find Priority Status column
                     priority_status_col = None
                     appointment_date_col = None
-                    
+
                     for col in processed_df.columns:
-                        if 'priority' in col.lower() and 'status' in col.lower():
+                        if "priority" in col.lower() and "status" in col.lower():
                             priority_status_col = col
-                        if 'appointment' in col.lower() and 'date' in col.lower():
+                        if "appointment" in col.lower() and "date" in col.lower():
                             appointment_date_col = col
-                    
+
                     if priority_status_col and appointment_date_col:
                         # Get all unique appointment dates (store both YYYY-MM-DD for matching and MM/DD/YYYY for display)
-                        appointment_dates_dict = {}  # key: YYYY-MM-DD, value: MM/DD/YYYY
-                        
+                        appointment_dates_dict = (
+                            {}
+                        )  # key: YYYY-MM-DD, value: MM/DD/YYYY
+
                         for idx, row in processed_df.iterrows():
                             appt_date = row.get(appointment_date_col)
                             if pd.notna(appt_date):
                                 # Convert to date object
                                 date_obj = None
-                                if hasattr(appt_date, 'date'):
+                                if hasattr(appt_date, "date"):
                                     date_obj = appt_date.date()
-                                elif hasattr(appt_date, 'strftime'):
+                                elif hasattr(appt_date, "strftime"):
                                     # Try to parse if it's a string
                                     try:
                                         date_obj = pd.to_datetime(appt_date).date()
@@ -6841,46 +8154,50 @@ def download_result():
                                         date_obj = pd.to_datetime(appt_date).date()
                                     except:
                                         continue
-                                
+
                                 if date_obj:
-                                    date_key = date_obj.strftime('%Y-%m-%d')
-                                    date_display = date_obj.strftime('%m/%d/%Y')
+                                    date_key = date_obj.strftime("%Y-%m-%d")
+                                    date_display = date_obj.strftime("%m/%d/%Y")
                                     appointment_dates_dict[date_key] = date_display
-                        
+
                         # Sort dates by key (YYYY-MM-DD) and create lists
                         sorted_date_keys = sorted(appointment_dates_dict.keys())
                         appointment_dates = sorted_date_keys  # For matching
-                        appointment_dates_display = [appointment_dates_dict[key] for key in sorted_date_keys]  # For display
-                        
+                        appointment_dates_display = [
+                            appointment_dates_dict[key] for key in sorted_date_keys
+                        ]  # For display
+
                         # Create pivot data structure
-                        priority_rows = ['First Priority', 'Second Priority']
+                        priority_rows = ["First Priority", "Second Priority"]
                         priority_data = {}
-                        
+
                         # Initialize counts for each priority and date
                         for priority in priority_rows:
                             priority_data[priority] = {}
                             for date in appointment_dates:
                                 priority_data[priority][date] = 0
-                        
+
                         # Count rows by priority and date
                         for idx, row in processed_df.iterrows():
                             priority_status = row.get(priority_status_col)
                             appt_date = row.get(appointment_date_col)
-                            
+
                             if pd.notna(priority_status) and pd.notna(appt_date):
                                 priority_str = str(priority_status).strip()
-                                
+
                                 # Convert appointment date to YYYY-MM-DD format for matching
                                 date_obj = None
-                                if hasattr(appt_date, 'date'):
+                                if hasattr(appt_date, "date"):
                                     date_obj = appt_date.date()
-                                elif hasattr(appt_date, 'strftime'):
+                                elif hasattr(appt_date, "strftime"):
                                     try:
                                         date_obj = pd.to_datetime(appt_date).date()
                                     except:
                                         # Try parsing as string
                                         try:
-                                            date_obj = pd.to_datetime(str(appt_date)).date()
+                                            date_obj = pd.to_datetime(
+                                                str(appt_date)
+                                            ).date()
                                         except:
                                             continue
                                 else:
@@ -6888,77 +8205,95 @@ def download_result():
                                         date_obj = pd.to_datetime(appt_date).date()
                                     except:
                                         continue
-                                
+
                                 if date_obj:
-                                    date_str = date_obj.strftime('%Y-%m-%d')
-                                    
-                                    if priority_str in priority_rows and date_str in appointment_dates:
-                                        priority_data[priority_str][date_str] = priority_data[priority_str].get(date_str, 0) + 1
-                        
+                                    date_str = date_obj.strftime("%Y-%m-%d")
+
+                                    if (
+                                        priority_str in priority_rows
+                                        and date_str in appointment_dates
+                                    ):
+                                        priority_data[priority_str][date_str] = (
+                                            priority_data[priority_str].get(date_str, 0)
+                                            + 1
+                                        )
+
                         # Calculate grand totals for each priority
                         priority_totals = {}
                         for priority in priority_rows:
-                            priority_totals[priority] = sum(priority_data[priority].values())
-                        
+                            priority_totals[priority] = sum(
+                                priority_data[priority].values()
+                            )
+
                         # Calculate grand total for all priorities
                         overall_grand_total = sum(priority_totals.values())
-                        
+
                         # Calculate totals for each date column
                         date_totals = {}
                         for date in appointment_dates:
-                            date_totals[date] = sum(priority_data[priority][date] for priority in priority_rows)
-                        
+                            date_totals[date] = sum(
+                                priority_data[priority][date]
+                                for priority in priority_rows
+                            )
+
                         # Build the dataframe
                         # Columns: Row Labels, Grand Total, [date columns with MM/DD/YYYY format]
-                        columns = ['Row Labels', 'Grand Total'] + appointment_dates_display
+                        columns = [
+                            "Row Labels",
+                            "Grand Total",
+                        ] + appointment_dates_display
                         rows_data = []
-                        
+
                         # Add priority rows
                         for priority in priority_rows:
                             row_data = [priority, priority_totals[priority]]
                             for date_key in appointment_dates:
                                 row_data.append(priority_data[priority][date_key])
                             rows_data.append(row_data)
-                        
+
                         # Add Grand Total row
-                        grand_total_row = ['Grand Total', overall_grand_total]
+                        grand_total_row = ["Grand Total", overall_grand_total]
                         for date_key in appointment_dates:
                             grand_total_row.append(date_totals[date_key])
                         rows_data.append(grand_total_row)
-                        
+
                         # Create dataframe
                         priority_df = pd.DataFrame(rows_data, columns=columns)
-                        
+
                         # Write Priority Status sheet
-                        priority_df.to_excel(writer, sheet_name='Priority Status', index=False)
-                
+                        priority_df.to_excel(
+                            writer, sheet_name="Priority Status", index=False
+                        )
+
                 # Create Priority Remark sheet
                 if processed_df is not None:
                     # Find Priority Status, Remark, and Appointment Date columns
                     priority_status_col = None
                     remark_col = None
                     appointment_date_col = None
-                    
+
                     for col in processed_df.columns:
-                        if 'priority' in col.lower() and 'status' in col.lower():
+                        if "priority" in col.lower() and "status" in col.lower():
                             priority_status_col = col
-                        if 'remark' in col.lower():
+                        if "remark" in col.lower():
                             remark_col = col
-                        if 'appointment' in col.lower() and 'date' in col.lower():
+                        if "appointment" in col.lower() and "date" in col.lower():
                             appointment_date_col = col
-                    
+
                     if priority_status_col and appointment_date_col:
                         # Get all unique appointment dates (reuse the logic from Priority Status sheet)
-                        appointment_dates_dict = {}  # key: YYYY-MM-DD, value: MM/DD/YYYY
-                        
+                        appointment_dates_dict = (
+                            {}
+                        )  # key: YYYY-MM-DD, value: MM/DD/YYYY
+
                         for idx, row in processed_df.iterrows():
                             appt_date = row.get(appointment_date_col)
                             if pd.notna(appt_date):
                                 # Convert to date object
                                 date_obj = None
-                                if hasattr(appt_date, 'date'):
+                                if hasattr(appt_date, "date"):
                                     date_obj = appt_date.date()
-                                elif hasattr(appt_date, 'strftime'):
+                                elif hasattr(appt_date, "strftime"):
                                     try:
                                         date_obj = pd.to_datetime(appt_date).date()
                                     except:
@@ -6968,21 +8303,23 @@ def download_result():
                                         date_obj = pd.to_datetime(appt_date).date()
                                     except:
                                         continue
-                                
+
                                 if date_obj:
-                                    date_key = date_obj.strftime('%Y-%m-%d')
-                                    date_display = date_obj.strftime('%m/%d/%Y')
+                                    date_key = date_obj.strftime("%Y-%m-%d")
+                                    date_display = date_obj.strftime("%m/%d/%Y")
                                     appointment_dates_dict[date_key] = date_display
-                        
+
                         # Sort dates by key (YYYY-MM-DD) and create lists
                         sorted_date_keys = sorted(appointment_dates_dict.keys())
                         appointment_dates = sorted_date_keys  # For matching
-                        appointment_dates_display = [appointment_dates_dict[key] for key in sorted_date_keys]  # For display
-                        
+                        appointment_dates_display = [
+                            appointment_dates_dict[key] for key in sorted_date_keys
+                        ]  # For display
+
                         # Define priority and remark categories
-                        priority_rows = ['First Priority', 'Second Priority']
-                        remark_types = ['NTBP', 'Not to work', 'Workable', 'NTC']
-                        
+                        priority_rows = ["First Priority", "Second Priority"]
+                        remark_types = ["NTBP", "Not to work", "Workable", "NTC"]
+
                         # Initialize data structure: priority -> remark -> date -> count
                         priority_remark_data = {}
                         for priority in priority_rows:
@@ -6991,26 +8328,28 @@ def download_result():
                                 priority_remark_data[priority][remark] = {}
                                 for date_key in appointment_dates:
                                     priority_remark_data[priority][remark][date_key] = 0
-                        
+
                         # Count rows by priority, remark, and date
                         for idx, row in processed_df.iterrows():
                             priority_status = row.get(priority_status_col)
                             appt_date = row.get(appointment_date_col)
                             remark_value = row.get(remark_col) if remark_col else None
-                            
+
                             if pd.notna(priority_status) and pd.notna(appt_date):
                                 priority_str = str(priority_status).strip()
-                                
+
                                 # Convert appointment date to YYYY-MM-DD format
                                 date_obj = None
-                                if hasattr(appt_date, 'date'):
+                                if hasattr(appt_date, "date"):
                                     date_obj = appt_date.date()
-                                elif hasattr(appt_date, 'strftime'):
+                                elif hasattr(appt_date, "strftime"):
                                     try:
                                         date_obj = pd.to_datetime(appt_date).date()
                                     except:
                                         try:
-                                            date_obj = pd.to_datetime(str(appt_date)).date()
+                                            date_obj = pd.to_datetime(
+                                                str(appt_date)
+                                            ).date()
                                         except:
                                             continue
                                 else:
@@ -7018,29 +8357,39 @@ def download_result():
                                         date_obj = pd.to_datetime(appt_date).date()
                                     except:
                                         continue
-                                
+
                                 if date_obj and priority_str in priority_rows:
-                                    date_str = date_obj.strftime('%Y-%m-%d')
-                                    
+                                    date_str = date_obj.strftime("%Y-%m-%d")
+
                                     if date_str in appointment_dates:
                                         # Determine remark type
-                                        remark_type = 'Workable'  # Default
-                                        
+                                        remark_type = "Workable"  # Default
+
                                         if pd.notna(remark_value):
-                                            remark_str = str(remark_value).strip().upper()
-                                            
-                                            if remark_str == 'NTBP':
-                                                remark_type = 'NTBP'
-                                            elif remark_str == 'NTC':
-                                                remark_type = 'NTC'
-                                            elif 'NOT TO WORK' in remark_str.replace('-', ' ').replace('_', ' '):
-                                                remark_type = 'Not to work'
+                                            remark_str = (
+                                                str(remark_value).strip().upper()
+                                            )
+
+                                            if remark_str == "NTBP":
+                                                remark_type = "NTBP"
+                                            elif remark_str == "NTC":
+                                                remark_type = "NTC"
+                                            elif "NOT TO WORK" in remark_str.replace(
+                                                "-", " "
+                                            ).replace("_", " "):
+                                                remark_type = "Not to work"
                                             # else: Workable (default)
-                                        
+
                                         if remark_type in remark_types:
-                                            priority_remark_data[priority_str][remark_type][date_str] = \
-                                                priority_remark_data[priority_str][remark_type].get(date_str, 0) + 1
-                        
+                                            priority_remark_data[priority_str][
+                                                remark_type
+                                            ][date_str] = (
+                                                priority_remark_data[priority_str][
+                                                    remark_type
+                                                ].get(date_str, 0)
+                                                + 1
+                                            )
+
                         # Calculate totals
                         # Totals for each priority+remark combination
                         priority_remark_totals = {}
@@ -7050,7 +8399,7 @@ def download_result():
                                 priority_remark_totals[priority][remark] = sum(
                                     priority_remark_data[priority][remark].values()
                                 )
-                        
+
                         # Totals for each date column
                         date_totals = {}
                         for date_key in appointment_dates:
@@ -7059,23 +8408,28 @@ def download_result():
                                 for priority in priority_rows
                                 for remark in remark_types
                             )
-                        
+
                         # Overall grand total
                         overall_grand_total = sum(
                             priority_remark_totals[priority][remark]
                             for priority in priority_rows
                             for remark in remark_types
                         )
-                        
+
                         # Build the dataframe
                         # Columns: Row Labels, Grand Total, [date columns]
-                        columns = ['Row Labels', 'Grand Total'] + appointment_dates_display
+                        columns = [
+                            "Row Labels",
+                            "Grand Total",
+                        ] + appointment_dates_display
                         rows_data = []
-                        
+
                         # Add rows for each priority and remark combination
                         for priority in priority_rows:
                             # Add priority header row with totals
-                            priority_total = sum(priority_remark_totals[priority].values())
+                            priority_total = sum(
+                                priority_remark_totals[priority].values()
+                            )
                             priority_row_data = [priority, priority_total]
                             for date_key in appointment_dates:
                                 # Sum all remarks for this priority and date
@@ -7085,56 +8439,62 @@ def download_result():
                                 )
                                 priority_row_data.append(date_total)
                             rows_data.append(priority_row_data)
-                            
+
                             # Add remark sub-rows for this priority
                             for remark in remark_types:
                                 row_label = remark  # Just the remark name
                                 row_total = priority_remark_totals[priority][remark]
-                                
+
                                 row_data = [row_label, row_total]
                                 for date_key in appointment_dates:
-                                    row_data.append(priority_remark_data[priority][remark][date_key])
+                                    row_data.append(
+                                        priority_remark_data[priority][remark][date_key]
+                                    )
                                 rows_data.append(row_data)
-                        
+
                         # Add Grand Total row
-                        grand_total_row = ['Grand Total', overall_grand_total]
+                        grand_total_row = ["Grand Total", overall_grand_total]
                         for date_key in appointment_dates:
                             grand_total_row.append(date_totals[date_key])
                         rows_data.append(grand_total_row)
-                        
+
                         # Create dataframe
                         priority_remark_df = pd.DataFrame(rows_data, columns=columns)
-                        
+
                         # Write Priority Remark sheet
-                        priority_remark_df.to_excel(writer, sheet_name='Priority Remark', index=False)
-                
+                        priority_remark_df.to_excel(
+                            writer, sheet_name="Priority Remark", index=False
+                        )
+
                 # Create Today Allocation sheet
                 if processed_df is not None:
                     # Find Agent Name, Appointment Date, and Remark columns
                     agent_name_col = None
                     appointment_date_col = None
                     remark_col = None
-                    
+
                     for col in processed_df.columns:
-                        if 'agent' in col.lower() and 'name' in col.lower():
+                        if "agent" in col.lower() and "name" in col.lower():
                             agent_name_col = col
-                        if 'appointment' in col.lower() and 'date' in col.lower():
+                        if "appointment" in col.lower() and "date" in col.lower():
                             appointment_date_col = col
-                        if 'remark' in col.lower():
+                        if "remark" in col.lower():
                             remark_col = col
-                    
+
                     if agent_name_col and appointment_date_col and remark_col:
                         # Get all unique appointment dates (reuse the logic from Priority Status sheet)
-                        appointment_dates_dict = {}  # key: YYYY-MM-DD, value: MM/DD/YYYY
-                        
+                        appointment_dates_dict = (
+                            {}
+                        )  # key: YYYY-MM-DD, value: MM/DD/YYYY
+
                         for idx, row in processed_df.iterrows():
                             appt_date = row.get(appointment_date_col)
                             if pd.notna(appt_date):
                                 # Convert to date object
                                 date_obj = None
-                                if hasattr(appt_date, 'date'):
+                                if hasattr(appt_date, "date"):
                                     date_obj = appt_date.date()
-                                elif hasattr(appt_date, 'strftime'):
+                                elif hasattr(appt_date, "strftime"):
                                     try:
                                         date_obj = pd.to_datetime(appt_date).date()
                                     except:
@@ -7144,74 +8504,90 @@ def download_result():
                                         date_obj = pd.to_datetime(appt_date).date()
                                     except:
                                         continue
-                                
+
                                 if date_obj:
-                                    date_key = date_obj.strftime('%Y-%m-%d')
-                                    date_display = date_obj.strftime('%m/%d/%Y')
+                                    date_key = date_obj.strftime("%Y-%m-%d")
+                                    date_display = date_obj.strftime("%m/%d/%Y")
                                     appointment_dates_dict[date_key] = date_display
-                        
+
                         # Sort dates by key (YYYY-MM-DD) and create lists
                         sorted_date_keys = sorted(appointment_dates_dict.keys())
                         appointment_dates = sorted_date_keys  # For matching
-                        appointment_dates_display = [appointment_dates_dict[key] for key in sorted_date_keys]  # For display
-                        
+                        appointment_dates_display = [
+                            appointment_dates_dict[key] for key in sorted_date_keys
+                        ]  # For display
+
                         # Initialize data structure: agent_name -> date -> count
                         agent_allocation_data = {}
-                        
+
                         # Get all unique agent names
                         agent_names = set()
                         for idx, row in processed_df.iterrows():
                             agent_name = row.get(agent_name_col)
                             remark_value = row.get(remark_col)
-                            
+
                             # Only include agents with "Workable" remark
                             if pd.notna(remark_value):
                                 remark_str = str(remark_value).strip().upper()
-                                if remark_str == 'WORKABLE':
+                                if remark_str == "WORKABLE":
                                     if pd.notna(agent_name) and str(agent_name).strip():
                                         agent_name_str = str(agent_name).strip()
                                         # Skip NTC and Not to work as they're not agents
                                         agent_name_upper = agent_name_str.upper()
-                                        if agent_name_upper != 'NTC' and 'NOT TO WORK' not in agent_name_upper.replace('-', ' ').replace('_', ' '):
+                                        if (
+                                            agent_name_upper != "NTC"
+                                            and "NOT TO WORK"
+                                            not in agent_name_upper.replace(
+                                                "-", " "
+                                            ).replace("_", " ")
+                                        ):
                                             agent_names.add(agent_name_str)
-                        
+
                         # Initialize counts for each agent and date
                         for agent_name in agent_names:
                             agent_allocation_data[agent_name] = {}
                             for date_key in appointment_dates:
                                 agent_allocation_data[agent_name][date_key] = 0
-                        
+
                         # Count allocations by agent name and date (only for Workable remark)
                         for idx, row in processed_df.iterrows():
                             agent_name = row.get(agent_name_col)
                             appt_date = row.get(appointment_date_col)
                             remark_value = row.get(remark_col)
-                            
+
                             # Only process rows with "Workable" remark
                             if pd.isna(remark_value):
                                 continue
-                            
+
                             remark_str = str(remark_value).strip().upper()
-                            if remark_str != 'WORKABLE':
+                            if remark_str != "WORKABLE":
                                 continue
-                            
+
                             if pd.notna(agent_name) and pd.notna(appt_date):
                                 agent_name_str = str(agent_name).strip()
                                 # Skip NTC and Not to work
                                 agent_name_upper = agent_name_str.upper()
-                                if agent_name_upper == 'NTC' or 'NOT TO WORK' in agent_name_upper.replace('-', ' ').replace('_', ' '):
+                                if (
+                                    agent_name_upper == "NTC"
+                                    or "NOT TO WORK"
+                                    in agent_name_upper.replace("-", " ").replace(
+                                        "_", " "
+                                    )
+                                ):
                                     continue
-                                
+
                                 # Convert appointment date to YYYY-MM-DD format
                                 date_obj = None
-                                if hasattr(appt_date, 'date'):
+                                if hasattr(appt_date, "date"):
                                     date_obj = appt_date.date()
-                                elif hasattr(appt_date, 'strftime'):
+                                elif hasattr(appt_date, "strftime"):
                                     try:
                                         date_obj = pd.to_datetime(appt_date).date()
                                     except:
                                         try:
-                                            date_obj = pd.to_datetime(str(appt_date)).date()
+                                            date_obj = pd.to_datetime(
+                                                str(appt_date)
+                                            ).date()
                                         except:
                                             continue
                                 else:
@@ -7219,20 +8595,28 @@ def download_result():
                                         date_obj = pd.to_datetime(appt_date).date()
                                     except:
                                         continue
-                                
+
                                 if date_obj and agent_name_str in agent_names:
-                                    date_str = date_obj.strftime('%Y-%m-%d')
-                                    
+                                    date_str = date_obj.strftime("%Y-%m-%d")
+
                                     if date_str in appointment_dates:
-                                        agent_allocation_data[agent_name_str][date_str] = \
-                                            agent_allocation_data[agent_name_str].get(date_str, 0) + 1
-                        
+                                        agent_allocation_data[agent_name_str][
+                                            date_str
+                                        ] = (
+                                            agent_allocation_data[agent_name_str].get(
+                                                date_str, 0
+                                            )
+                                            + 1
+                                        )
+
                         # Calculate totals
                         # Totals for each agent
                         agent_totals = {}
                         for agent_name in agent_names:
-                            agent_totals[agent_name] = sum(agent_allocation_data[agent_name].values())
-                        
+                            agent_totals[agent_name] = sum(
+                                agent_allocation_data[agent_name].values()
+                            )
+
                         # Totals for each date column
                         date_totals = {}
                         for date_key in appointment_dates:
@@ -7240,66 +8624,75 @@ def download_result():
                                 agent_allocation_data[agent_name][date_key]
                                 for agent_name in agent_names
                             )
-                        
+
                         # Overall grand total
                         overall_grand_total = sum(agent_totals.values())
-                        
+
                         # Build the dataframe
                         # Columns: Row Labels, Grand Total, [date columns]
-                        columns = ['Row Labels', 'Grand Total'] + appointment_dates_display
+                        columns = [
+                            "Row Labels",
+                            "Grand Total",
+                        ] + appointment_dates_display
                         rows_data = []
-                        
+
                         # Add Grand Total row first
-                        grand_total_row = ['Grand Total', overall_grand_total]
+                        grand_total_row = ["Grand Total", overall_grand_total]
                         for date_key in appointment_dates:
                             grand_total_row.append(date_totals[date_key])
                         rows_data.append(grand_total_row)
-                        
+
                         # Sort agent names for consistent ordering
                         sorted_agent_names = sorted(agent_names)
-                        
+
                         # Add rows for each agent
                         for agent_name in sorted_agent_names:
                             agent_total = agent_totals[agent_name]
-                            
+
                             row_data = [agent_name, agent_total]
                             for date_key in appointment_dates:
-                                row_data.append(agent_allocation_data[agent_name][date_key])
+                                row_data.append(
+                                    agent_allocation_data[agent_name][date_key]
+                                )
                             rows_data.append(row_data)
-                        
+
                         # Create dataframe
                         today_allocation_df = pd.DataFrame(rows_data, columns=columns)
-                        
+
                         # Write Today Allocation sheet
-                        today_allocation_df.to_excel(writer, sheet_name='Today Allocation', index=False)
-                
+                        today_allocation_df.to_excel(
+                            writer, sheet_name="Today Allocation", index=False
+                        )
+
                 # Create NTBP Allocation sheet
                 if processed_df is not None:
                     # Find Agent Name, Appointment Date, and Remark columns
                     agent_name_col = None
                     appointment_date_col = None
                     remark_col = None
-                    
+
                     for col in processed_df.columns:
-                        if 'agent' in col.lower() and 'name' in col.lower():
+                        if "agent" in col.lower() and "name" in col.lower():
                             agent_name_col = col
-                        if 'appointment' in col.lower() and 'date' in col.lower():
+                        if "appointment" in col.lower() and "date" in col.lower():
                             appointment_date_col = col
-                        if 'remark' in col.lower():
+                        if "remark" in col.lower():
                             remark_col = col
-                    
+
                     if agent_name_col and appointment_date_col and remark_col:
                         # Get all unique appointment dates (reuse the logic from Priority Status sheet)
-                        appointment_dates_dict = {}  # key: YYYY-MM-DD, value: MM/DD/YYYY
-                        
+                        appointment_dates_dict = (
+                            {}
+                        )  # key: YYYY-MM-DD, value: MM/DD/YYYY
+
                         for idx, row in processed_df.iterrows():
                             appt_date = row.get(appointment_date_col)
                             if pd.notna(appt_date):
                                 # Convert to date object
                                 date_obj = None
-                                if hasattr(appt_date, 'date'):
+                                if hasattr(appt_date, "date"):
                                     date_obj = appt_date.date()
-                                elif hasattr(appt_date, 'strftime'):
+                                elif hasattr(appt_date, "strftime"):
                                     try:
                                         date_obj = pd.to_datetime(appt_date).date()
                                     except:
@@ -7309,74 +8702,90 @@ def download_result():
                                         date_obj = pd.to_datetime(appt_date).date()
                                     except:
                                         continue
-                                
+
                                 if date_obj:
-                                    date_key = date_obj.strftime('%Y-%m-%d')
-                                    date_display = date_obj.strftime('%m/%d/%Y')
+                                    date_key = date_obj.strftime("%Y-%m-%d")
+                                    date_display = date_obj.strftime("%m/%d/%Y")
                                     appointment_dates_dict[date_key] = date_display
-                        
+
                         # Sort dates by key (YYYY-MM-DD) and create lists
                         sorted_date_keys = sorted(appointment_dates_dict.keys())
                         appointment_dates = sorted_date_keys  # For matching
-                        appointment_dates_display = [appointment_dates_dict[key] for key in sorted_date_keys]  # For display
-                        
+                        appointment_dates_display = [
+                            appointment_dates_dict[key] for key in sorted_date_keys
+                        ]  # For display
+
                         # Initialize data structure: agent_name -> date -> count
                         agent_ntbp_allocation_data = {}
-                        
+
                         # Get all unique agent names (only for rows with NTBP remark)
                         agent_names = set()
                         for idx, row in processed_df.iterrows():
                             agent_name = row.get(agent_name_col)
                             remark_value = row.get(remark_col)
-                            
+
                             # Only include rows with NTBP remark
                             if pd.notna(remark_value):
                                 remark_str = str(remark_value).strip().upper()
-                                if remark_str == 'NTBP':
+                                if remark_str == "NTBP":
                                     if pd.notna(agent_name) and str(agent_name).strip():
                                         agent_name_str = str(agent_name).strip()
                                         # Skip NTC and Not to work as they're not agents
                                         agent_name_upper = agent_name_str.upper()
-                                        if agent_name_upper != 'NTC' and 'NOT TO WORK' not in agent_name_upper.replace('-', ' ').replace('_', ' '):
+                                        if (
+                                            agent_name_upper != "NTC"
+                                            and "NOT TO WORK"
+                                            not in agent_name_upper.replace(
+                                                "-", " "
+                                            ).replace("_", " ")
+                                        ):
                                             agent_names.add(agent_name_str)
-                        
+
                         # Initialize counts for each agent and date
                         for agent_name in agent_names:
                             agent_ntbp_allocation_data[agent_name] = {}
                             for date_key in appointment_dates:
                                 agent_ntbp_allocation_data[agent_name][date_key] = 0
-                        
+
                         # Count NTBP allocations by agent name and date
                         for idx, row in processed_df.iterrows():
                             agent_name = row.get(agent_name_col)
                             appt_date = row.get(appointment_date_col)
                             remark_value = row.get(remark_col)
-                            
+
                             # Only process rows with NTBP remark
                             if pd.isna(remark_value):
                                 continue  # Skip rows without remarks
-                            
+
                             remark_str = str(remark_value).strip().upper()
-                            if remark_str != 'NTBP':
+                            if remark_str != "NTBP":
                                 continue  # Skip rows that are not NTBP
-                            
+
                             if pd.notna(agent_name) and pd.notna(appt_date):
                                 agent_name_str = str(agent_name).strip()
                                 # Skip NTC and Not to work
                                 agent_name_upper = agent_name_str.upper()
-                                if agent_name_upper == 'NTC' or 'NOT TO WORK' in agent_name_upper.replace('-', ' ').replace('_', ' '):
+                                if (
+                                    agent_name_upper == "NTC"
+                                    or "NOT TO WORK"
+                                    in agent_name_upper.replace("-", " ").replace(
+                                        "_", " "
+                                    )
+                                ):
                                     continue
-                                
+
                                 # Convert appointment date to YYYY-MM-DD format
                                 date_obj = None
-                                if hasattr(appt_date, 'date'):
+                                if hasattr(appt_date, "date"):
                                     date_obj = appt_date.date()
-                                elif hasattr(appt_date, 'strftime'):
+                                elif hasattr(appt_date, "strftime"):
                                     try:
                                         date_obj = pd.to_datetime(appt_date).date()
                                     except:
                                         try:
-                                            date_obj = pd.to_datetime(str(appt_date)).date()
+                                            date_obj = pd.to_datetime(
+                                                str(appt_date)
+                                            ).date()
                                         except:
                                             continue
                                 else:
@@ -7384,20 +8793,28 @@ def download_result():
                                         date_obj = pd.to_datetime(appt_date).date()
                                     except:
                                         continue
-                                
+
                                 if date_obj and agent_name_str in agent_names:
-                                    date_str = date_obj.strftime('%Y-%m-%d')
-                                    
+                                    date_str = date_obj.strftime("%Y-%m-%d")
+
                                     if date_str in appointment_dates:
-                                        agent_ntbp_allocation_data[agent_name_str][date_str] = \
-                                            agent_ntbp_allocation_data[agent_name_str].get(date_str, 0) + 1
-                        
+                                        agent_ntbp_allocation_data[agent_name_str][
+                                            date_str
+                                        ] = (
+                                            agent_ntbp_allocation_data[
+                                                agent_name_str
+                                            ].get(date_str, 0)
+                                            + 1
+                                        )
+
                         # Calculate totals
                         # Totals for each agent
                         agent_totals = {}
                         for agent_name in agent_names:
-                            agent_totals[agent_name] = sum(agent_ntbp_allocation_data[agent_name].values())
-                        
+                            agent_totals[agent_name] = sum(
+                                agent_ntbp_allocation_data[agent_name].values()
+                            )
+
                         # Totals for each date column
                         date_totals = {}
                         for date_key in appointment_dates:
@@ -7405,66 +8822,75 @@ def download_result():
                                 agent_ntbp_allocation_data[agent_name][date_key]
                                 for agent_name in agent_names
                             )
-                        
+
                         # Overall grand total
                         overall_grand_total = sum(agent_totals.values())
-                        
+
                         # Build the dataframe
                         # Columns: Row Labels, Grand Total, [date columns]
-                        columns = ['Row Labels', 'Grand Total'] + appointment_dates_display
+                        columns = [
+                            "Row Labels",
+                            "Grand Total",
+                        ] + appointment_dates_display
                         rows_data = []
-                        
+
                         # Add Grand Total row first
-                        grand_total_row = ['Grand Total', overall_grand_total]
+                        grand_total_row = ["Grand Total", overall_grand_total]
                         for date_key in appointment_dates:
                             grand_total_row.append(date_totals[date_key])
                         rows_data.append(grand_total_row)
-                        
+
                         # Sort agent names for consistent ordering
                         sorted_agent_names = sorted(agent_names)
-                        
+
                         # Add rows for each agent
                         for agent_name in sorted_agent_names:
                             agent_total = agent_totals[agent_name]
-                            
+
                             row_data = [agent_name, agent_total]
                             for date_key in appointment_dates:
-                                row_data.append(agent_ntbp_allocation_data[agent_name][date_key])
+                                row_data.append(
+                                    agent_ntbp_allocation_data[agent_name][date_key]
+                                )
                             rows_data.append(row_data)
-                        
+
                         # Create dataframe
                         ntbp_allocation_df = pd.DataFrame(rows_data, columns=columns)
-                        
+
                         # Write NTBP Allocation sheet
-                        ntbp_allocation_df.to_excel(writer, sheet_name='NTBP Allocation', index=False)
-                
+                        ntbp_allocation_df.to_excel(
+                            writer, sheet_name="NTBP Allocation", index=False
+                        )
+
                 # Create NTC Allocation sheet
                 if processed_df is not None:
                     # Find Agent Name, Appointment Date, and Remark columns
                     agent_name_col = None
                     appointment_date_col = None
                     remark_col = None
-                    
+
                     for col in processed_df.columns:
-                        if 'agent' in col.lower() and 'name' in col.lower():
+                        if "agent" in col.lower() and "name" in col.lower():
                             agent_name_col = col
-                        if 'appointment' in col.lower() and 'date' in col.lower():
+                        if "appointment" in col.lower() and "date" in col.lower():
                             appointment_date_col = col
-                        if 'remark' in col.lower():
+                        if "remark" in col.lower():
                             remark_col = col
-                    
+
                     if agent_name_col and appointment_date_col and remark_col:
                         # Get all unique appointment dates (reuse the logic from Priority Status sheet)
-                        appointment_dates_dict = {}  # key: YYYY-MM-DD, value: MM/DD/YYYY
-                        
+                        appointment_dates_dict = (
+                            {}
+                        )  # key: YYYY-MM-DD, value: MM/DD/YYYY
+
                         for idx, row in processed_df.iterrows():
                             appt_date = row.get(appointment_date_col)
                             if pd.notna(appt_date):
                                 # Convert to date object
                                 date_obj = None
-                                if hasattr(appt_date, 'date'):
+                                if hasattr(appt_date, "date"):
                                     date_obj = appt_date.date()
-                                elif hasattr(appt_date, 'strftime'):
+                                elif hasattr(appt_date, "strftime"):
                                     try:
                                         date_obj = pd.to_datetime(appt_date).date()
                                     except:
@@ -7474,73 +8900,83 @@ def download_result():
                                         date_obj = pd.to_datetime(appt_date).date()
                                     except:
                                         continue
-                                
+
                                 if date_obj:
-                                    date_key = date_obj.strftime('%Y-%m-%d')
-                                    date_display = date_obj.strftime('%m/%d/%Y')
+                                    date_key = date_obj.strftime("%Y-%m-%d")
+                                    date_display = date_obj.strftime("%m/%d/%Y")
                                     appointment_dates_dict[date_key] = date_display
-                        
+
                         # Sort dates by key (YYYY-MM-DD) and create lists
                         sorted_date_keys = sorted(appointment_dates_dict.keys())
                         appointment_dates = sorted_date_keys  # For matching
-                        appointment_dates_display = [appointment_dates_dict[key] for key in sorted_date_keys]  # For display
-                        
+                        appointment_dates_display = [
+                            appointment_dates_dict[key] for key in sorted_date_keys
+                        ]  # For display
+
                         # Initialize data structure: agent_name -> date -> count
                         agent_ntc_allocation_data = {}
                         ntc_row_data = {}  # For rows where Agent Name is "NTC" or empty
-                        
+
                         # Initialize NTC row data
                         for date_key in appointment_dates:
                             ntc_row_data[date_key] = 0
-                        
+
                         # Get all unique agent names (only for rows with NTC remark)
                         agent_names = set()
                         for idx, row in processed_df.iterrows():
                             agent_name = row.get(agent_name_col)
                             remark_value = row.get(remark_col)
-                            
+
                             # Only include rows with NTC remark
                             if pd.notna(remark_value):
                                 remark_str = str(remark_value).strip().upper()
-                                if remark_str == 'NTC':
+                                if remark_str == "NTC":
                                     if pd.notna(agent_name) and str(agent_name).strip():
                                         agent_name_str = str(agent_name).strip()
                                         agent_name_upper = agent_name_str.upper()
                                         # If agent name is "NTC", it goes to NTC row, not agent names
-                                        if agent_name_upper != 'NTC' and 'NOT TO WORK' not in agent_name_upper.replace('-', ' ').replace('_', ' '):
+                                        if (
+                                            agent_name_upper != "NTC"
+                                            and "NOT TO WORK"
+                                            not in agent_name_upper.replace(
+                                                "-", " "
+                                            ).replace("_", " ")
+                                        ):
                                             agent_names.add(agent_name_str)
-                        
+
                         # Initialize counts for each agent and date
                         for agent_name in agent_names:
                             agent_ntc_allocation_data[agent_name] = {}
                             for date_key in appointment_dates:
                                 agent_ntc_allocation_data[agent_name][date_key] = 0
-                        
+
                         # Count NTC allocations by agent name and date
                         for idx, row in processed_df.iterrows():
                             agent_name = row.get(agent_name_col)
                             appt_date = row.get(appointment_date_col)
                             remark_value = row.get(remark_col)
-                            
+
                             # Only process rows with NTC remark
                             if pd.isna(remark_value):
                                 continue  # Skip rows without remarks
-                            
+
                             remark_str = str(remark_value).strip().upper()
-                            if remark_str != 'NTC':
+                            if remark_str != "NTC":
                                 continue  # Skip rows that are not NTC
-                            
+
                             if pd.notna(appt_date):
                                 # Convert appointment date to YYYY-MM-DD format
                                 date_obj = None
-                                if hasattr(appt_date, 'date'):
+                                if hasattr(appt_date, "date"):
                                     date_obj = appt_date.date()
-                                elif hasattr(appt_date, 'strftime'):
+                                elif hasattr(appt_date, "strftime"):
                                     try:
                                         date_obj = pd.to_datetime(appt_date).date()
                                     except:
                                         try:
-                                            date_obj = pd.to_datetime(str(appt_date)).date()
+                                            date_obj = pd.to_datetime(
+                                                str(appt_date)
+                                            ).date()
                                         except:
                                             continue
                                 else:
@@ -7548,156 +8984,217 @@ def download_result():
                                         date_obj = pd.to_datetime(appt_date).date()
                                     except:
                                         continue
-                                
+
                                 if date_obj:
-                                    date_str = date_obj.strftime('%Y-%m-%d')
-                                    
+                                    date_str = date_obj.strftime("%Y-%m-%d")
+
                                     if date_str in appointment_dates:
                                         # Check if agent name is valid or if it should go to NTC row
-                                        if pd.notna(agent_name) and str(agent_name).strip():
+                                        if (
+                                            pd.notna(agent_name)
+                                            and str(agent_name).strip()
+                                        ):
                                             agent_name_str = str(agent_name).strip()
                                             agent_name_upper = agent_name_str.upper()
-                                            
-                                            if agent_name_upper == 'NTC':
+
+                                            if agent_name_upper == "NTC":
                                                 # Count in NTC row
-                                                ntc_row_data[date_str] = ntc_row_data.get(date_str, 0) + 1
+                                                ntc_row_data[date_str] = (
+                                                    ntc_row_data.get(date_str, 0) + 1
+                                                )
                                             elif agent_name_str in agent_names:
                                                 # Count in agent row
-                                                agent_ntc_allocation_data[agent_name_str][date_str] = \
-                                                    agent_ntc_allocation_data[agent_name_str].get(date_str, 0) + 1
+                                                agent_ntc_allocation_data[
+                                                    agent_name_str
+                                                ][date_str] = (
+                                                    agent_ntc_allocation_data[
+                                                        agent_name_str
+                                                    ].get(date_str, 0)
+                                                    + 1
+                                                )
                                         else:
                                             # Empty agent name - count in NTC row
-                                            ntc_row_data[date_str] = ntc_row_data.get(date_str, 0) + 1
-                        
+                                            ntc_row_data[date_str] = (
+                                                ntc_row_data.get(date_str, 0) + 1
+                                            )
+
                         # Calculate totals
                         # Totals for each agent
                         agent_totals = {}
                         for agent_name in agent_names:
-                            agent_totals[agent_name] = sum(agent_ntc_allocation_data[agent_name].values())
-                        
+                            agent_totals[agent_name] = sum(
+                                agent_ntc_allocation_data[agent_name].values()
+                            )
+
                         # Total for NTC row
                         ntc_row_total = sum(ntc_row_data.values())
-                        
+
                         # Totals for each date column
                         date_totals = {}
                         for date_key in appointment_dates:
                             date_totals[date_key] = (
-                                sum(agent_ntc_allocation_data[agent_name][date_key] for agent_name in agent_names) +
-                                ntc_row_data[date_key]
+                                sum(
+                                    agent_ntc_allocation_data[agent_name][date_key]
+                                    for agent_name in agent_names
+                                )
+                                + ntc_row_data[date_key]
                             )
-                        
+
                         # Overall grand total
                         overall_grand_total = sum(agent_totals.values()) + ntc_row_total
-                        
+
                         # Build the dataframe
                         # Columns: Row Labels, Grand Total, [date columns]
-                        columns = ['Row Labels', 'Grand Total'] + appointment_dates_display
+                        columns = [
+                            "Row Labels",
+                            "Grand Total",
+                        ] + appointment_dates_display
                         rows_data = []
-                        
+
                         # Add Grand Total row first
-                        grand_total_row = ['Grand Total', overall_grand_total]
+                        grand_total_row = ["Grand Total", overall_grand_total]
                         for date_key in appointment_dates:
                             grand_total_row.append(date_totals[date_key])
                         rows_data.append(grand_total_row)
-                        
+
                         # Sort agent names for consistent ordering
                         sorted_agent_names = sorted(agent_names)
-                        
+
                         # Add rows for each agent
                         for agent_name in sorted_agent_names:
                             agent_total = agent_totals[agent_name]
-                            
+
                             row_data = [agent_name, agent_total]
                             for date_key in appointment_dates:
-                                row_data.append(agent_ntc_allocation_data[agent_name][date_key])
+                                row_data.append(
+                                    agent_ntc_allocation_data[agent_name][date_key]
+                                )
                             rows_data.append(row_data)
-                        
+
                         # Add NTC row
-                        ntc_row = ['NTC', ntc_row_total]
+                        ntc_row = ["NTC", ntc_row_total]
                         for date_key in appointment_dates:
                             ntc_row.append(ntc_row_data[date_key])
                         rows_data.append(ntc_row)
-                        
+
                         # Create dataframe
                         ntc_allocation_df = pd.DataFrame(rows_data, columns=columns)
-                        
+
                         # Write NTC Allocation sheet
-                        ntc_allocation_df.to_excel(writer, sheet_name='NTC Allocation', index=False)
-                
+                        ntc_allocation_df.to_excel(
+                            writer, sheet_name="NTC Allocation", index=False
+                        )
+
                 # Create NTC Insurance Name and counts sheet
                 if processed_df is not None:
                     # Find Insurance Carrier and Remark columns
                     insurance_carrier_col = None
                     remark_col = None
-                    
+
                     for col in processed_df.columns:
-                        if ('dental' in col.lower() and 'primary' in col.lower() and 'ins' in col.lower()) or \
-                           ('insurance' in col.lower() and 'carrier' in col.lower()) or \
-                           ('insurance' in col.lower() and 'name' in col.lower()):
+                        if (
+                            (
+                                "dental" in col.lower()
+                                and "primary" in col.lower()
+                                and "ins" in col.lower()
+                            )
+                            or ("insurance" in col.lower() and "carrier" in col.lower())
+                            or ("insurance" in col.lower() and "name" in col.lower())
+                        ):
                             insurance_carrier_col = col
-                        if 'remark' in col.lower():
+                        if "remark" in col.lower():
                             remark_col = col
-                    
+
                     if insurance_carrier_col and remark_col:
                         # Count insurance companies with NTC remark
                         insurance_ntc_counts = {}
-                        
+
                         for idx, row in processed_df.iterrows():
                             remark_value = row.get(remark_col)
                             insurance_value = row.get(insurance_carrier_col)
-                            
+
                             # Only process rows with NTC remark
                             if pd.isna(remark_value):
                                 continue  # Skip rows without remarks
-                            
+
                             remark_str = str(remark_value).strip().upper()
-                            if remark_str != 'NTC':
+                            if remark_str != "NTC":
                                 continue  # Skip rows that are not NTC
-                            
+
                             # Count by insurance company name
                             if pd.notna(insurance_value):
                                 insurance_name = str(insurance_value).strip()
-                                if insurance_name:  # Only count non-empty insurance names
-                                    insurance_ntc_counts[insurance_name] = insurance_ntc_counts.get(insurance_name, 0) + 1
-                        
+                                if (
+                                    insurance_name
+                                ):  # Only count non-empty insurance names
+                                    insurance_ntc_counts[insurance_name] = (
+                                        insurance_ntc_counts.get(insurance_name, 0) + 1
+                                    )
+
                         # Convert to list of tuples and sort by count (descending)
-                        insurance_list = [(insurance_name, count) for insurance_name, count in insurance_ntc_counts.items()]
-                        insurance_list.sort(key=lambda x: x[1], reverse=True)  # Sort by count in descending order
-                        
+                        insurance_list = [
+                            (insurance_name, count)
+                            for insurance_name, count in insurance_ntc_counts.items()
+                        ]
+                        insurance_list.sort(
+                            key=lambda x: x[1], reverse=True
+                        )  # Sort by count in descending order
+
                         # Calculate grand total
                         grand_total = sum(count for _, count in insurance_list)
-                        
+
                         # Create summary dataframe
                         if insurance_list:
-                            ntc_insurance_df = pd.DataFrame(insurance_list, columns=['Row Labels', 'Count of Agent Name'])
+                            ntc_insurance_df = pd.DataFrame(
+                                insurance_list,
+                                columns=["Row Labels", "Count of Agent Name"],
+                            )
                             # Add grand total row
-                            grand_total_row = pd.DataFrame([['Grand Total', grand_total]], columns=['Row Labels', 'Count of Agent Name'])
-                            ntc_insurance_df = pd.concat([ntc_insurance_df, grand_total_row], ignore_index=True)
+                            grand_total_row = pd.DataFrame(
+                                [["Grand Total", grand_total]],
+                                columns=["Row Labels", "Count of Agent Name"],
+                            )
+                            ntc_insurance_df = pd.concat(
+                                [ntc_insurance_df, grand_total_row], ignore_index=True
+                            )
                         else:
                             # Create empty summary with just grand total
-                            ntc_insurance_df = pd.DataFrame([['Grand Total', 0]], columns=['Row Labels', 'Count of Agent Name'])
-                        
+                            ntc_insurance_df = pd.DataFrame(
+                                [["Grand Total", 0]],
+                                columns=["Row Labels", "Count of Agent Name"],
+                            )
+
                         # Write NTC Insurance Name and counts sheet
-                        ntc_insurance_df.to_excel(writer, sheet_name='NTC Insurance Name and counts', index=False)
-                
+                        ntc_insurance_df.to_excel(
+                            writer,
+                            sheet_name="NTC Insurance Name and counts",
+                            index=False,
+                        )
+
                 # Create Agent \ Insurance sheet
                 if processed_df is not None:
                     # Find Agent Name and Insurance Carrier columns
                     agent_name_col = None
                     insurance_carrier_col = None
-                    
+
                     for col in processed_df.columns:
-                        if 'agent' in col.lower() and 'name' in col.lower():
+                        if "agent" in col.lower() and "name" in col.lower():
                             agent_name_col = col
-                        if ('dental' in col.lower() and 'primary' in col.lower() and 'ins' in col.lower()) or \
-                           ('insurance' in col.lower() and 'carrier' in col.lower()) or \
-                           ('insurance' in col.lower() and 'name' in col.lower()):
+                        if (
+                            (
+                                "dental" in col.lower()
+                                and "primary" in col.lower()
+                                and "ins" in col.lower()
+                            )
+                            or ("insurance" in col.lower() and "carrier" in col.lower())
+                            or ("insurance" in col.lower() and "name" in col.lower())
+                        ):
                             insurance_carrier_col = col
-                    
+
                     if agent_name_col and insurance_carrier_col:
                         # Initialize data structure: agent_name -> insurance_name -> count
                         agent_insurance_data = {}
-                        
+
                         # Get all unique agent names (excluding NTC and Not to work)
                         agent_names = set()
                         for idx, row in processed_df.iterrows():
@@ -7706,98 +9203,128 @@ def download_result():
                                 agent_name_str = str(agent_name).strip()
                                 agent_name_upper = agent_name_str.upper()
                                 # Skip NTC and Not to work as they're not agents
-                                if agent_name_upper != 'NTC' and 'NOT TO WORK' not in agent_name_upper.replace('-', ' ').replace('_', ' '):
+                                if (
+                                    agent_name_upper != "NTC"
+                                    and "NOT TO WORK"
+                                    not in agent_name_upper.replace("-", " ").replace(
+                                        "_", " "
+                                    )
+                                ):
                                     agent_names.add(agent_name_str)
-                        
+
                         # Initialize counts for each agent and insurance
                         for agent_name in agent_names:
                             agent_insurance_data[agent_name] = {}
-                        
+
                         # Count rows by agent name and insurance company
                         for idx, row in processed_df.iterrows():
                             agent_name = row.get(agent_name_col)
                             insurance_value = row.get(insurance_carrier_col)
-                            
+
                             if pd.notna(agent_name) and str(agent_name).strip():
                                 agent_name_str = str(agent_name).strip()
                                 agent_name_upper = agent_name_str.upper()
-                                
+
                                 # Skip NTC and Not to work
-                                if agent_name_upper == 'NTC' or 'NOT TO WORK' in agent_name_upper.replace('-', ' ').replace('_', ' '):
+                                if (
+                                    agent_name_upper == "NTC"
+                                    or "NOT TO WORK"
+                                    in agent_name_upper.replace("-", " ").replace(
+                                        "_", " "
+                                    )
+                                ):
                                     continue
-                                
+
                                 if agent_name_str in agent_names:
                                     # Count by insurance company
                                     if pd.notna(insurance_value):
                                         insurance_name = str(insurance_value).strip()
-                                        if insurance_name:  # Only count non-empty insurance names
-                                            agent_insurance_data[agent_name_str][insurance_name] = \
-                                                agent_insurance_data[agent_name_str].get(insurance_name, 0) + 1
-                        
+                                        if (
+                                            insurance_name
+                                        ):  # Only count non-empty insurance names
+                                            agent_insurance_data[agent_name_str][
+                                                insurance_name
+                                            ] = (
+                                                agent_insurance_data[
+                                                    agent_name_str
+                                                ].get(insurance_name, 0)
+                                                + 1
+                                            )
+
                         # Calculate totals for each agent
                         agent_totals = {}
                         for agent_name in agent_names:
-                            agent_totals[agent_name] = sum(agent_insurance_data[agent_name].values())
-                        
+                            agent_totals[agent_name] = sum(
+                                agent_insurance_data[agent_name].values()
+                            )
+
                         # Calculate overall grand total
                         overall_grand_total = sum(agent_totals.values())
-                        
+
                         # Build the dataframe
                         # Columns: Row Labels, Count of Insurance rows
-                        columns = ['Row Labels', 'Count of Insurance rows']
+                        columns = ["Row Labels", "Count of Insurance rows"]
                         rows_data = []
-                        
+
                         # Sort agent names for consistent ordering
                         sorted_agent_names = sorted(agent_names)
-                        
+
                         # Add rows for each agent and their insurance companies
                         for agent_name in sorted_agent_names:
                             # Add agent name row with total
                             agent_total = agent_totals[agent_name]
                             rows_data.append([agent_name, agent_total])
-                            
+
                             # Add insurance company sub-rows for this agent
-                            insurance_companies = sorted(agent_insurance_data[agent_name].items(), key=lambda x: x[1], reverse=True)
+                            insurance_companies = sorted(
+                                agent_insurance_data[agent_name].items(),
+                                key=lambda x: x[1],
+                                reverse=True,
+                            )
                             for insurance_name, count in insurance_companies:
                                 rows_data.append([insurance_name, count])
-                        
+
                         # Add Grand Total row
-                        rows_data.append(['Grand Total', overall_grand_total])
-                        
+                        rows_data.append(["Grand Total", overall_grand_total])
+
                         # Create dataframe
                         agent_insurance_df = pd.DataFrame(rows_data, columns=columns)
-                        
+
                         # Write Agent Insurance sheet
-                        agent_insurance_df.to_excel(writer, sheet_name='Agent Insurance', index=False)
-                        
+                        agent_insurance_df.to_excel(
+                            writer, sheet_name="Agent Insurance", index=False
+                        )
+
                         # Store agent names for later formatting (we'll add comments after writer closes)
                         # Store in a way that's accessible during formatting
                         agent_insurance_agent_names = sorted_agent_names.copy()
-                
+
                 # Create Priority Appointment Pending sheet
                 if processed_df is not None:
                     # Find Office Name and Appointment Date columns
                     office_name_col = None
                     appointment_date_col = None
-                    
+
                     for col in processed_df.columns:
-                        if 'office' in col.lower() and 'name' in col.lower():
+                        if "office" in col.lower() and "name" in col.lower():
                             office_name_col = col
-                        if 'appointment' in col.lower() and 'date' in col.lower():
+                        if "appointment" in col.lower() and "date" in col.lower():
                             appointment_date_col = col
-                    
+
                     if office_name_col and appointment_date_col:
                         # Get all unique appointment dates (reuse the logic from Priority Status sheet)
-                        appointment_dates_dict = {}  # key: YYYY-MM-DD, value: MM/DD/YYYY
-                        
+                        appointment_dates_dict = (
+                            {}
+                        )  # key: YYYY-MM-DD, value: MM/DD/YYYY
+
                         for idx, row in processed_df.iterrows():
                             appt_date = row.get(appointment_date_col)
                             if pd.notna(appt_date):
                                 # Convert to date object
                                 date_obj = None
-                                if hasattr(appt_date, 'date'):
+                                if hasattr(appt_date, "date"):
                                     date_obj = appt_date.date()
-                                elif hasattr(appt_date, 'strftime'):
+                                elif hasattr(appt_date, "strftime"):
                                     try:
                                         date_obj = pd.to_datetime(appt_date).date()
                                     except:
@@ -7807,20 +9334,22 @@ def download_result():
                                         date_obj = pd.to_datetime(appt_date).date()
                                     except:
                                         continue
-                                
+
                                 if date_obj:
-                                    date_key = date_obj.strftime('%Y-%m-%d')
-                                    date_display = date_obj.strftime('%m/%d/%Y')
+                                    date_key = date_obj.strftime("%Y-%m-%d")
+                                    date_display = date_obj.strftime("%m/%d/%Y")
                                     appointment_dates_dict[date_key] = date_display
-                        
+
                         # Sort dates by key (YYYY-MM-DD) and create lists
                         sorted_date_keys = sorted(appointment_dates_dict.keys())
                         appointment_dates = sorted_date_keys  # For matching
-                        appointment_dates_display = [appointment_dates_dict[key] for key in sorted_date_keys]  # For display
-                        
+                        appointment_dates_display = [
+                            appointment_dates_dict[key] for key in sorted_date_keys
+                        ]  # For display
+
                         # Initialize data structure: office_name -> date -> count
                         office_date_data = {}
-                        
+
                         # Get all unique office names
                         office_names = set()
                         for idx, row in processed_df.iterrows():
@@ -7828,31 +9357,33 @@ def download_result():
                             if pd.notna(office_name) and str(office_name).strip():
                                 office_name_str = str(office_name).strip()
                                 office_names.add(office_name_str)
-                        
+
                         # Initialize counts for each office and date
                         for office_name in office_names:
                             office_date_data[office_name] = {}
                             for date_key in appointment_dates:
                                 office_date_data[office_name][date_key] = 0
-                        
+
                         # Count rows by office name and appointment date
                         for idx, row in processed_df.iterrows():
                             office_name = row.get(office_name_col)
                             appt_date = row.get(appointment_date_col)
-                            
+
                             if pd.notna(office_name) and pd.notna(appt_date):
                                 office_name_str = str(office_name).strip()
-                                
+
                                 # Convert appointment date to YYYY-MM-DD format
                                 date_obj = None
-                                if hasattr(appt_date, 'date'):
+                                if hasattr(appt_date, "date"):
                                     date_obj = appt_date.date()
-                                elif hasattr(appt_date, 'strftime'):
+                                elif hasattr(appt_date, "strftime"):
                                     try:
                                         date_obj = pd.to_datetime(appt_date).date()
                                     except:
                                         try:
-                                            date_obj = pd.to_datetime(str(appt_date)).date()
+                                            date_obj = pd.to_datetime(
+                                                str(appt_date)
+                                            ).date()
                                         except:
                                             continue
                                 else:
@@ -7860,20 +9391,26 @@ def download_result():
                                         date_obj = pd.to_datetime(appt_date).date()
                                     except:
                                         continue
-                                
+
                                 if date_obj and office_name_str in office_names:
-                                    date_str = date_obj.strftime('%Y-%m-%d')
-                                    
+                                    date_str = date_obj.strftime("%Y-%m-%d")
+
                                     if date_str in appointment_dates:
-                                        office_date_data[office_name_str][date_str] = \
-                                            office_date_data[office_name_str].get(date_str, 0) + 1
-                        
+                                        office_date_data[office_name_str][date_str] = (
+                                            office_date_data[office_name_str].get(
+                                                date_str, 0
+                                            )
+                                            + 1
+                                        )
+
                         # Calculate totals
                         # Totals for each office
                         office_totals = {}
                         for office_name in office_names:
-                            office_totals[office_name] = sum(office_date_data[office_name].values())
-                        
+                            office_totals[office_name] = sum(
+                                office_date_data[office_name].values()
+                            )
+
                         # Totals for each date column
                         date_totals = {}
                         for date_key in appointment_dates:
@@ -7881,272 +9418,337 @@ def download_result():
                                 office_date_data[office_name][date_key]
                                 for office_name in office_names
                             )
-                        
+
                         # Overall grand total
                         overall_grand_total = sum(office_totals.values())
-                        
+
                         # Build the dataframe
                         # Columns: Row Labels, [date columns], Grand Total
-                        columns = ['Row Labels'] + appointment_dates_display + ['Grand Total']
+                        columns = (
+                            ["Row Labels"] + appointment_dates_display + ["Grand Total"]
+                        )
                         rows_data = []
-                        
+
                         # Sort office names for consistent ordering
                         sorted_office_names = sorted(office_names)
-                        
+
                         # Add rows for each office
                         for office_name in sorted_office_names:
                             office_total = office_totals[office_name]
-                            
+
                             row_data = [office_name]
                             for date_key in appointment_dates:
                                 row_data.append(office_date_data[office_name][date_key])
                             row_data.append(office_total)
                             rows_data.append(row_data)
-                        
+
                         # Add Grand Total row
-                        grand_total_row = ['Grand Total']
+                        grand_total_row = ["Grand Total"]
                         for date_key in appointment_dates:
                             grand_total_row.append(date_totals[date_key])
                         grand_total_row.append(overall_grand_total)
                         rows_data.append(grand_total_row)
-                        
+
                         # Create dataframe
-                        priority_appointment_pending_df = pd.DataFrame(rows_data, columns=columns)
-                        
+                        priority_appointment_pending_df = pd.DataFrame(
+                            rows_data, columns=columns
+                        )
+
                         # Write Priority Appointment Pending sheet
-                        priority_appointment_pending_df.to_excel(writer, sheet_name='Priority Appointment Pending', index=False)
-            
+                        priority_appointment_pending_df.to_excel(
+                            writer,
+                            sheet_name="Priority Appointment Pending",
+                            index=False,
+                        )
+
             # Apply formatting to make certain text bold
             from openpyxl import load_workbook
             from openpyxl.styles import Font
-            
+
             wb = load_workbook(temp_path)
-            
+
             # Format Agent Count Summary sheet
-            if 'Agent Count Summary' in wb.sheetnames:
-                ws = wb['Agent Count Summary']
-                for row_idx, row in enumerate(ws.iter_rows(min_row=2, max_row=ws.max_row, min_col=1, max_col=1), start=2):
+            if "Agent Count Summary" in wb.sheetnames:
+                ws = wb["Agent Count Summary"]
+                for row_idx, row in enumerate(
+                    ws.iter_rows(min_row=2, max_row=ws.max_row, min_col=1, max_col=1),
+                    start=2,
+                ):
                     cell_value = row[0].value
                     if cell_value and isinstance(cell_value, str):
                         cell_str = cell_value.strip()
                         # Make only Grand Total bold
-                        if cell_str == 'Grand Total':
+                        if cell_str == "Grand Total":
                             # Make entire row bold
                             for col_idx in range(1, ws.max_column + 1):
-                                ws.cell(row=row_idx, column=col_idx).font = Font(bold=True)
-            
+                                ws.cell(row=row_idx, column=col_idx).font = Font(
+                                    bold=True
+                                )
+
             # Format Priority Status sheet
-            if 'Priority Status' in wb.sheetnames:
-                ws = wb['Priority Status']
-                for row_idx, row in enumerate(ws.iter_rows(min_row=2, max_row=ws.max_row, min_col=1, max_col=1), start=2):
+            if "Priority Status" in wb.sheetnames:
+                ws = wb["Priority Status"]
+                for row_idx, row in enumerate(
+                    ws.iter_rows(min_row=2, max_row=ws.max_row, min_col=1, max_col=1),
+                    start=2,
+                ):
                     cell_value = row[0].value
                     if cell_value and isinstance(cell_value, str):
                         cell_str = cell_value.strip()
                         # Make only Grand Total bold
-                        if cell_str == 'Grand Total':
+                        if cell_str == "Grand Total":
                             # Make entire row bold
                             for col_idx in range(1, ws.max_column + 1):
-                                ws.cell(row=row_idx, column=col_idx).font = Font(bold=True)
-            
+                                ws.cell(row=row_idx, column=col_idx).font = Font(
+                                    bold=True
+                                )
+
             # Format Priority Remark sheet
-            if 'Priority Remark' in wb.sheetnames:
-                ws = wb['Priority Remark']
-                for row_idx, row in enumerate(ws.iter_rows(min_row=2, max_row=ws.max_row, min_col=1, max_col=1), start=2):
+            if "Priority Remark" in wb.sheetnames:
+                ws = wb["Priority Remark"]
+                for row_idx, row in enumerate(
+                    ws.iter_rows(min_row=2, max_row=ws.max_row, min_col=1, max_col=1),
+                    start=2,
+                ):
                     cell_value = row[0].value
                     if cell_value and isinstance(cell_value, str):
                         cell_str = cell_value.strip()
                         # Make First Priority, Second Priority, Third Priority, and Grand Total bold
-                        if cell_str in ['First Priority', 'Second Priority', 'Third Priority', 'Grand Total']:
+                        if cell_str in [
+                            "First Priority",
+                            "Second Priority",
+                            "Third Priority",
+                            "Grand Total",
+                        ]:
                             row[0].font = Font(bold=True)
                             # Make entire row bold
                             for col_idx in range(1, ws.max_column + 1):
-                                ws.cell(row=row_idx, column=col_idx).font = Font(bold=True)
-            
+                                ws.cell(row=row_idx, column=col_idx).font = Font(
+                                    bold=True
+                                )
+
             # Format Today Allocation sheet
-            if 'Today Allocation' in wb.sheetnames:
-                ws = wb['Today Allocation']
-                for row_idx, row in enumerate(ws.iter_rows(min_row=2, max_row=ws.max_row, min_col=1, max_col=1), start=2):
+            if "Today Allocation" in wb.sheetnames:
+                ws = wb["Today Allocation"]
+                for row_idx, row in enumerate(
+                    ws.iter_rows(min_row=2, max_row=ws.max_row, min_col=1, max_col=1),
+                    start=2,
+                ):
                     cell_value = row[0].value
                     if cell_value and isinstance(cell_value, str):
                         cell_str = cell_value.strip()
                         # Make only Grand Total bold
-                        if cell_str == 'Grand Total':
+                        if cell_str == "Grand Total":
                             # Make entire row bold
                             for col_idx in range(1, ws.max_column + 1):
-                                ws.cell(row=row_idx, column=col_idx).font = Font(bold=True)
-            
+                                ws.cell(row=row_idx, column=col_idx).font = Font(
+                                    bold=True
+                                )
+
             # Format NTBP Allocation sheet
-            if 'NTBP Allocation' in wb.sheetnames:
-                ws = wb['NTBP Allocation']
-                for row_idx, row in enumerate(ws.iter_rows(min_row=2, max_row=ws.max_row, min_col=1, max_col=1), start=2):
+            if "NTBP Allocation" in wb.sheetnames:
+                ws = wb["NTBP Allocation"]
+                for row_idx, row in enumerate(
+                    ws.iter_rows(min_row=2, max_row=ws.max_row, min_col=1, max_col=1),
+                    start=2,
+                ):
                     cell_value = row[0].value
                     if cell_value and isinstance(cell_value, str):
                         cell_str = cell_value.strip()
                         # Make only Grand Total bold
-                        if cell_str == 'Grand Total':
+                        if cell_str == "Grand Total":
                             # Make entire row bold
                             for col_idx in range(1, ws.max_column + 1):
-                                ws.cell(row=row_idx, column=col_idx).font = Font(bold=True)
-            
+                                ws.cell(row=row_idx, column=col_idx).font = Font(
+                                    bold=True
+                                )
+
             # Format NTC Allocation sheet
-            if 'NTC Allocation' in wb.sheetnames:
-                ws = wb['NTC Allocation']
-                for row_idx, row in enumerate(ws.iter_rows(min_row=2, max_row=ws.max_row, min_col=1, max_col=1), start=2):
+            if "NTC Allocation" in wb.sheetnames:
+                ws = wb["NTC Allocation"]
+                for row_idx, row in enumerate(
+                    ws.iter_rows(min_row=2, max_row=ws.max_row, min_col=1, max_col=1),
+                    start=2,
+                ):
                     cell_value = row[0].value
                     if cell_value and isinstance(cell_value, str):
                         cell_str = cell_value.strip()
                         # Make only NTC and Grand Total bold
-                        if cell_str in ['Grand Total', 'NTC']:
+                        if cell_str in ["Grand Total", "NTC"]:
                             # Make entire row bold
                             for col_idx in range(1, ws.max_column + 1):
-                                ws.cell(row=row_idx, column=col_idx).font = Font(bold=True)
-            
+                                ws.cell(row=row_idx, column=col_idx).font = Font(
+                                    bold=True
+                                )
+
             # Format Agent Insurance sheet
-            if 'Agent Insurance' in wb.sheetnames:
-                ws = wb['Agent Insurance']
-                
+            if "Agent Insurance" in wb.sheetnames:
+                ws = wb["Agent Insurance"]
+
                 # Check for agent rows using stored agent names (most reliable method)
-                for row_idx, row in enumerate(ws.iter_rows(min_row=2, max_row=ws.max_row, min_col=1, max_col=1), start=2):
+                for row_idx, row in enumerate(
+                    ws.iter_rows(min_row=2, max_row=ws.max_row, min_col=1, max_col=1),
+                    start=2,
+                ):
                     cell_value = row[0].value
                     if cell_value and isinstance(cell_value, str):
                         cell_str = cell_value.strip()
-                        if cell_str == 'Grand Total':
+                        if cell_str == "Grand Total":
                             # Make entire row bold
                             for col_idx in range(1, ws.max_column + 1):
-                                ws.cell(row=row_idx, column=col_idx).font = Font(bold=True)
+                                ws.cell(row=row_idx, column=col_idx).font = Font(
+                                    bold=True
+                                )
                         else:
                             # Only bold rows that are in the stored agent names list
                             # This ensures only agent names are bold, not insurance names
-                            if agent_insurance_agent_names and cell_str in agent_insurance_agent_names:
+                            if (
+                                agent_insurance_agent_names
+                                and cell_str in agent_insurance_agent_names
+                            ):
                                 # Make agent name and count bold
                                 row[0].font = Font(bold=True)
                                 if ws.max_column >= 2:
-                                    ws.cell(row=row_idx, column=2).font = Font(bold=True)
-            
+                                    ws.cell(row=row_idx, column=2).font = Font(
+                                        bold=True
+                                    )
+
             # Format NTC Insurance Name and counts sheet
-            if 'NTC Insurance Name and counts' in wb.sheetnames:
-                ws = wb['NTC Insurance Name and counts']
-                for row_idx, row in enumerate(ws.iter_rows(min_row=2, max_row=ws.max_row, min_col=1, max_col=1), start=2):
+            if "NTC Insurance Name and counts" in wb.sheetnames:
+                ws = wb["NTC Insurance Name and counts"]
+                for row_idx, row in enumerate(
+                    ws.iter_rows(min_row=2, max_row=ws.max_row, min_col=1, max_col=1),
+                    start=2,
+                ):
                     cell_value = row[0].value
                     if cell_value and isinstance(cell_value, str):
                         cell_str = cell_value.strip()
-                        if cell_str == 'Grand Total':
+                        if cell_str == "Grand Total":
                             # Make entire row bold
                             for col_idx in range(1, ws.max_column + 1):
-                                ws.cell(row=row_idx, column=col_idx).font = Font(bold=True)
-            
+                                ws.cell(row=row_idx, column=col_idx).font = Font(
+                                    bold=True
+                                )
+
             # Format Priority Appointment Pending sheet
-            if 'Priority Appointment Pending' in wb.sheetnames:
-                ws = wb['Priority Appointment Pending']
-                for row_idx, row in enumerate(ws.iter_rows(min_row=2, max_row=ws.max_row, min_col=1, max_col=1), start=2):
+            if "Priority Appointment Pending" in wb.sheetnames:
+                ws = wb["Priority Appointment Pending"]
+                for row_idx, row in enumerate(
+                    ws.iter_rows(min_row=2, max_row=ws.max_row, min_col=1, max_col=1),
+                    start=2,
+                ):
                     cell_value = row[0].value
                     if cell_value and isinstance(cell_value, str):
                         cell_str = cell_value.strip()
-                        if cell_str == 'Grand Total':
+                        if cell_str == "Grand Total":
                             # Make entire row bold
                             for col_idx in range(1, ws.max_column + 1):
-                                ws.cell(row=row_idx, column=col_idx).font = Font(bold=True)
-            
+                                ws.cell(row=row_idx, column=col_idx).font = Font(
+                                    bold=True
+                                )
+
             wb.save(temp_path)
             wb.close()
-            
+
             return send_file(temp_path, as_attachment=True, download_name=filename)
-            
+
         finally:
             # Clean up temporary file
             os.close(temp_fd)
             if os.path.exists(temp_path):
                 os.unlink(temp_path)
-        
+
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        return jsonify({"error": str(e)}), 500
+
 
 def validate_agent_work_file_columns(file_data):
     """Validate that the uploaded file contains all required columns"""
     # Required columns list
     required_columns = [
-        'Office Name',
-        'Appointment Date',
-        'Patient ID',
-        'Patient Name',
-        'Dental Primary Ins Carr',
-        'Dental Secondary Ins Carr',
-        'Provider Name',
-        'Received date',
-        'Type',
-        'Status Code',
-        'Comment',
-        'Group Number',
-        'Category',
-        'Agent Name',
-        'Work Date',
-        'Remark',
-        'Priority Status',
-        'QC Agent',
-        'QC Status',
-        'QC Comments',
-        'QC Date'
+        "Office Name",
+        "Appointment Date",
+        "Patient ID",
+        "Patient Name",
+        "Dental Primary Ins Carr",
+        "Dental Secondary Ins Carr",
+        "Provider Name",
+        "Received date",
+        "Type",
+        "Status Code",
+        "Comment",
+        "Group Number",
+        "Category",
+        "Agent Name",
+        "Work Date",
+        "Remark",
+        "Priority Status",
+        "QC Agent",
+        "QC Status",
+        "QC Comments",
+        "QC Date",
     ]
-    
+
     # Check each sheet in the file
     if not file_data:
-        return False, ['No data found in file']
-    
+        return False, ["No data found in file"]
+
     # Collect all column names from all sheets (case-insensitive)
     all_columns_found = set()
-    
+
     for sheet_name, df in file_data.items():
         if df.empty:
             continue
-            
+
         # Get actual column names from the DataFrame
         actual_columns = [str(col).strip() for col in df.columns]
-        
+
         # Add all columns (normalized to lowercase for comparison)
         for col in actual_columns:
             all_columns_found.add(col.strip().lower())
-    
+
     # Check which required columns are missing
     missing_columns = []
-    
+
     for required_col in required_columns:
         found = False
         required_col_lower = required_col.strip().lower()
-        
+
         # Check if column exists (case-insensitive)
         for found_col_lower in all_columns_found:
             if found_col_lower == required_col_lower:
                 found = True
                 break
-        
+
         if not found:
             missing_columns.append(required_col)
-    
+
     # Return True if all columns are found
     if not missing_columns:
         return True, []
-    
+
     return False, missing_columns
 
-@app.route('/upload_work_file', methods=['POST'])
+
+@app.route("/upload_work_file", methods=["POST"])
 @agent_required
 def upload_work_file():
     """Upload agent work file with data changes"""
-    if 'file' not in request.files:
-        return jsonify({'success': False, 'message': 'No file provided'}), 400
-    
-    file = request.files['file']
-    if file.filename == '':
-        return jsonify({'success': False, 'message': 'No file selected'}), 400
-    
-    notes = request.form.get('notes', '')
-    
+    if "file" not in request.files:
+        return jsonify({"success": False, "message": "No file provided"}), 400
+
+    file = request.files["file"]
+    if file.filename == "":
+        return jsonify({"success": False, "message": "No file selected"}), 400
+
+    notes = request.form.get("notes", "")
+
     try:
         # Get current agent
-        user_id = session.get('user_id')
+        user_id = session.get("user_id")
         if not user_id:
-            return jsonify({'success': False, 'message': 'User not found'}), 400
-        
+            return jsonify({"success": False, "message": "User not found"}), 400
+
         # Try to find user by ID first, then by email/google_id
         user = User.query.filter_by(id=user_id, is_active=True).first()
         if not user:
@@ -8155,123 +9757,151 @@ def upload_work_file():
         if not user:
             # If still not found, try by google_id
             user = User.query.filter_by(google_id=user_id, is_active=True).first()
-            
+
         if not user:
-            return jsonify({'success': False, 'message': 'User not found'}), 400
-        
+            return jsonify({"success": False, "message": "User not found"}), 400
+
         # Save uploaded file
         filename = secure_filename(file.filename)
         file.save(filename)
-        
+
         # Load and process Excel file
         try:
             # Use parse_dates=False to prevent automatic date parsing that differs between Windows and Mac
             file_data = pd.read_excel(filename, sheet_name=None, parse_dates=False)
-            
+
             # Validate required columns
             is_valid, missing_columns = validate_agent_work_file_columns(file_data)
-            
+
             if not is_valid:
                 # Clean up uploaded file
                 if os.path.exists(filename):
                     os.remove(filename)
-                
+
                 # Format error message
                 if len(missing_columns) == 1:
-                    error_message = f'Missing required column: {missing_columns[0]}'
+                    error_message = f"Missing required column: {missing_columns[0]}"
                 else:
-                    error_message = f'Missing required columns: {", ".join(missing_columns)}'
-                
-                return jsonify({
-                    'success': False, 
-                    'message': error_message,
-                    'missing_columns': missing_columns
-                }), 400
-            
+                    error_message = (
+                        f'Missing required columns: {", ".join(missing_columns)}'
+                    )
+
+                return (
+                    jsonify(
+                        {
+                            "success": False,
+                            "message": error_message,
+                            "missing_columns": missing_columns,
+                        }
+                    ),
+                    400,
+                )
+
             # Clear all existing agent work files before saving new one
             existing_files = AgentWorkFile.query.filter_by(agent_id=user.id).all()
             for existing_file in existing_files:
                 db.session.delete(existing_file)
             db.session.commit()
-            
+
             # Save new file to database
             work_file = save_agent_work_file(
-                agent_id=user.id,
-                filename=filename,
-                file_data=file_data,
-                notes=notes
+                agent_id=user.id, filename=filename, file_data=file_data, notes=notes
             )
-            
+
             # Clean up uploaded file
             if os.path.exists(filename):
                 os.remove(filename)
-            
-            return jsonify({'success': True, 'message': f'Work file uploaded successfully: {filename} (Previous files cleared)'})
-        
+
+            return jsonify(
+                {
+                    "success": True,
+                    "message": f"Work file uploaded successfully: {filename} (Previous files cleared)",
+                }
+            )
+
         except Exception as e:
             # Clean up uploaded file on error
             if os.path.exists(filename):
                 os.remove(filename)
-            return jsonify({'success': False, 'message': f'Error processing Excel file: {str(e)}'}), 500
-        
-    except Exception as e:
-        return jsonify({'success': False, 'message': f'Error uploading work file: {str(e)}'}), 500
+            return (
+                jsonify(
+                    {
+                        "success": False,
+                        "message": f"Error processing Excel file: {str(e)}",
+                    }
+                ),
+                500,
+            )
 
-@app.route('/upload_status', methods=['POST'])
+    except Exception as e:
+        return (
+            jsonify(
+                {"success": False, "message": f"Error uploading work file: {str(e)}"}
+            ),
+            500,
+        )
+
+
+@app.route("/upload_status", methods=["POST"])
 @agent_required
 def upload_status_file():
     """Legacy route - redirect to new work file upload"""
-    return redirect(url_for('upload_work_file'))
+    return redirect(url_for("upload_work_file"))
 
-@app.route('/consolidate_agent_files', methods=['POST'])
+
+@app.route("/consolidate_agent_files", methods=["POST"])
 @admin_required
 def consolidate_agent_files():
     """Consolidate all agent work files into one Excel file"""
     try:
         # Get all agent work files (all files regardless of status - includes previously consolidated and newly uploaded)
-        work_files = AgentWorkFile.query.order_by(AgentWorkFile.upload_date.desc()).all()
-        
+        work_files = AgentWorkFile.query.order_by(
+            AgentWorkFile.upload_date.desc()
+        ).all()
+
         if not work_files:
-            flash('No agent work files found to consolidate', 'warning')
-            return redirect('/')
-        
+            flash("No agent work files found to consolidate", "warning")
+            return redirect("/")
+
         # Create Excel buffer
         excel_buffer = io.BytesIO()
-        
+
         # Helper function to find remark column
         def find_remark_column(df):
             """Find the remark column (case-insensitive)"""
             for col in df.columns:
-                if col.lower() in ['remark', 'remarks']:
+                if col.lower() in ["remark", "remarks"]:
                     return col
             return None
-        
-        with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
+
+        with pd.ExcelWriter(excel_buffer, engine="openpyxl") as writer:
             # First pass: Collect all unique remark statuses across all agents
             all_remark_statuses = set()
             agent_remarks_data = {}  # Store remarks data per agent
-            
+
             for work_file in work_files:
                 file_data = work_file.get_file_data()
                 agent_name = work_file.agent.name
-                remarks_dict = {}  # Dictionary to store all remarks with counts for this agent
-                
+                remarks_dict = (
+                    {}
+                )  # Dictionary to store all remarks with counts for this agent
+
                 if file_data:
                     if isinstance(file_data, dict):
                         # Multiple sheets - process all sheets except Summary
                         for sheet_name, sheet_data in file_data.items():
                             # Skip Summary sheet
-                            if sheet_name.lower() == 'summary':
+                            if sheet_name.lower() == "summary":
                                 continue
-                                
+
                             if isinstance(sheet_data, pd.DataFrame):
                                 # Get remark column
                                 remark_col = find_remark_column(sheet_data)
-                                
+
                                 if remark_col:
                                     # Get all remarks (including NaN)
                                     remark_data = sheet_data[remark_col]
-                                    
+
                                     # Count all non-empty remarks by status
                                     non_empty_remarks = remark_data.dropna()
                                     for remark in non_empty_remarks:
@@ -8282,23 +9912,30 @@ def consolidate_agent_files():
                                             # Use original case for display, but normalize for counting
                                             if remark_lower in remarks_dict:
                                                 remarks_dict[remark_lower] = {
-                                                    'count': remarks_dict[remark_lower]['count'] + 1,
-                                                    'display': remarks_dict[remark_lower]['display']  # Keep first seen case
+                                                    "count": remarks_dict[remark_lower][
+                                                        "count"
+                                                    ]
+                                                    + 1,
+                                                    "display": remarks_dict[
+                                                        remark_lower
+                                                    ][
+                                                        "display"
+                                                    ],  # Keep first seen case
                                                 }
                                             else:
                                                 remarks_dict[remark_lower] = {
-                                                    'count': 1,
-                                                    'display': remark_normalized  # Keep original case
+                                                    "count": 1,
+                                                    "display": remark_normalized,  # Keep original case
                                                 }
                     elif isinstance(file_data, pd.DataFrame):
                         # Single DataFrame
                         # Get remark column
                         remark_col = find_remark_column(file_data)
-                        
+
                         if remark_col:
                             # Get all remarks (including NaN)
                             remark_data = file_data[remark_col]
-                            
+
                             # Count all non-empty remarks by status
                             non_empty_remarks = remark_data.dropna()
                             for remark in non_empty_remarks:
@@ -8309,122 +9946,137 @@ def consolidate_agent_files():
                                     # Use original case for display, but normalize for counting
                                     if remark_lower in remarks_dict:
                                         remarks_dict[remark_lower] = {
-                                            'count': remarks_dict[remark_lower]['count'] + 1,
-                                            'display': remarks_dict[remark_lower]['display']  # Keep first seen case
+                                            "count": remarks_dict[remark_lower]["count"]
+                                            + 1,
+                                            "display": remarks_dict[remark_lower][
+                                                "display"
+                                            ],  # Keep first seen case
                                         }
                                     else:
                                         remarks_dict[remark_lower] = {
-                                            'count': 1,
-                                            'display': remark_normalized  # Keep original case
+                                            "count": 1,
+                                            "display": remark_normalized,  # Keep original case
                                         }
-                
+
                 # Store remarks data for this agent
                 agent_remarks_data[agent_name] = remarks_dict
-                
+
                 # Collect all unique remark statuses (using display name)
                 for remark_info in remarks_dict.values():
-                    all_remark_statuses.add(remark_info['display'])
-            
+                    all_remark_statuses.add(remark_info["display"])
+
             # Add empty remarks as a status if needed
-            all_remark_statuses.add('(Empty/No Remark)')
-            
+            all_remark_statuses.add("(Empty/No Remark)")
+
             # Sort remark statuses alphabetically for consistent column order
             sorted_remark_statuses = sorted(all_remark_statuses)
-            
+
             # Second pass: Create summary data with all remark statuses as columns
             summary_data = []
-            
+
             for work_file in work_files:
                 file_data = work_file.get_file_data()
                 agent_name = work_file.agent.name
                 total_assigned_count = 0
                 completed_count = 0
                 empty_remarks_count = 0
-                
+
                 # Calculate counts from file data
                 if file_data:
                     if isinstance(file_data, dict):
                         # Multiple sheets - count rows from all sheets except Summary
                         for sheet_name, sheet_data in file_data.items():
                             # Skip Summary sheet
-                            if sheet_name.lower() == 'summary':
+                            if sheet_name.lower() == "summary":
                                 continue
-                                
+
                             if isinstance(sheet_data, pd.DataFrame):
                                 # Total assigned count = all rows (excluding header)
                                 total_assigned_count += len(sheet_data)
-                                
+
                                 # Get remark column
                                 remark_col = find_remark_column(sheet_data)
-                                
+
                                 if remark_col:
                                     # Get all remarks (including NaN)
                                     remark_data = sheet_data[remark_col]
-                                    
+
                                     # Count empty/NaN remarks
                                     empty_remarks_count += remark_data.isna().sum()
-                                    
+
                                     # Count completed (non-Workable remarks)
                                     non_empty_remarks = remark_data.dropna()
                                     # Convert to string first to handle mixed types
                                     if len(non_empty_remarks) > 0:
-                                        non_empty_remarks_str = non_empty_remarks.astype(str).str.lower()
-                                        completed_count += len(non_empty_remarks_str[non_empty_remarks_str != 'workable'])
+                                        non_empty_remarks_str = (
+                                            non_empty_remarks.astype(str).str.lower()
+                                        )
+                                        completed_count += len(
+                                            non_empty_remarks_str[
+                                                non_empty_remarks_str != "workable"
+                                            ]
+                                        )
                     elif isinstance(file_data, pd.DataFrame):
                         # Single DataFrame
                         # Total assigned count = all rows (excluding header)
                         total_assigned_count = len(file_data)
-                        
+
                         # Get remark column
                         remark_col = find_remark_column(file_data)
-                        
+
                         if remark_col:
                             # Get all remarks (including NaN)
                             remark_data = file_data[remark_col]
-                            
+
                             # Count empty/NaN remarks
                             empty_remarks_count = remark_data.isna().sum()
-                            
+
                             # Count completed (non-Workable remarks)
                             non_empty_remarks = remark_data.dropna()
                             # Convert to string first to handle mixed types
                             if len(non_empty_remarks) > 0:
-                                non_empty_remarks_str = non_empty_remarks.astype(str).str.lower()
-                                completed_count = len(non_empty_remarks_str[non_empty_remarks_str != 'workable'])
+                                non_empty_remarks_str = non_empty_remarks.astype(
+                                    str
+                                ).str.lower()
+                                completed_count = len(
+                                    non_empty_remarks_str[
+                                        non_empty_remarks_str != "workable"
+                                    ]
+                                )
                             else:
                                 completed_count = 0
-                
+
                 # Create row data for this agent
                 row_data = {
-                    'Agent': agent_name,
-                    'Total Assigned Count': total_assigned_count,
-                    'Completed Count': completed_count,
-                    'Empty Remarks Count': empty_remarks_count
+                    "Agent": agent_name,
+                    "Total Assigned Count": total_assigned_count,
+                    "Completed Count": completed_count,
+                    "Empty Remarks Count": empty_remarks_count,
                 }
-                
+
                 # Get remarks data for this agent
                 agent_remarks = agent_remarks_data.get(agent_name, {})
-                
+
                 # Add count for each remark status column
                 for remark_status in sorted_remark_statuses:
-                    if remark_status == '(Empty/No Remark)':
+                    if remark_status == "(Empty/No Remark)":
                         # Use the empty_remarks_count
                         row_data[remark_status] = empty_remarks_count
                     else:
                         # Find matching remark in agent's remarks (case-insensitive)
                         count = 0
                         for remark_lower, remark_info in agent_remarks.items():
-                            if remark_info['display'] == remark_status:
-                                count = remark_info['count']
+                            if remark_info["display"] == remark_status:
+                                count = remark_info["count"]
                                 break
                         row_data[remark_status] = count
-                
+
                 summary_data.append(row_data)
-            
+
             # Create summary DataFrame
             summary_df = pd.DataFrame(summary_data)
-            summary_df.to_excel(writer, sheet_name='Summary', index=False)
-            
+            summary_df.to_excel(writer, sheet_name="Summary", index=False)
+
             # Combine all agent data into one sheet
             all_agent_data = []
             for work_file in work_files:
@@ -8434,9 +10086,9 @@ def consolidate_agent_files():
                         # Multiple sheets - combine them (excluding Summary sheets)
                         for sheet_name, sheet_data in file_data.items():
                             # Skip Summary sheet
-                            if sheet_name.lower() == 'summary':
+                            if sheet_name.lower() == "summary":
                                 continue
-                                
+
                             if isinstance(sheet_data, pd.DataFrame):
                                 sheet_data_copy = sheet_data.copy()
                                 all_agent_data.append(sheet_data_copy)
@@ -8444,75 +10096,89 @@ def consolidate_agent_files():
                         # Single DataFrame
                         file_data_copy = file_data.copy()
                         all_agent_data.append(file_data_copy)
-            
+
             # Create combined sheet with all agent data
             if all_agent_data:
                 combined_df = pd.concat(all_agent_data, ignore_index=True)
-                
+
                 # Format all date columns to MM/DD/YYYY using robust parser to avoid blanks
                 for col in combined_df.columns:
-                    if 'date' in col.lower():
+                    if "date" in col.lower():
                         try:
                             # Use existing robust parser for each cell; this handles
                             # Excel serials, mixed string formats, timestamps.
                             parsed_series = combined_df[col].apply(parse_excel_date)
                             # Convert to desired string format, blank if None
                             combined_df[col] = parsed_series.apply(
-                                lambda d: d.strftime('%m/%d/%Y') if d else ''
+                                lambda d: d.strftime("%m/%d/%Y") if d else ""
                             )
                             # If entire column became blank but original had non-empty raw values,
                             # fall back to original to avoid losing data unexpectedly.
-                            if parsed_series.notna().sum() == 0 and combined_df[col].astype(str).str.strip().ne('').any():
-                                combined_df[col] = combined_df[col]  # keep blanks (intentional) - no fallback needed
+                            if (
+                                parsed_series.notna().sum() == 0
+                                and combined_df[col]
+                                .astype(str)
+                                .str.strip()
+                                .ne("")
+                                .any()
+                            ):
+                                combined_df[col] = combined_df[
+                                    col
+                                ]  # keep blanks (intentional) - no fallback needed
                         except Exception:
                             # If robust parsing fails, keep original values unchanged
                             pass
-                
-                combined_df.to_excel(writer, sheet_name='All Agent Data', index=False)
+
+                combined_df.to_excel(writer, sheet_name="All Agent Data", index=False)
             else:
                 # Fallback if no data found
-                simple_df = pd.DataFrame([{'Message': 'No data available from any agent'}])
-                simple_df.to_excel(writer, sheet_name='All Agent Data', index=False)
-        
+                simple_df = pd.DataFrame(
+                    [{"Message": "No data available from any agent"}]
+                )
+                simple_df.to_excel(writer, sheet_name="All Agent Data", index=False)
+
         excel_buffer.seek(0)
-        
+
         # Mark files as consolidated
         for work_file in work_files:
-            work_file.status = 'consolidated'
+            work_file.status = "consolidated"
         db.session.commit()
-        
+
         # Return file for download
-        filename = f"consolidated_agent_files_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+        filename = (
+            f"consolidated_agent_files_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+        )
         return send_file(
             excel_buffer,
             as_attachment=True,
             download_name=filename,
-            mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+            mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
-        
-    except Exception as e:
-        flash(f'Error consolidating agent files: {str(e)}', 'error')
-        return redirect('/')
 
-@app.route('/download_agent_work_file/<int:file_id>', methods=['GET'])
+    except Exception as e:
+        flash(f"Error consolidating agent files: {str(e)}", "error")
+        return redirect("/")
+
+
+@app.route("/download_agent_work_file/<int:file_id>", methods=["GET"])
 @admin_required
 def download_agent_work_file(file_id):
     """Download a single agent work file"""
     try:
         # Get the work file
         work_file = AgentWorkFile.query.get_or_404(file_id)
-        
+
         # Get file data
         file_data = work_file.get_file_data()
-        
+
         if not file_data:
-            flash('File data not found', 'error')
-            return redirect('/')
-        
+            flash("File data not found", "error")
+            return redirect("/")
+
         # Create Excel buffer
         excel_buffer = io.BytesIO()
-        
-        with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
+
+        with pd.ExcelWriter(excel_buffer, engine="openpyxl") as writer:
             if isinstance(file_data, dict):
                 # Multiple sheets
                 for sheet_name, sheet_data in file_data.items():
@@ -8520,52 +10186,69 @@ def download_agent_work_file(file_id):
                         # Format date columns to MM/DD/YYYY
                         sheet_data_copy = sheet_data.copy()
                         for col in sheet_data_copy.columns:
-                            if 'date' in col.lower():
+                            if "date" in col.lower():
                                 try:
-                                    sheet_data_copy[col] = pd.to_datetime(sheet_data_copy[col], errors='coerce')
+                                    sheet_data_copy[col] = pd.to_datetime(
+                                        sheet_data_copy[col], errors="coerce"
+                                    )
                                     sheet_data_copy[col] = sheet_data_copy[col].apply(
-                                        lambda x: x.strftime('%m/%d/%Y') if pd.notna(x) else ''
+                                        lambda x: (
+                                            x.strftime("%m/%d/%Y")
+                                            if pd.notna(x)
+                                            else ""
+                                        )
                                     )
                                 except Exception:
                                     pass
-                        sheet_data_copy.to_excel(writer, sheet_name=sheet_name, index=False)
+                        sheet_data_copy.to_excel(
+                            writer, sheet_name=sheet_name, index=False
+                        )
             elif isinstance(file_data, pd.DataFrame):
                 # Single DataFrame
                 file_data_copy = file_data.copy()
                 # Format date columns to MM/DD/YYYY
                 for col in file_data_copy.columns:
-                    if 'date' in col.lower():
+                    if "date" in col.lower():
                         try:
-                            file_data_copy[col] = pd.to_datetime(file_data_copy[col], errors='coerce')
+                            file_data_copy[col] = pd.to_datetime(
+                                file_data_copy[col], errors="coerce"
+                            )
                             file_data_copy[col] = file_data_copy[col].apply(
-                                lambda x: x.strftime('%m/%d/%Y') if pd.notna(x) else ''
+                                lambda x: x.strftime("%m/%d/%Y") if pd.notna(x) else ""
                             )
                         except Exception:
                             pass
-                file_data_copy.to_excel(writer, sheet_name='Sheet1', index=False)
+                file_data_copy.to_excel(writer, sheet_name="Sheet1", index=False)
             else:
                 # Fallback
-                pd.DataFrame([{'Message': 'No data available'}]).to_excel(writer, sheet_name='Sheet1', index=False)
-        
+                pd.DataFrame([{"Message": "No data available"}]).to_excel(
+                    writer, sheet_name="Sheet1", index=False
+                )
+
         excel_buffer.seek(0)
-        
+
         # Create filename with agent name and original filename
-        agent_name = work_file.agent.name.replace(' ', '_')
-        original_filename = work_file.filename.rsplit('.', 1)[0] if '.' in work_file.filename else work_file.filename
+        agent_name = work_file.agent.name.replace(" ", "_")
+        original_filename = (
+            work_file.filename.rsplit(".", 1)[0]
+            if "." in work_file.filename
+            else work_file.filename
+        )
         download_filename = f"{agent_name}_{original_filename}_{work_file.upload_date.strftime('%Y%m%d')}.xlsx"
-        
+
         return send_file(
             excel_buffer,
             as_attachment=True,
             download_name=download_filename,
-            mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+            mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
-        
-    except Exception as e:
-        flash(f'Error downloading agent file: {str(e)}', 'error')
-        return redirect('/')
 
-@app.route('/clear_all_agent_files', methods=['POST'])
+    except Exception as e:
+        flash(f"Error downloading agent file: {str(e)}", "error")
+        return redirect("/")
+
+
+@app.route("/clear_all_agent_files", methods=["POST"])
 @admin_required
 def clear_all_agent_files():
     """Clear all agent work files from the database"""
@@ -8573,208 +10256,233 @@ def clear_all_agent_files():
         # Get all agent work files
         all_files = AgentWorkFile.query.all()
         file_count = len(all_files)
-        
+
         if file_count > 0:
             for work_file in all_files:
                 db.session.delete(work_file)
             db.session.commit()
-            flash(f'✅ Successfully cleared {file_count} file(s)', 'success')
+            flash(f"✅ Successfully cleared {file_count} file(s)", "success")
         else:
-            flash('ℹ️ No files found to clear', 'info')
-        
-        return redirect('/')
-        
+            flash("ℹ️ No files found to clear", "info")
+
+        return redirect("/")
+
     except Exception as e:
         db.session.rollback()
-        flash(f'❌ Error clearing files: {str(e)}', 'error')
-        return redirect('/')
+        flash(f"❌ Error clearing files: {str(e)}", "error")
+        return redirect("/")
 
-@app.route('/get_appointment_dates')
+
+@app.route("/get_appointment_dates")
 @login_required
 def get_appointment_dates():
     global data_file_data
-    
+
     if not data_file_data:
-        return jsonify({'error': 'No data file uploaded'}), 400
-    
+        return jsonify({"error": "No data file uploaded"}), 400
+
     try:
         # Get the first sheet from data file
         data_df = list(data_file_data.values())[0]
-        
+
         # Find the appointment date column
         appointment_date_col = None
         for col in data_df.columns:
-            if 'appointment' in col.lower() and 'date' in col.lower():
+            if "appointment" in col.lower() and "date" in col.lower():
                 appointment_date_col = col
                 break
-        
+
         if appointment_date_col is None:
-            return jsonify({'error': 'Appointment Date column not found'}), 400
-        
+            return jsonify({"error": "Appointment Date column not found"}), 400
+
         # Parse dates using robust date parsing that works consistently across Windows and Mac
         parsed_dates = data_df[appointment_date_col].apply(parse_excel_date)
-        
+
         # Get unique valid appointment dates (filter out None/invalid dates)
         valid_dates = parsed_dates.dropna().unique()
-        
+
         # Convert to string format and count rows for each date
         date_data = []
         for date_obj in valid_dates:
             if date_obj is None:
                 continue
-            date_str = date_obj.strftime('%Y-%m-%d')
-            
+            date_str = date_obj.strftime("%Y-%m-%d")
+
             # Count rows for this specific date
             row_count = len(data_df[parsed_dates == date_obj])
-            
-            date_data.append({
-                'date': date_str,
-                'row_count': row_count
-            })
-        
+
+            date_data.append({"date": date_str, "row_count": row_count})
+
         # Sort by date
-        date_data.sort(key=lambda x: x['date'])
-        
-        return jsonify({
-            'appointment_dates': [item['date'] for item in date_data],
-            'appointment_dates_with_counts': date_data,
-            'column_name': appointment_date_col
-        })
-        
+        date_data.sort(key=lambda x: x["date"])
+
+        return jsonify(
+            {
+                "appointment_dates": [item["date"] for item in date_data],
+                "appointment_dates_with_counts": date_data,
+                "column_name": appointment_date_col,
+            }
+        )
+
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        return jsonify({"error": str(e)}), 500
 
 
-@app.route('/get_receive_dates', methods=['GET'])
+@app.route("/get_receive_dates", methods=["GET"])
 @admin_required
 def get_receive_dates():
     """Get unique receive dates from data file, optionally filtered by appointment dates"""
     global data_file_data
-    
+
     if not data_file_data:
-        return jsonify({'error': 'No data file uploaded'}), 400
-    
+        return jsonify({"error": "No data file uploaded"}), 400
+
     try:
         # Get the first sheet from data file
         data_df = list(data_file_data.values())[0]
-        
+
         # Find the receive date column
         receive_date_col = None
         for col in data_df.columns:
-            if 'receive' in col.lower() and 'date' in col.lower():
+            if "receive" in col.lower() and "date" in col.lower():
                 receive_date_col = col
                 break
-        
+
         if receive_date_col is None:
-            return jsonify({'error': 'Receive Date column not found'}), 400
-        
+            return jsonify({"error": "Receive Date column not found"}), 400
+
         # Get appointment dates from query parameters
-        appointment_dates = request.args.getlist('appointment_dates')
-        
+        appointment_dates = request.args.getlist("appointment_dates")
+
         # Filter data based on selected appointment dates if provided
         filtered_df = data_df
         if appointment_dates:
             # Find the appointment date column
             appointment_date_col = None
             for col in data_df.columns:
-                if 'appointment' in col.lower() and 'date' in col.lower():
+                if "appointment" in col.lower() and "date" in col.lower():
                     appointment_date_col = col
                     break
-            
+
             if appointment_date_col:
                 # Parse appointment dates using robust date parsing
-                parsed_appointment_dates = data_df[appointment_date_col].apply(parse_excel_date)
-                
+                parsed_appointment_dates = data_df[appointment_date_col].apply(
+                    parse_excel_date
+                )
+
                 # Convert selected appointment dates to date objects for comparison
                 appointment_dates_formatted = []
                 for date_str in appointment_dates:
                     try:
                         from datetime import datetime
-                        parsed_date = datetime.strptime(date_str, '%Y-%m-%d').date()
+
+                        parsed_date = datetime.strptime(date_str, "%Y-%m-%d").date()
                         appointment_dates_formatted.append(parsed_date)
                     except:
                         pass  # Skip invalid dates
-                
+
                 # Filter rows where parsed appointment date matches any of the selected dates
                 mask = parsed_appointment_dates.isin(appointment_dates_formatted)
                 filtered_df = data_df[mask]
-        
+
         # Parse receive dates using robust date parsing that works consistently across Windows and Mac
         parsed_receive_dates = filtered_df[receive_date_col].apply(parse_excel_date)
-        
+
         # Get unique valid receive dates (filter out None/invalid dates)
         valid_receive_dates = parsed_receive_dates.dropna().unique()
-        
+
         # Convert to string format and sort
         date_strings = []
         for date_obj in valid_receive_dates:
             if date_obj is None:
                 continue
-            date_str = date_obj.strftime('%Y-%m-%d')
+            date_str = date_obj.strftime("%Y-%m-%d")
             date_strings.append(date_str)
-        
+
         date_strings.sort()
-        
-        return jsonify({
-            'receive_dates': date_strings,
-            'column_name': receive_date_col,
-            'filtered_by_appointment_dates': len(appointment_dates) > 0 if appointment_dates else False
-        })
-        
+
+        return jsonify(
+            {
+                "receive_dates": date_strings,
+                "column_name": receive_date_col,
+                "filtered_by_appointment_dates": (
+                    len(appointment_dates) > 0 if appointment_dates else False
+                ),
+            }
+        )
+
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        return jsonify({"error": str(e)}), 500
 
 
-
-@app.route('/get_agent_allocation', methods=['POST'])
+@app.route("/get_agent_allocation", methods=["POST"])
 @admin_required
 def get_agent_allocation():
     global data_file_data, agent_allocations_data
-    
+
     if not data_file_data or not agent_allocations_data:
-        return jsonify({'error': 'No data available'}), 400
-    
-    agent_id = request.json.get('agent_id')
-    agent_name = request.json.get('agent_name')
-    
+        return jsonify({"error": "No data available"}), 400
+
+    agent_id = request.json.get("agent_id")
+    agent_name = request.json.get("agent_name")
+
     if not agent_id and not agent_name:
-        return jsonify({'error': 'No agent specified (agent_id or agent_name required)'}), 400
-    
+        return (
+            jsonify({"error": "No agent specified (agent_id or agent_name required)"}),
+            400,
+        )
+
     try:
         # Find the agent in allocations data
         agent_info = None
-        
+
         # First try to find by agent_id if provided (most reliable)
         if agent_id:
             for agent in agent_allocations_data:
-                if agent.get('id') == agent_id:
+                if agent.get("id") == agent_id:
                     agent_info = agent
                     break
-        
+
         # If not found by ID and name is provided, try by name
         if not agent_info and agent_name:
-            matching_agents = [agent for agent in agent_allocations_data if agent.get('name') == agent_name]
+            matching_agents = [
+                agent
+                for agent in agent_allocations_data
+                if agent.get("name") == agent_name
+            ]
             if len(matching_agents) == 1:
                 agent_info = matching_agents[0]
             elif len(matching_agents) > 1:
                 # Multiple agents with same name - require agent_id
-                return jsonify({
-                    'error': f'Multiple agents found with name "{agent_name}". Please use agent_id instead.',
-                    'agents': [{'id': a.get('id'), 'name': a.get('name')} for a in matching_agents]
-                }), 400
-        
+                return (
+                    jsonify(
+                        {
+                            "error": f'Multiple agents found with name "{agent_name}". Please use agent_id instead.',
+                            "agents": [
+                                {"id": a.get("id"), "name": a.get("name")}
+                                for a in matching_agents
+                            ],
+                        }
+                    ),
+                    400,
+                )
+
         if not agent_info:
-            return jsonify({'error': 'Agent not found'}), 404
-        
+            return jsonify({"error": "Agent not found"}), 404
+
         # Get the processed data
         processed_df = list(data_file_data.values())[0]
-        
+
         # Get the specific rows allocated to this agent
-        agent_rows = agent_info['allocated']
-        row_indices = agent_info.get('row_indices', [])
-        
+        agent_rows = agent_info["allocated"]
+        row_indices = agent_info.get("row_indices", [])
+
         # Create a subset of data for this agent using specific row indices
-        if row_indices and len(row_indices) > 0 and len(processed_df) > max(row_indices):
+        if (
+            row_indices
+            and len(row_indices) > 0
+            and len(processed_df) > max(row_indices)
+        ):
             agent_df = processed_df.iloc[row_indices].copy()
         else:
             # Fallback: if row_indices not available, use first N rows
@@ -8782,89 +10490,124 @@ def get_agent_allocation():
                 agent_df = processed_df.head(agent_rows).copy()
             else:
                 agent_df = processed_df.copy()
-        
+
         # Add serial number column
         agent_df_with_sr = agent_df.copy()
-        agent_df_with_sr.insert(0, 'Sr No', range(1, len(agent_df_with_sr) + 1))
-        
+        agent_df_with_sr.insert(0, "Sr No", range(1, len(agent_df_with_sr) + 1))
+
         # Convert dataframe to HTML table
-        html_table = agent_df_with_sr.to_html(classes='modal-table', table_id='agentDataTable', escape=False, index=False)
-        
+        html_table = agent_df_with_sr.to_html(
+            classes="modal-table", table_id="agentDataTable", escape=False, index=False
+        )
+
         # Calculate statistics
         total_rows = len(agent_df)
-        first_priority = len(agent_df[agent_df['Priority Status'] == 'First Priority']) if 'Priority Status' in agent_df.columns else 0
-        second_priority = len(agent_df[agent_df['Priority Status'] == 'Second Priority']) if 'Priority Status' in agent_df.columns else 0
-        third_priority = len(agent_df[agent_df['Priority Status'] == 'Third Priority']) if 'Priority Status' in agent_df.columns else 0
-        
-        return jsonify({
-            'success': True,
-            'agent_id': agent_info.get('id'),
-            'agent_name': agent_info.get('name'),
-            'html_table': html_table,
-            'stats': {
-                'total_rows': total_rows,
-                'capacity': agent_info['capacity'],
-                'first_priority': first_priority,
-                'second_priority': second_priority,
-                'third_priority': third_priority
-            }
-        })
-        
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        first_priority = (
+            len(agent_df[agent_df["Priority Status"] == "First Priority"])
+            if "Priority Status" in agent_df.columns
+            else 0
+        )
+        second_priority = (
+            len(agent_df[agent_df["Priority Status"] == "Second Priority"])
+            if "Priority Status" in agent_df.columns
+            else 0
+        )
+        third_priority = (
+            len(agent_df[agent_df["Priority Status"] == "Third Priority"])
+            if "Priority Status" in agent_df.columns
+            else 0
+        )
 
-@app.route('/download_agent_file', methods=['POST'])
+        return jsonify(
+            {
+                "success": True,
+                "agent_id": agent_info.get("id"),
+                "agent_name": agent_info.get("name"),
+                "html_table": html_table,
+                "stats": {
+                    "total_rows": total_rows,
+                    "capacity": agent_info["capacity"],
+                    "first_priority": first_priority,
+                    "second_priority": second_priority,
+                    "third_priority": third_priority,
+                },
+            }
+        )
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/download_agent_file", methods=["POST"])
 @admin_required
 def download_agent_file():
     global data_file_data, agent_allocations_data
-    
+
     if not data_file_data or not agent_allocations_data:
-        return jsonify({'error': 'No data available for download'}), 400
-    
-    agent_id = request.form.get('agent_id')
-    agent_name = request.form.get('agent_name')
-    
+        return jsonify({"error": "No data available for download"}), 400
+
+    agent_id = request.form.get("agent_id")
+    agent_name = request.form.get("agent_name")
+
     if not agent_id and not agent_name:
-        return jsonify({'error': 'No agent specified (agent_id or agent_name required)'}), 400
-    
+        return (
+            jsonify({"error": "No agent specified (agent_id or agent_name required)"}),
+            400,
+        )
+
     # Find the agent
     agent_info = None
     if agent_id:
         for agent in agent_allocations_data:
-            if agent.get('id') == agent_id:
+            if agent.get("id") == agent_id:
                 agent_info = agent
                 break
-    
+
     if not agent_info and agent_name:
-        matching_agents = [agent for agent in agent_allocations_data if agent.get('name') == agent_name]
+        matching_agents = [
+            agent for agent in agent_allocations_data if agent.get("name") == agent_name
+        ]
         if len(matching_agents) == 1:
             agent_info = matching_agents[0]
         elif len(matching_agents) > 1:
-            return jsonify({
-                'error': f'Multiple agents found with name "{agent_name}". Please use agent_id instead.',
-                'agents': [{'id': a.get('id'), 'name': a.get('name')} for a in matching_agents]
-            }), 400
-    
+            return (
+                jsonify(
+                    {
+                        "error": f'Multiple agents found with name "{agent_name}". Please use agent_id instead.',
+                        "agents": [
+                            {"id": a.get("id"), "name": a.get("name")}
+                            for a in matching_agents
+                        ],
+                    }
+                ),
+                400,
+            )
+
     if not agent_info:
-        return jsonify({'error': 'Agent not found'}), 404
-    
-    agent_name = agent_info.get('name', 'Unknown')
-    
+        return jsonify({"error": "Agent not found"}), 404
+
+    agent_name = agent_info.get("name", "Unknown")
+
     # Generate filename with agent name and today's date
     from datetime import datetime
+
     today = datetime.now().strftime("%Y-%m-%d")
     filename = f"{agent_name}_{today}.xlsx"
-    
+
     try:
         # Get the processed data
         processed_df = list(data_file_data.values())[0]
-        
+
         # Get the specific rows allocated to this agent
-        agent_rows = agent_info['allocated']
-        row_indices = agent_info.get('row_indices', [])
-        
+        agent_rows = agent_info["allocated"]
+        row_indices = agent_info.get("row_indices", [])
+
         # Create a subset of data for this agent using specific row indices
-        if row_indices and len(row_indices) > 0 and len(processed_df) > max(row_indices):
+        if (
+            row_indices
+            and len(row_indices) > 0
+            and len(processed_df) > max(row_indices)
+        ):
             agent_df = processed_df.iloc[row_indices].copy()
         else:
             # Fallback: if row_indices not available, use first N rows
@@ -8872,109 +10615,162 @@ def download_agent_file():
                 agent_df = processed_df.head(agent_rows).copy()
             else:
                 agent_df = processed_df.copy()
-        
+
         # Add agent information to the dataframe
-        agent_df['Agent Name'] = agent_name
-        agent_df['Allocated Rows'] = agent_rows
-        agent_df['Agent Capacity'] = agent_info['capacity']
-        
+        agent_df["Agent Name"] = agent_name
+        agent_df["Allocated Rows"] = agent_rows
+        agent_df["Agent Capacity"] = agent_info["capacity"]
+
         # Create a temporary file
-        temp_fd, temp_path = tempfile.mkstemp(suffix='.xlsx')
-        
+        temp_fd, temp_path = tempfile.mkstemp(suffix=".xlsx")
+
         try:
-            with pd.ExcelWriter(temp_path, engine='openpyxl') as writer:
+            with pd.ExcelWriter(temp_path, engine="openpyxl") as writer:
                 # Create a copy of the dataframe to avoid modifying the original
                 agent_df_copy = agent_df.copy()
-                
+
                 # Find appointment date and received date columns and format them as MM/DD/YYYY
                 for col in agent_df_copy.columns:
-                    if ('appointment' in col.lower() and 'date' in col.lower()) or ('receive' in col.lower() and 'date' in col.lower()):
+                    if ("appointment" in col.lower() and "date" in col.lower()) or (
+                        "receive" in col.lower() and "date" in col.lower()
+                    ):
                         # Convert to datetime and then format as MM/DD/YYYY (no time)
-                        agent_df_copy[col] = pd.to_datetime(agent_df_copy[col], errors='coerce').dt.strftime('%m/%d/%Y')
-                
-                agent_df_copy.to_excel(writer, sheet_name=f'{agent_name}_Allocation', index=False)
-                
+                        agent_df_copy[col] = pd.to_datetime(
+                            agent_df_copy[col], errors="coerce"
+                        ).dt.strftime("%m/%d/%Y")
+
+                agent_df_copy.to_excel(
+                    writer, sheet_name=f"{agent_name}_Allocation", index=False
+                )
+
                 # Add a summary sheet
                 summary_data = {
-                    'Metric': ['Agent Name', 'Total Allocated Rows', 'Agent Capacity', 'First Priority Rows', 'Second Priority Rows', 'Third Priority Rows'],
-                    'Value': [
+                    "Metric": [
+                        "Agent Name",
+                        "Total Allocated Rows",
+                        "Agent Capacity",
+                        "First Priority Rows",
+                        "Second Priority Rows",
+                        "Third Priority Rows",
+                    ],
+                    "Value": [
                         agent_name,
                         agent_rows,
-                        agent_info['capacity'],
-                        len(agent_df[agent_df['Priority Status'] == 'First Priority']) if 'Priority Status' in agent_df.columns else 0,
-                        len(agent_df[agent_df['Priority Status'] == 'Second Priority']) if 'Priority Status' in agent_df.columns else 0,
-                        len(agent_df[agent_df['Priority Status'] == 'Third Priority']) if 'Priority Status' in agent_df.columns else 0
-                    ]
+                        agent_info["capacity"],
+                        (
+                            len(
+                                agent_df[
+                                    agent_df["Priority Status"] == "First Priority"
+                                ]
+                            )
+                            if "Priority Status" in agent_df.columns
+                            else 0
+                        ),
+                        (
+                            len(
+                                agent_df[
+                                    agent_df["Priority Status"] == "Second Priority"
+                                ]
+                            )
+                            if "Priority Status" in agent_df.columns
+                            else 0
+                        ),
+                        (
+                            len(
+                                agent_df[
+                                    agent_df["Priority Status"] == "Third Priority"
+                                ]
+                            )
+                            if "Priority Status" in agent_df.columns
+                            else 0
+                        ),
+                    ],
                 }
                 summary_df = pd.DataFrame(summary_data)
-                summary_df.to_excel(writer, sheet_name='Summary', index=False)
-            
+                summary_df.to_excel(writer, sheet_name="Summary", index=False)
+
             return send_file(temp_path, as_attachment=True, download_name=filename)
-            
+
         finally:
             # Clean up temporary file
             os.close(temp_fd)
             if os.path.exists(temp_path):
                 os.unlink(temp_path)
-        
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
 
-@app.route('/send_approval_email', methods=['POST'])
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/send_approval_email", methods=["POST"])
 @admin_required
 def send_approval_email():
     try:
         data = request.get_json()
-        agent_id = data.get('agent_id')
-        agent_name = data.get('agent_name')
-        
+        agent_id = data.get("agent_id")
+        agent_name = data.get("agent_name")
+
         if (not agent_id and not agent_name) or not agent_allocations_data:
-            return jsonify({'success': False, 'message': 'Agent ID or name required'})
-        
+            return jsonify({"success": False, "message": "Agent ID or name required"})
+
         # Find the agent in the allocation data
         agent_info = None
         if agent_id:
             for agent in agent_allocations_data:
-                if agent.get('id') == agent_id:
+                if agent.get("id") == agent_id:
                     agent_info = agent
                     break
         if not agent_info and agent_name:
-            matching_agents = [agent for agent in agent_allocations_data if agent.get('name') == agent_name]
+            matching_agents = [
+                agent
+                for agent in agent_allocations_data
+                if agent.get("name") == agent_name
+            ]
             if len(matching_agents) == 1:
                 agent_info = matching_agents[0]
             elif len(matching_agents) > 1:
-                return jsonify({
-                    'success': False,
-                    'message': f'Multiple agents found with name "{agent_name}". Please use agent_id instead.',
-                    'agents': [{'id': a.get('id'), 'name': a.get('name')} for a in matching_agents]
-                })
-        
+                return jsonify(
+                    {
+                        "success": False,
+                        "message": f'Multiple agents found with name "{agent_name}". Please use agent_id instead.',
+                        "agents": [
+                            {"id": a.get("id"), "name": a.get("name")}
+                            for a in matching_agents
+                        ],
+                    }
+                )
+
         if not agent_info:
-            return jsonify({'success': False, 'message': 'Agent not found'})
-        
+            return jsonify({"success": False, "message": "Agent not found"})
+
         # Get agent's email from allocation data
-        agent_email = agent_info.get('email')
+        agent_email = agent_info.get("email")
         if not agent_email:
-            return jsonify({'success': False, 'message': 'Agent email not found'})
-        
+            return jsonify({"success": False, "message": "Agent email not found"})
+
         # Get allocation summary
         summary = get_allocation_summary(agent_name, agent_info)
-        
+
         # Create Excel file with agent's allocated data
         excel_buffer = create_agent_excel_file(agent_name, agent_info)
-        
+
         # Format insurance companies list
-        insurance_list = ', '.join(sorted(summary['insurance_companies'])) if summary['insurance_companies'] else 'None'
-        
+        insurance_list = (
+            ", ".join(sorted(summary["insurance_companies"]))
+            if summary["insurance_companies"]
+            else "None"
+        )
+
         # Format first priority deadline
-        deadline_text = ''
-        if summary['first_priority_deadline']:
-            deadline_text = summary['first_priority_deadline'].strftime('%Y-%m-%d at %I:%M %p')
+        deadline_text = ""
+        if summary["first_priority_deadline"]:
+            deadline_text = summary["first_priority_deadline"].strftime(
+                "%Y-%m-%d at %I:%M %p"
+            )
         else:
-            deadline_text = 'N/A (No First Priority work assigned)'
-        
+            deadline_text = "N/A (No First Priority work assigned)"
+
         # Prepare email content
-        text_content = f'''
+        text_content = f"""
 Dear {agent_name},
 
 Your work allocation has been approved and is attached to this email.
@@ -9004,9 +10800,9 @@ Please find your allocated data in the attached Excel file.
 
 Best regards,
 Allocation Management System
-        '''
-        
-        html_content = f'''
+        """
+
+        html_content = f"""
             <h2>Work Allocation Approved</h2>
             <p>Dear <strong>{agent_name}</strong>,</p>
             <p>Your work allocation has been approved and is attached to this email.</p>
@@ -9045,72 +10841,85 @@ Allocation Management System
             
             <p>Best regards,<br>
             Allocation Management System</p>
-        '''
-        
+        """
+
         # Send email using Resend
-        attachment_filename = f'{agent_name}_allocation_{datetime.now().strftime("%Y%m%d")}.xlsx'
+        attachment_filename = (
+            f'{agent_name}_allocation_{datetime.now().strftime("%Y%m%d")}.xlsx'
+        )
         success, message = send_email_with_resend(
             to_email=agent_email,
-            subject=f'Your Work Allocation - {agent_name}',
+            subject=f"Your Work Allocation - {agent_name}",
             html_content=html_content,
             text_content=text_content,
             attachment_data=excel_buffer,
-            attachment_filename=attachment_filename
+            attachment_filename=attachment_filename,
         )
-        
-        if success:
-            return jsonify({'success': True, 'message': f'Approval email sent to {agent_email}'})
-        else:
-            return jsonify({'success': False, 'message': f'Error sending email: {message}'})
-        
-    except Exception as e:
-        return jsonify({'success': False, 'message': f'Error sending email: {str(e)}'})
 
-@app.route('/approve_all_allocations', methods=['POST'])
+        if success:
+            return jsonify(
+                {"success": True, "message": f"Approval email sent to {agent_email}"}
+            )
+        else:
+            return jsonify(
+                {"success": False, "message": f"Error sending email: {message}"}
+            )
+
+    except Exception as e:
+        return jsonify({"success": False, "message": f"Error sending email: {str(e)}"})
+
+
+@app.route("/approve_all_allocations", methods=["POST"])
 @admin_required
 def approve_all_allocations():
     """Approve all agent allocations and send emails to all agents"""
     try:
         if not agent_allocations_data:
-            return jsonify({'success': False, 'message': 'No allocation data found'})
-        
+            return jsonify({"success": False, "message": "No allocation data found"})
+
         successful_sends = []
         failed_sends = []
-        
+
         # Loop through all agents and send approval emails
         for agent in agent_allocations_data:
-            agent_name = agent.get('name')
-            agent_email = agent.get('email')
-            allocated = agent.get('allocated', 0)
-            
+            agent_name = agent.get("name")
+            agent_email = agent.get("email")
+            allocated = agent.get("allocated", 0)
+
             # Skip agents with no email or no allocated rows
             if not agent_email:
                 failed_sends.append(f"{agent_name}: No email address")
                 continue
-            
+
             if allocated == 0:
                 # Skip agents with no allocations (no need to send email)
                 continue
-            
+
             try:
                 # Get allocation summary
                 summary = get_allocation_summary(agent_name, agent)
-                
+
                 # Create Excel file with agent's allocated data
                 excel_buffer = create_agent_excel_file(agent_name, agent)
-                
+
                 # Format insurance companies list
-                insurance_list = ', '.join(sorted(summary['insurance_companies'])) if summary['insurance_companies'] else 'None'
-                
+                insurance_list = (
+                    ", ".join(sorted(summary["insurance_companies"]))
+                    if summary["insurance_companies"]
+                    else "None"
+                )
+
                 # Format first priority deadline
-                deadline_text = ''
-                if summary['first_priority_deadline']:
-                    deadline_text = summary['first_priority_deadline'].strftime('%Y-%m-%d at %I:%M %p')
+                deadline_text = ""
+                if summary["first_priority_deadline"]:
+                    deadline_text = summary["first_priority_deadline"].strftime(
+                        "%Y-%m-%d at %I:%M %p"
+                    )
                 else:
-                    deadline_text = 'N/A (No First Priority work assigned)'
-                
+                    deadline_text = "N/A (No First Priority work assigned)"
+
                 # Prepare email content
-                text_content = f'''
+                text_content = f"""
 Dear {agent_name},
 
 Your work allocation has been approved and is attached to this email.
@@ -9140,9 +10949,9 @@ Please find your allocated data in the attached Excel file.
 
 Best regards,
 Allocation Management System
-                '''
-                
-                html_content = f'''
+                """
+
+                html_content = f"""
                     <h2>Work Allocation Approved</h2>
                     <p>Dear <strong>{agent_name}</strong>,</p>
                     <p>Your work allocation has been approved and is attached to this email.</p>
@@ -9181,133 +10990,166 @@ Allocation Management System
                     
                     <p>Best regards,<br>
                     Allocation Management System</p>
-                '''
-                
+                """
+
                 # Send email using Resend
-                attachment_filename = f'{agent_name}_allocation_{datetime.now().strftime("%Y%m%d")}.xlsx'
+                attachment_filename = (
+                    f'{agent_name}_allocation_{datetime.now().strftime("%Y%m%d")}.xlsx'
+                )
                 success, message = send_email_with_resend(
                     to_email=agent_email,
-                    subject=f'Your Work Allocation - {agent_name}',
+                    subject=f"Your Work Allocation - {agent_name}",
                     html_content=html_content,
                     text_content=text_content,
                     attachment_data=excel_buffer,
-                    attachment_filename=attachment_filename
+                    attachment_filename=attachment_filename,
                 )
-                
+
                 if success:
                     successful_sends.append(f"{agent_name} ({agent_email})")
                 else:
                     failed_sends.append(f"{agent_name}: {message}")
-                
+
             except Exception as e:
                 failed_sends.append(f"{agent_name}: {str(e)}")
-        
+
         # Prepare response message
         total_agents = len(agent_allocations_data)
-        agents_with_allocation = sum(1 for a in agent_allocations_data if a.get('allocated', 0) > 0)
+        agents_with_allocation = sum(
+            1 for a in agent_allocations_data if a.get("allocated", 0) > 0
+        )
         successful_count = len(successful_sends)
         failed_count = len(failed_sends)
-        
+
         if successful_count > 0:
             message = f"Successfully sent approval emails to {successful_count} agent(s): {', '.join([s.split(' (')[0] for s in successful_sends])}"
             if failed_count > 0:
-                message += f". {failed_count} agent(s) failed: {', '.join(failed_sends)}"
+                message += (
+                    f". {failed_count} agent(s) failed: {', '.join(failed_sends)}"
+                )
         else:
-            message = f"No emails sent. Errors: {', '.join(failed_sends)}" if failed_sends else "No agents with allocations to approve."
-        
-        return jsonify({
-            'success': successful_count > 0,
-            'message': message,
-            'details': {
-                'total_agents': total_agents,
-                'agents_with_allocation': agents_with_allocation,
-                'successful': successful_count,
-                'failed': failed_count,
-                'successful_list': successful_sends,
-                'failed_list': failed_sends
-            }
-        })
-        
-    except Exception as e:
-        return jsonify({'success': False, 'message': f'Error approving all allocations: {str(e)}'})
+            message = (
+                f"No emails sent. Errors: {', '.join(failed_sends)}"
+                if failed_sends
+                else "No agents with allocations to approve."
+            )
 
-@app.route('/view_shift_times', methods=['GET'])
+        return jsonify(
+            {
+                "success": successful_count > 0,
+                "message": message,
+                "details": {
+                    "total_agents": total_agents,
+                    "agents_with_allocation": agents_with_allocation,
+                    "successful": successful_count,
+                    "failed": failed_count,
+                    "successful_list": successful_sends,
+                    "failed_list": failed_sends,
+                },
+            }
+        )
+
+    except Exception as e:
+        return jsonify(
+            {"success": False, "message": f"Error approving all allocations: {str(e)}"}
+        )
+
+
+@app.route("/view_shift_times", methods=["GET"])
 @admin_required
 def view_shift_times():
     """Admin endpoint to view all agents' shift information for verification"""
     global agent_allocations_data, allocation_data
-    
+
     shift_info = []
-    
+
     # First try to get from agent_allocations_data (after processing)
     if agent_allocations_data:
         try:
             for agent in agent_allocations_data:
-                shift_start = agent.get('shift_start_time', 'Not set')
-                shift_original = agent.get('shift_time_original', 'Not set')
-                shift_group = agent.get('shift_group')
-                
+                shift_start = agent.get("shift_start_time", "Not set")
+                shift_original = agent.get("shift_time_original", "Not set")
+                shift_group = agent.get("shift_group")
+
                 # Format shift group name
-                group_name = 'Not set'
+                group_name = "Not set"
                 if shift_group == 1:
-                    group_name = 'Day Shift'
+                    group_name = "Day Shift"
                 elif shift_group == 2:
-                    group_name = 'Afternoon Shift'
+                    group_name = "Afternoon Shift"
                 elif shift_group == 3:
-                    group_name = 'Night Shift'
-                
+                    group_name = "Night Shift"
+
                 # Format shift start time for display
-                start_time_display = shift_start if shift_start else 'Not parsed'
+                start_time_display = shift_start if shift_start else "Not parsed"
                 if shift_start:
                     try:
-                        hour, minute = map(int, shift_start.split(':'))
+                        hour, minute = map(int, shift_start.split(":"))
                         if hour < 12:
-                            start_time_display = f"{shift_start} ({hour}:{minute:02d} AM)"
+                            start_time_display = (
+                                f"{shift_start} ({hour}:{minute:02d} AM)"
+                            )
                         elif hour == 12:
                             start_time_display = f"{shift_start} (12:00 PM)"
                         else:
-                            start_time_display = f"{shift_start} ({hour-12}:{minute:02d} PM)"
+                            start_time_display = (
+                                f"{shift_start} ({hour-12}:{minute:02d} PM)"
+                            )
                     except:
                         pass
-                
-                shift_info.append({
-                    'agent_id': agent.get('id'),
-                    'agent_name': agent.get('name'),
-                    'email': agent.get('email', 'Not set'),
-                    'shift_time_original': shift_original,
-                    'shift_start_time_parsed': shift_start,
-                    'shift_start_time_display': start_time_display,
-                    'shift_group': shift_group,
-                    'shift_group_name': group_name,
-                    'capacity': agent.get('capacity', 0),
-                    'allocated': agent.get('allocated', 0)
-                })
-            
+
+                shift_info.append(
+                    {
+                        "agent_id": agent.get("id"),
+                        "agent_name": agent.get("name"),
+                        "email": agent.get("email", "Not set"),
+                        "shift_time_original": shift_original,
+                        "shift_start_time_parsed": shift_start,
+                        "shift_start_time_display": start_time_display,
+                        "shift_group": shift_group,
+                        "shift_group_name": group_name,
+                        "capacity": agent.get("capacity", 0),
+                        "allocated": agent.get("allocated", 0),
+                    }
+                )
+
             # Sort by shift start time
-            shift_info.sort(key=lambda x: (
-                x['shift_start_time_parsed'] if x['shift_start_time_parsed'] and x['shift_start_time_parsed'] != 'Not parsed' else '99:99',
-                x['agent_name']
-            ))
-            
-            return jsonify({
-                'success': True,
-                'total_agents': len(shift_info),
-                'agents': shift_info,
-                'source': 'processed'
-            })
+            shift_info.sort(
+                key=lambda x: (
+                    (
+                        x["shift_start_time_parsed"]
+                        if x["shift_start_time_parsed"]
+                        and x["shift_start_time_parsed"] != "Not parsed"
+                        else "99:99"
+                    ),
+                    x["agent_name"],
+                )
+            )
+
+            return jsonify(
+                {
+                    "success": True,
+                    "total_agents": len(shift_info),
+                    "agents": shift_info,
+                    "source": "processed",
+                }
+            )
         except Exception as e:
-            return jsonify({'error': f'Error retrieving shift information: {str(e)}'}), 500
-    
+            return (
+                jsonify({"error": f"Error retrieving shift information: {str(e)}"}),
+                500,
+            )
+
     # If no processed data, try to extract from raw allocation_data
     if allocation_data:
         try:
             # Get the main sheet
             agent_df = None
-            if 'main' in allocation_data:
-                agent_df = allocation_data['main']
+            if "main" in allocation_data:
+                agent_df = allocation_data["main"]
             elif len(allocation_data) > 0:
                 agent_df = list(allocation_data.values())[0]
-            
+
             if agent_df is not None:
                 # Find columns
                 agent_name_col = None
@@ -9316,71 +11158,79 @@ def view_shift_times():
                 shift_group_col = None
                 email_col = None
                 counts_col = None
-                
+
                 for col in agent_df.columns:
                     col_lower = col.lower()
-                    if 'agent' in col_lower and 'name' in col_lower:
+                    if "agent" in col_lower and "name" in col_lower:
                         agent_name_col = col
-                    elif col_lower == 'id':
+                    elif col_lower == "id":
                         agent_id_col = col
-                    elif 'shift' in col_lower and 'time' in col_lower:
+                    elif "shift" in col_lower and "time" in col_lower:
                         shift_time_col = col
-                    elif 'shift' in col_lower and 'group' in col_lower:
+                    elif "shift" in col_lower and "group" in col_lower:
                         shift_group_col = col
-                    elif 'email' in col_lower and 'id' in col_lower:
+                    elif "email" in col_lower and "id" in col_lower:
                         email_col = col
-                    elif col_lower == 'tfd':
+                    elif col_lower == "tfd":
                         counts_col = col
-                
+
                 if agent_name_col:
                     # Parse shift times from raw data
                     for _, row in agent_df.iterrows():
-                        agent_name = str(row[agent_name_col]).strip() if pd.notna(row[agent_name_col]) else 'Unknown'
-                        
+                        agent_name = (
+                            str(row[agent_name_col]).strip()
+                            if pd.notna(row[agent_name_col])
+                            else "Unknown"
+                        )
+
                         # Get agent ID
                         if agent_id_col and pd.notna(row[agent_id_col]):
                             agent_id = str(row[agent_id_col]).strip()
                         else:
                             agent_id = f"{agent_name}_{row.name}"
-                        
+
                         # Get shift time
                         shift_original = None
                         if shift_time_col and pd.notna(row[shift_time_col]):
                             shift_original = str(row[shift_time_col]).strip()
-                        
+
                         # Get shift group
                         shift_group = None
                         if shift_group_col and pd.notna(row[shift_group_col]):
                             try:
-                                shift_group = int(float(str(row[shift_group_col]).strip()))
+                                shift_group = int(
+                                    float(str(row[shift_group_col]).strip())
+                                )
                             except:
                                 pass
-                        
+
                         # Parse shift start time (using same logic as in process_allocation_files_with_dates)
                         shift_start = None
-                        shift_start_display = 'Not parsed'
-                        
+                        shift_start_display = "Not parsed"
+
                         if shift_original:
                             try:
                                 from datetime import time as dt_time
                                 import re
-                                
-                                if '-' in shift_original:
-                                    parts = shift_original.split('-')
+
+                                if "-" in shift_original:
+                                    parts = shift_original.split("-")
                                     if len(parts) >= 2:
                                         start_time_str = parts[0].strip()
                                         end_time_str = parts[1].strip()
-                                        
-                                        has_end_am = 'am' in end_time_str.lower()
-                                        has_end_pm = 'pm' in end_time_str.lower()
-                                        has_start_am = 'am' in start_time_str.lower()
-                                        has_start_pm = 'pm' in start_time_str.lower()
-                                        
-                                        start_match = re.search(r'(\d{1,2})', start_time_str)
+
+                                        has_end_am = "am" in end_time_str.lower()
+                                        has_end_pm = "pm" in end_time_str.lower()
+                                        has_start_am = "am" in start_time_str.lower()
+                                        has_start_pm = "pm" in start_time_str.lower()
+
+                                        start_match = re.search(
+                                            r"(\d{1,2})", start_time_str
+                                        )
                                         if start_match:
                                             hour = int(start_match.group(1))
                                             minute = 0
-                                            
+
                                             if has_start_am:
                                                 if hour == 12:
                                                     hour = 0
@@ -9388,10 +11238,14 @@ def view_shift_times():
                                                 if hour != 12:
                                                     hour += 12
                                             else:
-                                                end_match = re.search(r'(\d{1,2})', end_time_str)
+                                                end_match = re.search(
+                                                    r"(\d{1,2})", end_time_str
+                                                )
                                                 if end_match:
-                                                    end_hour_12 = int(end_match.group(1))
-                                                    
+                                                    end_hour_12 = int(
+                                                        end_match.group(1)
+                                                    )
+
                                                     if shift_group == 1:
                                                         pass  # Keep as AM
                                                     elif shift_group == 2:
@@ -9417,102 +11271,147 @@ def view_shift_times():
                                                                 if hour == 12:
                                                                     hour = 0
                                                         elif has_end_pm:
-                                                            if hour >= end_hour_12 and hour < 12:
+                                                            if (
+                                                                hour >= end_hour_12
+                                                                and hour < 12
+                                                            ):
                                                                 pass
                                                             elif hour < end_hour_12:
                                                                 if hour != 12:
                                                                     hour += 12
-                                            
-                                            minute_match = re.search(r':(\d{2})', start_time_str)
+
+                                            minute_match = re.search(
+                                                r":(\d{2})", start_time_str
+                                            )
                                             if minute_match:
                                                 minute = int(minute_match.group(1))
-                                            
+
                                             shift_start = dt_time(hour % 24, minute)
-                                            shift_start_str = shift_start.strftime('%H:%M')
-                                            
+                                            shift_start_str = shift_start.strftime(
+                                                "%H:%M"
+                                            )
+
                                             # Format display
                                             if hour < 12:
                                                 shift_start_display = f"{shift_start_str} ({hour}:{minute:02d} AM)"
                                             elif hour == 12:
-                                                shift_start_display = f"{shift_start_str} (12:00 PM)"
+                                                shift_start_display = (
+                                                    f"{shift_start_str} (12:00 PM)"
+                                                )
                                             else:
                                                 shift_start_display = f"{shift_start_str} ({(hour-12)}:{minute:02d} PM)"
                             except Exception as e:
                                 pass
-                        
+
                         # Format shift group name
-                        group_name = 'Not set'
+                        group_name = "Not set"
                         if shift_group == 1:
-                            group_name = 'Day Shift'
+                            group_name = "Day Shift"
                         elif shift_group == 2:
-                            group_name = 'Afternoon Shift'
+                            group_name = "Afternoon Shift"
                         elif shift_group == 3:
-                            group_name = 'Night Shift'
-                        
+                            group_name = "Night Shift"
+
                         # Get other info
-                        agent_email = ''
+                        agent_email = ""
                         if email_col and pd.notna(row[email_col]):
                             agent_email = str(row[email_col]).strip()
-                        
+
                         capacity = 0
                         if counts_col and pd.notna(row[counts_col]):
                             try:
-                                capacity = int(float(str(row[counts_col]).replace(',', '')))
+                                capacity = int(
+                                    float(str(row[counts_col]).replace(",", ""))
+                                )
                             except:
                                 pass
-                        
-                        shift_info.append({
-                            'agent_id': agent_id,
-                            'agent_name': agent_name,
-                            'email': agent_email or 'Not set',
-                            'shift_time_original': shift_original or 'Not set',
-                            'shift_start_time_parsed': shift_start.strftime('%H:%M') if shift_start else 'Not parsed',
-                            'shift_start_time_display': shift_start_display,
-                            'shift_group': shift_group,
-                            'shift_group_name': group_name,
-                            'capacity': capacity,
-                            'allocated': 0
-                        })
-                
+
+                        shift_info.append(
+                            {
+                                "agent_id": agent_id,
+                                "agent_name": agent_name,
+                                "email": agent_email or "Not set",
+                                "shift_time_original": shift_original or "Not set",
+                                "shift_start_time_parsed": (
+                                    shift_start.strftime("%H:%M")
+                                    if shift_start
+                                    else "Not parsed"
+                                ),
+                                "shift_start_time_display": shift_start_display,
+                                "shift_group": shift_group,
+                                "shift_group_name": group_name,
+                                "capacity": capacity,
+                                "allocated": 0,
+                            }
+                        )
+
                 # Sort by shift start time
-                shift_info.sort(key=lambda x: (
-                    x['shift_start_time_parsed'] if x['shift_start_time_parsed'] and x['shift_start_time_parsed'] != 'Not parsed' else '99:99',
-                    x['agent_name']
-                ))
-                
-                return jsonify({
-                    'success': True,
-                    'total_agents': len(shift_info),
-                    'agents': shift_info,
-                    'source': 'raw_upload',
-                    'message': 'Showing shift times from uploaded staff details (file not yet processed)'
-                })
+                shift_info.sort(
+                    key=lambda x: (
+                        (
+                            x["shift_start_time_parsed"]
+                            if x["shift_start_time_parsed"]
+                            and x["shift_start_time_parsed"] != "Not parsed"
+                            else "99:99"
+                        ),
+                        x["agent_name"],
+                    )
+                )
+
+                return jsonify(
+                    {
+                        "success": True,
+                        "total_agents": len(shift_info),
+                        "agents": shift_info,
+                        "source": "raw_upload",
+                        "message": "Showing shift times from uploaded staff details (file not yet processed)",
+                    }
+                )
         except Exception as e:
-            return jsonify({'error': f'Error extracting shift information from uploaded file: {str(e)}'}), 500
-    
-    return jsonify({'error': 'No allocation data available. Please upload staff details file first.'}), 400
+            return (
+                jsonify(
+                    {
+                        "error": f"Error extracting shift information from uploaded file: {str(e)}"
+                    }
+                ),
+                500,
+            )
+
+    return (
+        jsonify(
+            {
+                "error": "No allocation data available. Please upload staff details file first."
+            }
+        ),
+        400,
+    )
+
 
 def send_reminder_email(agent_info):
     """Send a reminder email to an agent prompting them to upload their work"""
     try:
-        agent_name = agent_info.get('name', 'Agent')
-        agent_email = agent_info.get('email')
-        allocated = agent_info.get('allocated', 0)
-        
+        agent_name = agent_info.get("name", "Agent")
+        agent_email = agent_info.get("email")
+        allocated = agent_info.get("allocated", 0)
+
         if not agent_email:
             return False, "No email address"
-        
+
         if allocated == 0:
             return False, "No allocated work to remind about"
-        
+
         # Get allocation summary
         summary = get_allocation_summary(agent_name, agent_info)
-        
+
         # Format insurance companies list
-        insurance_list = ', '.join(sorted(summary['insurance_companies'])) if summary['insurance_companies'] else 'None'
-        
+        insurance_list = (
+            ", ".join(sorted(summary["insurance_companies"]))
+            if summary["insurance_companies"]
+            else "None"
+        )
+
         # Prepare email content
-        text_content = f'''
+        text_content = f"""
 Dear {agent_name},
 
 This is a friendly reminder to upload your completed work.
@@ -9532,9 +11431,9 @@ This is a friendly reminder to upload your completed work.
 
 Best regards,
 Allocation Management System
-        '''
-        
-        html_content = f'''
+        """
+
+        html_content = f"""
             <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
                 <h2 style="color: #333;">📧 Work Upload Reminder</h2>
                 <p>Dear <strong>{agent_name}</strong>,</p>
@@ -9562,70 +11461,75 @@ Allocation Management System
                 <p>Best regards,<br>
                 Allocation Management System</p>
             </div>
-        '''
-        
+        """
+
         # Send reminder email using Resend
         success, message = send_email_with_resend(
             to_email=agent_email,
-            subject=f'Reminder: Please Upload Your Work - {agent_name}',
+            subject=f"Reminder: Please Upload Your Work - {agent_name}",
             html_content=html_content,
-            text_content=text_content
+            text_content=text_content,
         )
-        
+
         if success:
             return True, f"Reminder sent to {agent_email}"
         else:
             return False, message
-        
+
     except Exception as e:
         return False, str(e)
+
 
 def create_consolidated_data():
     """Create consolidated Excel data from all agent work files"""
     try:
         # Get all agent work files
-        work_files = AgentWorkFile.query.order_by(AgentWorkFile.upload_date.desc()).all()
-        
+        work_files = AgentWorkFile.query.order_by(
+            AgentWorkFile.upload_date.desc()
+        ).all()
+
         if not work_files:
             return None, "No agent work files found"
-        
+
         # Create Excel buffer
         excel_buffer = io.BytesIO()
-        
+
         # Helper function to find remark column
         def find_remark_column(df):
             """Find the remark column (case-insensitive)"""
             for col in df.columns:
-                if col.lower() in ['remark', 'remarks']:
+                if col.lower() in ["remark", "remarks"]:
                     return col
             return None
-        
-        with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
+
+        with pd.ExcelWriter(excel_buffer, engine="openpyxl") as writer:
             # First pass: Collect all unique remark statuses across all agents
             all_remark_statuses = set()
             agent_remarks_data = {}  # Store remarks data per agent
-            
+
             for work_file in work_files:
                 file_data = work_file.get_file_data()
                 agent_name = work_file.agent.name
-                remarks_dict = {}  # Dictionary to store all remarks with counts for this agent
-                
+                remarks_dict = (
+                    {}
+                )  # Dictionary to store all remarks with counts for this agent
+
                 if file_data:
                     if isinstance(file_data, dict):
                         # Multiple sheets - process all sheets except Summary
                         for sheet_name, sheet_data in file_data.items():
                             # Skip Summary sheet
-                            if sheet_name.lower() == 'summary':
+                            if sheet_name.lower() == "summary":
                                 continue
-                                
+
                             if isinstance(sheet_data, pd.DataFrame):
                                 # Get remark column
                                 remark_col = find_remark_column(sheet_data)
-                                
+
                                 if remark_col:
                                     # Get all remarks (including NaN)
                                     remark_data = sheet_data[remark_col]
-                                    
+
                                     # Count all non-empty remarks by status
                                     non_empty_remarks = remark_data.dropna()
                                     for remark in non_empty_remarks:
@@ -9636,23 +11540,30 @@ def create_consolidated_data():
                                             # Use original case for display, but normalize for counting
                                             if remark_lower in remarks_dict:
                                                 remarks_dict[remark_lower] = {
-                                                    'count': remarks_dict[remark_lower]['count'] + 1,
-                                                    'display': remarks_dict[remark_lower]['display']  # Keep first seen case
+                                                    "count": remarks_dict[remark_lower][
+                                                        "count"
+                                                    ]
+                                                    + 1,
+                                                    "display": remarks_dict[
+                                                        remark_lower
+                                                    ][
+                                                        "display"
+                                                    ],  # Keep first seen case
                                                 }
                                             else:
                                                 remarks_dict[remark_lower] = {
-                                                    'count': 1,
-                                                    'display': remark_normalized  # Keep original case
+                                                    "count": 1,
+                                                    "display": remark_normalized,  # Keep original case
                                                 }
                     elif isinstance(file_data, pd.DataFrame):
                         # Single DataFrame
                         # Get remark column
                         remark_col = find_remark_column(file_data)
-                        
+
                         if remark_col:
                             # Get all remarks (including NaN)
                             remark_data = file_data[remark_col]
-                            
+
                             # Count all non-empty remarks by status
                             non_empty_remarks = remark_data.dropna()
                             for remark in non_empty_remarks:
@@ -9663,122 +11574,137 @@ def create_consolidated_data():
                                     # Use original case for display, but normalize for counting
                                     if remark_lower in remarks_dict:
                                         remarks_dict[remark_lower] = {
-                                            'count': remarks_dict[remark_lower]['count'] + 1,
-                                            'display': remarks_dict[remark_lower]['display']  # Keep first seen case
+                                            "count": remarks_dict[remark_lower]["count"]
+                                            + 1,
+                                            "display": remarks_dict[remark_lower][
+                                                "display"
+                                            ],  # Keep first seen case
                                         }
                                     else:
                                         remarks_dict[remark_lower] = {
-                                            'count': 1,
-                                            'display': remark_normalized  # Keep original case
+                                            "count": 1,
+                                            "display": remark_normalized,  # Keep original case
                                         }
-                
+
                 # Store remarks data for this agent
                 agent_remarks_data[agent_name] = remarks_dict
-                
+
                 # Collect all unique remark statuses (using display name)
                 for remark_info in remarks_dict.values():
-                    all_remark_statuses.add(remark_info['display'])
-            
+                    all_remark_statuses.add(remark_info["display"])
+
             # Add empty remarks as a status if needed
-            all_remark_statuses.add('(Empty/No Remark)')
-            
+            all_remark_statuses.add("(Empty/No Remark)")
+
             # Sort remark statuses alphabetically for consistent column order
             sorted_remark_statuses = sorted(all_remark_statuses)
-            
+
             # Second pass: Create summary data with all remark statuses as columns
             summary_data = []
-            
+
             for work_file in work_files:
                 file_data = work_file.get_file_data()
                 agent_name = work_file.agent.name
                 total_assigned_count = 0
                 completed_count = 0
                 empty_remarks_count = 0
-                
+
                 # Calculate counts from file data
                 if file_data:
                     if isinstance(file_data, dict):
                         # Multiple sheets - count rows from all sheets except Summary
                         for sheet_name, sheet_data in file_data.items():
                             # Skip Summary sheet
-                            if sheet_name.lower() == 'summary':
+                            if sheet_name.lower() == "summary":
                                 continue
-                                
+
                             if isinstance(sheet_data, pd.DataFrame):
                                 # Total assigned count = all rows (excluding header)
                                 total_assigned_count += len(sheet_data)
-                                
+
                                 # Get remark column
                                 remark_col = find_remark_column(sheet_data)
-                                
+
                                 if remark_col:
                                     # Get all remarks (including NaN)
                                     remark_data = sheet_data[remark_col]
-                                    
+
                                     # Count empty/NaN remarks
                                     empty_remarks_count += remark_data.isna().sum()
-                                    
+
                                     # Count completed (non-Workable remarks)
                                     non_empty_remarks = remark_data.dropna()
                                     # Convert to string first to handle mixed types
                                     if len(non_empty_remarks) > 0:
-                                        non_empty_remarks_str = non_empty_remarks.astype(str).str.lower()
-                                        completed_count += len(non_empty_remarks_str[non_empty_remarks_str != 'workable'])
+                                        non_empty_remarks_str = (
+                                            non_empty_remarks.astype(str).str.lower()
+                                        )
+                                        completed_count += len(
+                                            non_empty_remarks_str[
+                                                non_empty_remarks_str != "workable"
+                                            ]
+                                        )
                     elif isinstance(file_data, pd.DataFrame):
                         # Single DataFrame
                         # Total assigned count = all rows (excluding header)
                         total_assigned_count = len(file_data)
-                        
+
                         # Get remark column
                         remark_col = find_remark_column(file_data)
-                        
+
                         if remark_col:
                             # Get all remarks (including NaN)
                             remark_data = file_data[remark_col]
-                            
+
                             # Count empty/NaN remarks
                             empty_remarks_count = remark_data.isna().sum()
-                            
+
                             # Count completed (non-Workable remarks)
                             non_empty_remarks = remark_data.dropna()
                             # Convert to string first to handle mixed types
                             if len(non_empty_remarks) > 0:
-                                non_empty_remarks_str = non_empty_remarks.astype(str).str.lower()
-                                completed_count = len(non_empty_remarks_str[non_empty_remarks_str != 'workable'])
+                                non_empty_remarks_str = non_empty_remarks.astype(
+                                    str
+                                ).str.lower()
+                                completed_count = len(
+                                    non_empty_remarks_str[
+                                        non_empty_remarks_str != "workable"
+                                    ]
+                                )
                             else:
                                 completed_count = 0
-                
+
                 # Create row data for this agent
                 row_data = {
-                    'Agent': agent_name,
-                    'Total Assigned Count': total_assigned_count,
-                    'Completed Count': completed_count,
-                    'Empty Remarks Count': empty_remarks_count
+                    "Agent": agent_name,
+                    "Total Assigned Count": total_assigned_count,
+                    "Completed Count": completed_count,
+                    "Empty Remarks Count": empty_remarks_count,
                 }
-                
+
                 # Get remarks data for this agent
                 agent_remarks = agent_remarks_data.get(agent_name, {})
-                
+
                 # Add count for each remark status column
                 for remark_status in sorted_remark_statuses:
-                    if remark_status == '(Empty/No Remark)':
+                    if remark_status == "(Empty/No Remark)":
                         # Use the empty_remarks_count
                         row_data[remark_status] = empty_remarks_count
                     else:
                         # Find matching remark in agent's remarks (case-insensitive)
                         count = 0
                         for remark_lower, remark_info in agent_remarks.items():
-                            if remark_info['display'] == remark_status:
-                                count = remark_info['count']
+                            if remark_info["display"] == remark_status:
+                                count = remark_info["count"]
                                 break
                         row_data[remark_status] = count
-                
+
                 summary_data.append(row_data)
-            
+
             # Create summary DataFrame
             summary_df = pd.DataFrame(summary_data)
-            summary_df.to_excel(writer, sheet_name='Summary', index=False)
-            
+            summary_df.to_excel(writer, sheet_name="Summary", index=False)
+
             # Combine all agent data into one sheet
             all_agent_data = []
             for work_file in work_files:
@@ -9788,9 +11714,9 @@ def create_consolidated_data():
                         # Multiple sheets - combine them (excluding Summary sheets)
                         for sheet_name, sheet_data in file_data.items():
                             # Skip Summary sheet
-                            if sheet_name.lower() == 'summary':
+                            if sheet_name.lower() == "summary":
                                 continue
-                                
+
                             if isinstance(sheet_data, pd.DataFrame):
                                 sheet_data_copy = sheet_data.copy()
                                 all_agent_data.append(sheet_data_copy)
@@ -9798,37 +11724,44 @@ def create_consolidated_data():
                         # Single DataFrame
                         file_data_copy = file_data.copy()
                         all_agent_data.append(file_data_copy)
-            
+
             # Create combined sheet with all agent data
             if all_agent_data:
                 combined_df = pd.concat(all_agent_data, ignore_index=True)
-                
+
                 # Format all date columns to MM/DD/YYYY format
                 for col in combined_df.columns:
-                    if 'date' in col.lower():
+                    if "date" in col.lower():
                         try:
                             # Convert to datetime if not already
-                            combined_df[col] = pd.to_datetime(combined_df[col], errors='coerce')
+                            combined_df[col] = pd.to_datetime(
+                                combined_df[col], errors="coerce"
+                            )
                             # Format as MM/DD/YYYY, handling NaT (Not a Time) values
                             combined_df[col] = combined_df[col].apply(
-                                lambda x: x.strftime('%m/%d/%Y') if pd.notna(x) else ''
+                                lambda x: x.strftime("%m/%d/%Y") if pd.notna(x) else ""
                             )
                         except Exception:
                             # If conversion fails, leave column as is
                             pass
-                
-                combined_df.to_excel(writer, sheet_name='All Agent Data', index=False)
+
+                combined_df.to_excel(writer, sheet_name="All Agent Data", index=False)
             else:
                 # Fallback if no data found
-                simple_df = pd.DataFrame([{'Message': 'No data available from any agent'}])
-                simple_df.to_excel(writer, sheet_name='All Agent Data', index=False)
-        
+                simple_df = pd.DataFrame(
+                    [{"Message": "No data available from any agent"}]
+                )
+                simple_df.to_excel(writer, sheet_name="All Agent Data", index=False)
+
         excel_buffer.seek(0)
-        filename = f"consolidated_agent_files_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+        filename = (
+            f"consolidated_agent_files_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+        )
         return excel_buffer, filename
-        
+
     except Exception as e:
         return None, f"Error creating consolidated data: {str(e)}"
+
 
 def cleanup_all_agent_files():
     """Delete all agent work files daily at 7 AM to save server space"""
@@ -9837,19 +11770,22 @@ def cleanup_all_agent_files():
             # Get all agent work files
             all_files = AgentWorkFile.query.all()
             file_count = len(all_files)
-            
+
             # Delete all files
             for work_file in all_files:
                 db.session.delete(work_file)
-            
+
             db.session.commit()
-            
-            print(f"✅ Daily cleanup completed: Deleted {file_count} agent work file(s) at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+
+            print(
+                f"✅ Daily cleanup completed: Deleted {file_count} agent work file(s) at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+            )
             return True, file_count
     except Exception as e:
         print(f"❌ Error during daily cleanup: {str(e)}")
         db.session.rollback()
         return False, str(e)
+
 
 def daily_consolidate_and_cleanup():
     """Consolidate all agent files, email the consolidated workbook, then cleanup."""
@@ -9858,7 +11794,7 @@ def daily_consolidate_and_cleanup():
             excel_buffer, filename_or_message = create_consolidated_data()
             if excel_buffer is not None:
                 # Use env var for recipient, fallback to sandbox-allowed email for testing
-                to_email = os.environ.get('CONSOLIDATION_EMAIL', 'amirmursal@gmail.com')
+                to_email = os.environ.get("CONSOLIDATION_EMAIL", "amirmursal@gmail.com")
                 subject = f"Daily Consolidated Agent Files - {datetime.now().strftime('%Y-%m-%d')}"
                 html_content = f"<p>Please find attached the consolidated agent workbook generated at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}.</p>"
                 success, message = send_email_with_resend(
@@ -9867,10 +11803,12 @@ def daily_consolidate_and_cleanup():
                     html_content=html_content,
                     text_content="Daily consolidated agent files attachment.",
                     attachment_data=excel_buffer.getvalue(),
-                    attachment_filename=filename_or_message
+                    attachment_filename=filename_or_message,
                 )
                 if success:
-                    print(f"✅ Daily consolidation email sent to {to_email}: {filename_or_message}")
+                    print(
+                        f"✅ Daily consolidation email sent to {to_email}: {filename_or_message}"
+                    )
                 else:
                     print(f"❌ Failed to send consolidation email: {message}")
             else:
@@ -9882,121 +11820,146 @@ def daily_consolidate_and_cleanup():
             for work_file in all_files:
                 db.session.delete(work_file)
             db.session.commit()
-            print(f"✅ Daily consolidation + cleanup complete. Deleted {file_count} file(s).")
+            print(
+                f"✅ Daily consolidation + cleanup complete. Deleted {file_count} file(s)."
+            )
             return True, file_count
     except Exception as e:
         print(f"❌ Error in daily consolidation + cleanup: {str(e)}")
         db.session.rollback()
         return False, str(e)
 
+
 def check_and_send_reminders():
     """Check which agents need reminders and send them every 2 hours from shift start time"""
     global agent_allocations_for_reminders
-    
+
     if not agent_allocations_for_reminders:
         return
-    
+
     # Get timezone from environment (default: IST for local, UTC for Railway)
     # Shift times are stored in IST, so we need to work in IST timezone
-    reminder_timezone_str = os.environ.get('REMINDER_TIMEZONE', 'Asia/Kolkata')  # Default to IST
+    reminder_timezone_str = os.environ.get(
+        "REMINDER_TIMEZONE", "Asia/Kolkata"
+    )  # Default to IST
     reminder_timezone = pytz.timezone(reminder_timezone_str)
-    
+
     # Get current time in the specified timezone
     current_time_utc = datetime.now(pytz.UTC)
     current_time = current_time_utc.astimezone(reminder_timezone)
     current_hour = current_time.hour
     current_minute = current_time.minute
-    
+
     successful_reminders = []
     failed_reminders = []
-    
+
     for agent in agent_allocations_for_reminders:
-        shift_start_time_str = agent.get('shift_start_time')
-        agent_email = agent.get('email')
-        allocated = agent.get('allocated', 0)
-        
+        shift_start_time_str = agent.get("shift_start_time")
+        agent_email = agent.get("email")
+        allocated = agent.get("allocated", 0)
+
         # Skip if no shift start time, email, or allocated work
         if not shift_start_time_str or not agent_email or allocated == 0:
             continue
-        
+
         try:
             # Parse shift start time (format: HH:MM) - shift times are in local timezone
-            shift_hour, shift_minute = map(int, shift_start_time_str.split(':'))
+            shift_hour, shift_minute = map(int, shift_start_time_str.split(":"))
             # Create shift start time in the reminder timezone
             shift_start_today = reminder_timezone.localize(
-                current_time.replace(hour=shift_hour, minute=shift_minute, second=0, microsecond=0)
+                current_time.replace(
+                    hour=shift_hour, minute=shift_minute, second=0, microsecond=0
+                )
             )
-            
+
             # If shift hasn't started yet today, skip
             if shift_start_today > current_time:
                 continue
-            
+
             # Calculate hours since shift started today
-            hours_since_start = (current_time - shift_start_today).total_seconds() / 3600
-            
+            hours_since_start = (
+                current_time - shift_start_today
+            ).total_seconds() / 3600
+
             # Calculate which reminder interval we're at (0, 2, 4, 6, 8, etc. hours)
             reminder_interval = 2  # hours
             interval_number = int(hours_since_start // reminder_interval)
-            next_interval_time = shift_start_today + timedelta(hours=interval_number * reminder_interval)
-            
+            next_interval_time = shift_start_today + timedelta(
+                hours=interval_number * reminder_interval
+            )
+
             # Check if current time is within 5 minutes before or after a reminder interval
             tolerance_minutes = 5
             time_diff = abs((current_time - next_interval_time).total_seconds() / 60)
-            
+
             if time_diff <= tolerance_minutes:
                 # We're at a reminder interval. Check if we haven't sent one recently
                 last_reminder_key = f"last_reminder_{agent.get('id')}"
-                if not hasattr(app, '_reminder_tracker'):
+                if not hasattr(app, "_reminder_tracker"):
                     app._reminder_tracker = {}
-                
+
                 last_reminder_time = app._reminder_tracker.get(last_reminder_key)
-                
+
                 if last_reminder_time:
                     # Convert last reminder time to timezone-aware for comparison
-                    if isinstance(last_reminder_time, datetime) and last_reminder_time.tzinfo is None:
-                        last_reminder_time = reminder_timezone.localize(last_reminder_time)
-                    minutes_since_last = (current_time - last_reminder_time).total_seconds() / 60
-                    if minutes_since_last < 100:  # Don't send if sent within last 100 minutes
+                    if (
+                        isinstance(last_reminder_time, datetime)
+                        and last_reminder_time.tzinfo is None
+                    ):
+                        last_reminder_time = reminder_timezone.localize(
+                            last_reminder_time
+                        )
+                    minutes_since_last = (
+                        current_time - last_reminder_time
+                    ).total_seconds() / 60
+                    if (
+                        minutes_since_last < 100
+                    ):  # Don't send if sent within last 100 minutes
                         continue
-                
+
                 # Send reminder
                 success, message = send_reminder_email(agent)
                 if success:
                     successful_reminders.append(f"{agent.get('name')} ({agent_email})")
-                    if not hasattr(app, '_reminder_tracker'):
+                    if not hasattr(app, "_reminder_tracker"):
                         app._reminder_tracker = {}
                     # Store as timezone-aware datetime
                     app._reminder_tracker[last_reminder_key] = current_time
                 else:
                     failed_reminders.append(f"{agent.get('name')}: {message}")
-        
+
         except Exception as e:
             failed_reminders.append(f"{agent.get('name')}: {str(e)}")
-    
+
     # Log reminder results
     if successful_reminders or failed_reminders:
-        print(f"[Reminder System] Sent {len(successful_reminders)} reminders, {len(failed_reminders)} failed at {current_time.strftime('%Y-%m-%d %H:%M:%S %Z')}")
+        print(
+            f"[Reminder System] Sent {len(successful_reminders)} reminders, {len(failed_reminders)} failed at {current_time.strftime('%Y-%m-%d %H:%M:%S %Z')}"
+        )
         if failed_reminders:
-            print(f"[Reminder System] Failed: {', '.join(failed_reminders[:5])}")  # Show first 5 failures
+            print(
+                f"[Reminder System] Failed: {', '.join(failed_reminders[:5])}"
+            )  # Show first 5 failures
+
 
 def get_allocation_summary(agent_name, agent_info):
     """Get detailed allocation summary for an agent"""
     global data_file_data
-    
+
     summary = {
-        'total_allocated': agent_info.get('allocated', 0),
-        'capacity': agent_info.get('capacity', 0),
-        'first_priority_count': 0,
-        'second_priority_count': 0,
-        'third_priority_count': 0,
-        'unknown_priority_count': 0,
-        'insurance_companies': set(),
-        'first_priority_deadline': None
+        "total_allocated": agent_info.get("allocated", 0),
+        "capacity": agent_info.get("capacity", 0),
+        "first_priority_count": 0,
+        "second_priority_count": 0,
+        "third_priority_count": 0,
+        "unknown_priority_count": 0,
+        "insurance_companies": set(),
+        "first_priority_deadline": None,
     }
-    
+
     # Get the agent's allocated rows
-    row_indices = agent_info.get('row_indices', [])
-    
+    row_indices = agent_info.get("row_indices", [])
+
     if row_indices and data_file_data:
         # Get the main data
         if isinstance(data_file_data, dict):
@@ -10004,49 +11967,74 @@ def get_allocation_summary(agent_name, agent_info):
             main_df = data_file_data[first_sheet_name]
         else:
             main_df = data_file_data
-        
+
         if len(main_df) > 0:
             # Get allocated rows
             allocated_df = main_df.iloc[row_indices].copy()
-            
+
             # Count by priority
-            if 'Priority Status' in allocated_df.columns:
-                summary['first_priority_count'] = len(allocated_df[allocated_df['Priority Status'] == 'First Priority'])
-                summary['second_priority_count'] = len(allocated_df[allocated_df['Priority Status'] == 'Second Priority'])
-                summary['third_priority_count'] = len(allocated_df[allocated_df['Priority Status'] == 'Third Priority'])
-                unknown_mask = allocated_df['Priority Status'].isin(['', 'Unknown', None]) | allocated_df['Priority Status'].isna()
-                summary['unknown_priority_count'] = len(allocated_df[unknown_mask])
-            
+            if "Priority Status" in allocated_df.columns:
+                summary["first_priority_count"] = len(
+                    allocated_df[allocated_df["Priority Status"] == "First Priority"]
+                )
+                summary["second_priority_count"] = len(
+                    allocated_df[allocated_df["Priority Status"] == "Second Priority"]
+                )
+                summary["third_priority_count"] = len(
+                    allocated_df[allocated_df["Priority Status"] == "Third Priority"]
+                )
+                unknown_mask = (
+                    allocated_df["Priority Status"].isin(["", "Unknown", None])
+                    | allocated_df["Priority Status"].isna()
+                )
+                summary["unknown_priority_count"] = len(allocated_df[unknown_mask])
+
             # Get unique insurance companies
             insurance_col = None
             for col in allocated_df.columns:
-                if 'dental' in col.lower() and 'primary' in col.lower() and 'ins' in col.lower():
+                if (
+                    "dental" in col.lower()
+                    and "primary" in col.lower()
+                    and "ins" in col.lower()
+                ):
                     insurance_col = col
                     break
-            
+
             if insurance_col:
                 insurance_companies = allocated_df[insurance_col].dropna().unique()
-                summary['insurance_companies'] = set([str(ic).strip() for ic in insurance_companies if str(ic).strip() and str(ic).strip().lower() != 'unknown'])
-            
+                summary["insurance_companies"] = set(
+                    [
+                        str(ic).strip()
+                        for ic in insurance_companies
+                        if str(ic).strip() and str(ic).strip().lower() != "unknown"
+                    ]
+                )
+
             # Calculate First Priority deadline (2nd business day end of day)
-            if summary['first_priority_count'] > 0:
+            if summary["first_priority_count"] > 0:
                 from datetime import datetime, time
+
                 today = datetime.now().date()
                 second_business_day = get_nth_business_day(today, 2)
                 # Set deadline to end of business day (5:00 PM) on 2nd business day
-                summary['first_priority_deadline'] = datetime.combine(second_business_day, time(17, 0))
-    
+                summary["first_priority_deadline"] = datetime.combine(
+                    second_business_day, time(17, 0)
+                )
+
     return summary
+
 
 def create_agent_excel_file(agent_name, agent_info):
     """Create Excel file with agent's allocated data"""
     try:
         # Get the agent's allocated row indices
-        row_indices = agent_info.get('row_indices', [])
-        
+        row_indices = agent_info.get("row_indices", [])
+
         if not row_indices or data_file_data is None:
             # If no specific rows or no data, create empty DataFrame
-            allocated_df = pd.DataFrame({'Message': ['No data allocated to this agent']})
+            allocated_df = pd.DataFrame(
+                {"Message": ["No data allocated to this agent"]}
+            )
         else:
             # data_file_data is a dictionary, get the first sheet (main data)
             if isinstance(data_file_data, dict):
@@ -10056,51 +12044,52 @@ def create_agent_excel_file(agent_name, agent_info):
             else:
                 # If it's already a DataFrame
                 main_df = data_file_data
-            
+
             # Get the actual allocated rows from the processed data using row indices
             allocated_df = main_df.iloc[row_indices].copy()
-        
+
         # Create Excel buffer
         excel_buffer = io.BytesIO()
-        
-        with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
+
+        with pd.ExcelWriter(excel_buffer, engine="openpyxl") as writer:
             # Write main data
-            allocated_df.to_excel(writer, sheet_name='Allocated Data', index=False)
-            
+            allocated_df.to_excel(writer, sheet_name="Allocated Data", index=False)
+
             # Create summary sheet
             summary_data = {
-                'Agent Name': [agent_name],
-                'Total Allocated': [agent_info['allocated']],
-                'Capacity': [agent_info['capacity']],
-                'Allocation Date': [datetime.now().strftime('%Y-%m-%d %H:%M:%S')],
-                'Status': ['Approved']
+                "Agent Name": [agent_name],
+                "Total Allocated": [agent_info["allocated"]],
+                "Capacity": [agent_info["capacity"]],
+                "Allocation Date": [datetime.now().strftime("%Y-%m-%d %H:%M:%S")],
+                "Status": ["Approved"],
             }
             summary_df = pd.DataFrame(summary_data)
-            summary_df.to_excel(writer, sheet_name='Summary', index=False)
-        
+            summary_df.to_excel(writer, sheet_name="Summary", index=False)
+
         excel_buffer.seek(0)
         return excel_buffer
-        
+
     except Exception as e:
         # Return empty Excel file as fallback
         excel_buffer = io.BytesIO()
-        empty_df = pd.DataFrame({'Message': ['No data available']})
+        empty_df = pd.DataFrame({"Message": ["No data available"]})
         empty_df.to_excel(excel_buffer, index=False)
         excel_buffer.seek(0)
         return excel_buffer
 
-@app.route('/reset_app', methods=['POST'])
+
+@app.route("/reset_app", methods=["POST"])
 @admin_required
 def reset_app():
     global allocation_data, data_file_data, allocation_filename, data_filename, processing_result
     global agent_allocations_data
-    
+
     try:
         # Do NOT clear agent work files - preserve all agent files (both uploaded and consolidated)
-        
+
         # Clear all allocations from database
         Allocation.query.delete()
-        
+
         # Reset all global variables
         allocation_data = None
         data_file_data = None
@@ -10108,28 +12097,29 @@ def reset_app():
         data_filename = None
         processing_result = "🔄 Application reset successfully! All uploaded files and data have been cleared. All agent work files have been preserved."
         agent_allocations_data = None
-        
+
         # Commit database changes
         db.session.commit()
-        
-        return redirect('/')
-        
+
+        return redirect("/")
+
     except Exception as e:
         db.session.rollback()
         processing_result = f"❌ Error resetting application: {str(e)}"
-        return redirect('/')
+        return redirect("/")
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     import os
     import threading
     import time
-    
+
     # Initialize database
     init_database()
-    
+
     # Load insurance name mapping at startup
     load_insurance_name_mapping()
-    
+
     # Start session cleanup thread
     def cleanup_sessions_periodically():
         while True:
@@ -10139,54 +12129,62 @@ if __name__ == '__main__':
                 time.sleep(3600)  # Clean up every hour
             except Exception as e:
                 time.sleep(3600)
-    
+
     cleanup_thread = threading.Thread(target=cleanup_sessions_periodically, daemon=True)
     cleanup_thread.start()
-    
+
     # Set up scheduler for reminder emails and daily cleanup
     scheduler = BackgroundScheduler()
-    
+
     # Reminder emails - every 2 hours
     scheduler.add_job(
         func=lambda: check_and_send_reminders(),
         trigger=IntervalTrigger(hours=2),
-        id='reminder_check',
-        name='Check and send reminder emails every 2 hours',
-        replace_existing=True
+        id="reminder_check",
+        name="Check and send reminder emails every 2 hours",
+        replace_existing=True,
     )
-    
+
     # Cleanup - every day at 7:00 AM (timezone-aware)
     # Get timezone from environment variable (default: IST for local, UTC for Railway)
     # Railway servers run in UTC, so we need to convert local time to UTC
     # IST is UTC+5:30, so 7 AM IST = 1:30 AM UTC
-    cleanup_timezone_str = os.environ.get('CLEANUP_TIMEZONE', 'Asia/Kolkata')  # Default to IST
+    cleanup_timezone_str = os.environ.get(
+        "CLEANUP_TIMEZONE", "Asia/Kolkata"
+    )  # Default to IST
     cleanup_timezone = pytz.timezone(cleanup_timezone_str)
-    
+
     # Schedule time in local timezone (7 AM = 07:00)
-    cleanup_hour = int(os.environ.get('CLEANUP_HOUR', '7'))  # 7 AM
-    cleanup_minute = int(os.environ.get('CLEANUP_MINUTE', '0'))
-    
+    cleanup_hour = int(os.environ.get("CLEANUP_HOUR", "7"))  # 7 AM
+    cleanup_minute = int(os.environ.get("CLEANUP_MINUTE", "0"))
+
     scheduler.add_job(
         func=lambda: daily_consolidate_and_cleanup(),
-        trigger=CronTrigger(hour=cleanup_hour, minute=cleanup_minute, timezone=cleanup_timezone),
-        id='daily_consolidation_cleanup',
-        name=f'Daily consolidation email + cleanup at {cleanup_hour:02d}:{cleanup_minute:02d} {cleanup_timezone_str}',
-        replace_existing=True
+        trigger=CronTrigger(
+            hour=cleanup_hour, minute=cleanup_minute, timezone=cleanup_timezone
+        ),
+        id="daily_consolidation_cleanup",
+        name=f"Daily consolidation email + cleanup at {cleanup_hour:02d}:{cleanup_minute:02d} {cleanup_timezone_str}",
+        replace_existing=True,
     )
-    
+
     scheduler.start()
     print("✅ Reminder email scheduler started - checking every 2 hours")
     # Calculate UTC equivalent for display
-    local_time = cleanup_timezone.localize(datetime(2025, 1, 1, cleanup_hour, cleanup_minute))
+    local_time = cleanup_timezone.localize(
+        datetime(2025, 1, 1, cleanup_hour, cleanup_minute)
+    )
     utc_time = local_time.astimezone(pytz.UTC)
-    print(f"✅ Cleanup scheduler started - runs every day at {cleanup_hour:02d}:{cleanup_minute:02d} {cleanup_timezone_str} (UTC: {utc_time.strftime('%H:%M')})")
-    
-    port = int(os.environ.get('PORT', 5003))
+    print(
+        f"✅ Cleanup scheduler started - runs every day at {cleanup_hour:02d}:{cleanup_minute:02d} {cleanup_timezone_str} (UTC: {utc_time.strftime('%H:%M')})"
+    )
+
+    port = int(os.environ.get("PORT", 5003))
     # Always enable debug + auto-reload for local dev unless explicitly disabled
-    debug = True if os.environ.get('DISABLE_DEBUG') != '1' else False
-    
+    debug = True if os.environ.get("DISABLE_DEBUG") != "1" else False
+
     try:
-        app.run(debug=debug, host='0.0.0.0', port=port, use_reloader=debug)
+        app.run(debug=debug, host="0.0.0.0", port=port, use_reloader=debug)
     finally:
         # Shutdown scheduler when app stops
         if scheduler.running:

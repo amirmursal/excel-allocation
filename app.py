@@ -5705,9 +5705,10 @@ def process_allocation_files_with_dates(
                         if domain_col and pd.notna(row[domain_col]):
                             agent_domain = str(row[domain_col]).strip().upper()
 
-                        # Get allocation preference value and check if it contains PB
+                        # Get allocation preference value and check if it contains PB or NTC
                         allocation_preference = None
                         has_pb_preference = False
+                        has_ntc_preference = False
                         if allocation_preference_col and pd.notna(
                             row[allocation_preference_col]
                         ):
@@ -5721,6 +5722,9 @@ def process_allocation_files_with_dates(
                                 allocation_preference == "PB"
                                 or "PB" in allocation_preference
                             )
+                            # Check if allocation preference contains "NTC"
+                            # Valid values: "Sec+NTC", "Sec+Mix+NTC", "Mix+NTC", "NTC"
+                            has_ntc_preference = "NTC" in allocation_preference
                         # Debug: Store raw allocation preference for troubleshooting
                         allocation_preference_raw_value = (
                             str(row[allocation_preference_col]).strip()
@@ -5930,6 +5934,7 @@ def process_allocation_files_with_dates(
                                 "shift_group": shift_group,  # Shift group (1=day, 2=afternoon, 3=night)
                                 "domain": agent_domain,  # Domain value (e.g., 'PB')
                                 "has_pb_preference": has_pb_preference,  # Whether allocation preference contains "PB"
+                                "has_ntc_preference": has_ntc_preference,  # Whether allocation preference contains "NTC"
                                 "allocation_preference_raw": (
                                     allocation_preference_raw_value
                                     if "allocation_preference_raw_value" in locals()
@@ -6286,6 +6291,161 @@ def process_allocation_files_with_dates(
                                                     remaining_ntbp_rows[rows_to_assign:]
                                                 )
 
+                        # Step 3.5: Global NTC Allocation - Allocate all NTC remark rows globally
+                        # Allocate NTC rows to agents with NTC in Allocation Preference column
+                        # Valid Allocation Preference values: "Sec+NTC", "Sec+Mix+NTC", "Mix+NTC", "NTC"
+                        # Use CC column for current capacity
+                        all_ntc_rows = []
+                        if remark_col and remark_col in processed_df.columns:
+                            for idx in processed_df.index:
+                                # Skip already allocated rows
+                                if idx in [
+                                    i
+                                    for ag in agent_allocations
+                                    for i in ag["row_indices"]
+                                ]:
+                                    continue
+                                if pd.notna(processed_df.at[idx, remark_col]):
+                                    row_remark = (
+                                        str(processed_df.at[idx, remark_col])
+                                        .strip()
+                                        .upper()
+                                    )
+                                    if row_remark == "NTC":
+                                        all_ntc_rows.append(idx)
+
+                        # Find agents with NTC in Allocation Preference column
+                        # Valid values: "Sec+NTC", "Sec+Mix+NTC", "Mix+NTC", "NTC"
+                        agents_with_ntc_preference = []
+                        ntc_agent_names = []
+                        for a in agent_allocations:
+                            # Check has_ntc_preference flag (set when "NTC" is in Allocation Preference column)
+                            if a.get("has_ntc_preference", False):
+                                agents_with_ntc_preference.append(a)
+                                ntc_agent_names.append(a.get("name", "Unknown"))
+
+                        # Debug output for troubleshooting
+                        if all_ntc_rows:
+                            if not agents_with_ntc_preference:
+                                # No agents with NTC preference found - NTC rows will remain unallocated
+                                if allocation_preference_col:
+                                    agent_summary += f"\n⚠️ Warning: Found {len(all_ntc_rows)} NTC rows but no agents with 'NTC' in Allocation Preference column '{allocation_preference_col}'. NTC rows will remain unallocated."
+                                else:
+                                    agent_summary += f"\n⚠️ Warning: Found {len(all_ntc_rows)} NTC rows but 'Allocation Preference' column not found. NTC rows will remain unallocated."
+                            else:
+                                agent_summary += f"\n✅ Found {len(agents_with_ntc_preference)} agent(s) with NTC preference ({', '.join(ntc_agent_names[:5])}{'...' if len(ntc_agent_names) > 5 else ''}) for {len(all_ntc_rows)} NTC rows"
+
+                        # Only allocate NTC rows if we have NTC preference agents
+                        if agents_with_ntc_preference and all_ntc_rows:
+                            # Calculate total capacity of NTC preference agents (from CC column)
+                            total_ntc_capacity = sum(
+                                a["capacity"] - a["allocated"]
+                                for a in agents_with_ntc_preference
+                            )
+
+                            if len(all_ntc_rows) >= total_ntc_capacity:
+                                # Distribute equally when NTC count >= total capacity
+                                # Round-robin distribution: assign rows one by one to each agent in turn
+                                available_ntc_agents = [
+                                    a
+                                    for a in agents_with_ntc_preference
+                                    if a["capacity"] > a["allocated"]
+                                ]
+
+                                if available_ntc_agents:
+                                    agent_idx = 0
+                                    for ntc_row_idx in all_ntc_rows:
+                                        # Find next available agent with capacity (round-robin)
+                                        assigned = False
+                                        max_attempts = (
+                                            len(available_ntc_agents) * 10
+                                        )  # Increased attempts
+                                        attempts = 0
+
+                                        while attempts < max_attempts and not assigned:
+                                            # Refresh available agents list in case some filled up
+                                            available_ntc_agents = [
+                                                a
+                                                for a in agents_with_ntc_preference
+                                                if a["capacity"] > a["allocated"]
+                                            ]
+
+                                            if not available_ntc_agents:
+                                                # No more capacity available - stop allocation
+                                                break
+
+                                            agent = available_ntc_agents[
+                                                agent_idx % len(available_ntc_agents)
+                                            ]
+
+                                            if agent["capacity"] > agent["allocated"]:
+                                                agent["row_indices"].append(ntc_row_idx)
+                                                agent["allocated"] += 1
+                                                processed_df.at[
+                                                    ntc_row_idx, "Agent Name"
+                                                ] = agent["name"]
+                                                assigned = True
+                                                agent_idx += (
+                                                    1  # Move to next agent for next row
+                                                )
+                                                break
+                                            else:
+                                                # This agent is full, try next one
+                                                agent_idx += 1
+
+                                            attempts += 1
+
+                                        # If we couldn't assign this row, check if any agents still have capacity
+                                        if not assigned:
+                                            # Final check - refresh available agents
+                                            available_ntc_agents = [
+                                                a
+                                                for a in agents_with_ntc_preference
+                                                if a["capacity"] > a["allocated"]
+                                            ]
+                                            if not available_ntc_agents:
+                                                # No more capacity - stop allocation
+                                                break
+                            else:
+                                # If NTC rows are fewer than total capacity, allocate ALL to a single agent
+                                available_ntc_agents = [
+                                    a
+                                    for a in agents_with_ntc_preference
+                                    if a["capacity"] > a["allocated"]
+                                ]
+                                if available_ntc_agents:
+                                    # Sort by remaining capacity (highest first) to pick best agent
+                                    available_ntc_agents.sort(
+                                        key=lambda x: x["capacity"] - x["allocated"],
+                                        reverse=True,
+                                    )
+                                    # Allocate ALL NTC rows, starting with the agent with highest capacity
+                                    # If that agent fills up, continue with next agent
+                                    remaining_ntc_rows = all_ntc_rows.copy()
+                                    for agent in available_ntc_agents:
+                                        if not remaining_ntc_rows:
+                                            break
+                                        available = (
+                                            agent["capacity"] - agent["allocated"]
+                                        )
+                                        if available > 0:
+                                            rows_to_assign = min(
+                                                available, len(remaining_ntc_rows)
+                                            )
+                                            if rows_to_assign > 0:
+                                                assigned = remaining_ntc_rows[
+                                                    :rows_to_assign
+                                                ]
+                                                agent["row_indices"].extend(assigned)
+                                                agent["allocated"] += rows_to_assign
+                                                for idx in assigned:
+                                                    processed_df.at[
+                                                        idx, "Agent Name"
+                                                    ] = agent["name"]
+                                                remaining_ntc_rows = remaining_ntc_rows[
+                                                    rows_to_assign:
+                                                ]
+
                         # Step 3: FIRST PRIORITY - Allocate First Priority matched work to senior agents FIRST
                         # This takes precedence over unmatched insurance
 
@@ -6326,15 +6486,17 @@ def process_allocation_files_with_dates(
                             # Allocate all First Priority matched work to senior agents, maximizing capacity utilization
                             # But apply Domain/Remark rule: NTBP rows only to PB agents, PB agents only get NTBP rows
 
-                            # Separate priority work into NTBP and non-NTBP
+                            # Separate priority work into NTBP, NTC, and other rows
                             # IMPORTANT: NTBP rows should have been allocated in Step 2.5 to PB preference agents
-                            # Skip NTBP rows here - they should only go to PB preference agents, not senior agents
+                            # IMPORTANT: NTC rows should have been allocated in Step 3.5 to NTC preference agents
+                            # Skip NTBP and NTC rows here - they should only go to their respective preference agents
                             ntbp_priority_work = []
-                            non_ntbp_priority_work = []
+                            ntc_priority_work = []
+                            non_special_priority_work = []
 
                             if remark_col and remark_col in processed_df.columns:
                                 for insurance_carrier, row_idx in priority_work:
-                                    # Skip if already allocated (should have been allocated in Step 2.5)
+                                    # Skip if already allocated (should have been allocated in Step 2.5 or 3.5)
                                     if row_idx in [
                                         i
                                         for ag in agent_allocations
@@ -6354,13 +6516,17 @@ def process_allocation_files_with_dates(
                                         # NTBP rows should only go to PB preference agents (allocated in Step 2.5)
                                         # Skip them here - don't allocate to senior agents
                                         continue
+                                    elif row_remark == "NTC":
+                                        # NTC rows should only go to NTC preference agents (allocated in Step 3.5)
+                                        # Skip them here - don't allocate to senior agents
+                                        continue
                                     else:
-                                        non_ntbp_priority_work.append(
+                                        non_special_priority_work.append(
                                             (insurance_carrier, row_idx)
                                         )
                             else:
-                                # If no remark column, all rows are non-NTBP
-                                non_ntbp_priority_work = priority_work.copy()
+                                # If no remark column, all rows are non-special
+                                non_special_priority_work = priority_work.copy()
 
                             # Separate senior agents into PB and non-PB
                             # Check both domain == 'PB' and allocation preference contains 'PB'
@@ -6393,7 +6559,7 @@ def process_allocation_files_with_dates(
 
                             # Allocate non-NTBP priority work only to non-PB senior agents
                             work_idx = 0
-                            while work_idx < len(non_ntbp_priority_work):
+                            while work_idx < len(non_special_priority_work):
                                 available_non_pb_seniors = [
                                     a
                                     for a in non_pb_senior_agents
@@ -6408,7 +6574,7 @@ def process_allocation_files_with_dates(
                                 )
 
                                 for senior_agent in available_non_pb_seniors:
-                                    if work_idx >= len(non_ntbp_priority_work):
+                                    if work_idx >= len(non_special_priority_work):
                                         break
 
                                     available_capacity = (
@@ -6425,11 +6591,11 @@ def process_allocation_files_with_dates(
                                         work_idx,
                                         min(
                                             work_idx + available_capacity,
-                                            len(non_ntbp_priority_work),
+                                            len(non_special_priority_work),
                                         ),
                                     ):
                                         insurance_carrier, row_idx = (
-                                            non_ntbp_priority_work[i]
+                                            non_special_priority_work[i]
                                         )
                                         rows_processed += 1
 
@@ -6514,7 +6680,7 @@ def process_allocation_files_with_dates(
 
                                 # Log progress
                                 if work_idx % 50 == 0 and work_idx < len(
-                                    non_ntbp_priority_work
+                                    non_special_priority_work
                                 ):
                                     pass
 
@@ -6681,21 +6847,27 @@ def process_allocation_files_with_dates(
                                                         row_is_ntbp = (
                                                             row_remark == "NTBP"
                                                         )
+                                                        row_is_ntc = row_remark == "NTC"
 
                                                         # IMPORTANT: NTBP rows should ONLY be allocated in Step 2.5 to PB preference agents
-                                                        # Skip NTBP rows here - they should not be allocated in Step 4
+                                                        # IMPORTANT: NTC rows should ONLY be allocated in Step 3.5 to NTC preference agents
+                                                        # Skip NTBP and NTC rows here - they should not be allocated in Step 4
                                                         if row_is_ntbp:
                                                             # Skip NTBP rows - they should only go to PB preference agents (Step 2.5)
                                                             continue
+                                                        elif row_is_ntc:
+                                                            # Skip NTC rows - they should only go to NTC preference agents (Step 3.5)
+                                                            continue
                                                         elif (
                                                             not row_is_ntbp
+                                                            and not row_is_ntc
                                                             and not agent_is_pb
                                                         ):
-                                                            # Non-NTBP row and non-PB agent - match
+                                                            # Non-NTBP, non-NTC row and non-PB agent - match
                                                             matching_rows.append(
                                                                 actual_row_idx
                                                             )
-                                                        # Otherwise: non-NTBP row with PB agent - no match (PB agents should only get NTBP, but NTBP is handled in Step 2.5)
+                                                        # Otherwise: non-NTBP, non-NTC row with PB agent - no match (PB agents should only get NTBP, but NTBP is handled in Step 2.5)
 
                                                     rows_to_assign = len(matching_rows)
                                                     if rows_to_assign > 0:
@@ -6934,9 +7106,10 @@ def process_allocation_files_with_dates(
                                                 continue
 
                                         # IMPORTANT: NTBP rows should ONLY be allocated in Step 2.5 to PB preference agents
-                                        # Filter out any NTBP rows that might have slipped through - they should remain unallocated
-                                        # if not allocated in Step 2.5
-                                        non_ntbp_rows = []
+                                        # IMPORTANT: NTC rows should ONLY be allocated in Step 3.5 to NTC preference agents
+                                        # Filter out any NTBP and NTC rows that might have slipped through - they should remain unallocated
+                                        # if not allocated in Step 2.5 or Step 3.5
+                                        non_special_rows = []
                                         if (
                                             remark_col
                                             and remark_col in processed_df.columns
@@ -6958,14 +7131,17 @@ def process_allocation_files_with_dates(
                                                 # Skip NTBP rows - they should only go to PB preference agents (Step 2.5)
                                                 if row_remark == "NTBP":
                                                     continue  # Skip NTBP rows completely
+                                                # Skip NTC rows - they should only go to NTC preference agents (Step 3.5)
+                                                elif row_remark == "NTC":
+                                                    continue  # Skip NTC rows completely
                                                 else:
-                                                    non_ntbp_rows.append(r_idx)
+                                                    non_special_rows.append(r_idx)
                                         else:
-                                            non_ntbp_rows = (
+                                            non_special_rows = (
                                                 unallocated_row_indices.copy()
                                             )
 
-                                        # Only process non-NTBP rows
+                                        # Only process non-NTBP, non-NTC rows
                                         # Partition capable agents by PB domain or allocation preference
                                         pb_agents = [
                                             a
@@ -7155,24 +7331,26 @@ def process_allocation_files_with_dates(
                                                                 ] += take
                                                         row_pos += take
 
-                                        # Execute sticky assignment for non-NTBP rows only
+                                        # Execute sticky assignment for non-NTBP, non-NTC rows only
                                         # NTBP rows should have been allocated in Step 2.5 to PB preference agents only
-                                        # If any NTBP rows remain unallocated, they will stay unallocated (not assigned to non-PB agents)
-                                        if non_ntbp_rows:
+                                        # NTC rows should have been allocated in Step 3.5 to NTC preference agents only
+                                        # If any NTBP or NTC rows remain unallocated, they will stay unallocated (not assigned to other agents)
+                                        if non_special_rows:
                                             sticky_assign(
-                                                non_ntbp_rows,
+                                                non_special_rows,
                                                 non_pb_agents,
                                                 insurance_carrier,
                                             )
                     else:
                         # Fallback: if no insurance carrier column, use simple capacity-based allocation
                         # IMPORTANT: NTBP rows should ONLY be allocated in Step 2.5 to PB preference agents
-                        # Skip NTBP rows here - they should remain unallocated if not allocated in Step 2.5
-                        non_ntbp_rows = []
+                        # IMPORTANT: NTC rows should ONLY be allocated in Step 3.5 to NTC preference agents
+                        # Skip NTBP and NTC rows here - they should remain unallocated if not allocated in Step 2.5 or 3.5
+                        non_special_rows = []
 
                         if remark_col and remark_col in processed_df.columns:
                             for idx in range(total_rows):
-                                # Skip already allocated rows (should have been allocated in Step 2.5)
+                                # Skip already allocated rows (should have been allocated in Step 2.5 or 3.5)
                                 if idx in [
                                     i
                                     for ag in agent_allocations
@@ -7191,12 +7369,15 @@ def process_allocation_files_with_dates(
                                 # Skip NTBP rows - they should only go to PB preference agents (Step 2.5)
                                 if row_remark == "NTBP":
                                     continue
+                                # Skip NTC rows - they should only go to NTC preference agents (Step 3.5)
+                                elif row_remark == "NTC":
+                                    continue
                                 else:
-                                    non_ntbp_rows.append(idx)
+                                    non_special_rows.append(idx)
                         else:
-                            # If no remark column, all rows are non-NTBP
+                            # If no remark column, all rows are non-special
                             # But still skip already allocated rows
-                            non_ntbp_rows = [
+                            non_special_rows = [
                                 idx
                                 for idx in range(total_rows)
                                 if idx
@@ -7207,19 +7388,19 @@ def process_allocation_files_with_dates(
                                 ]
                             ]
 
-                        # Allocate non-NTBP rows to all available agents (capacity-based)
+                        # Allocate non-NTBP, non-NTC rows to all available agents (capacity-based)
                         row_idx = 0
                         for agent in agent_allocations:
-                            if row_idx >= len(non_ntbp_rows):
+                            if row_idx >= len(non_special_rows):
                                 break
                             available_capacity = agent["capacity"] - agent["allocated"]
                             if available_capacity > 0:
                                 actual_allocation = min(
-                                    available_capacity, len(non_ntbp_rows) - row_idx
+                                    available_capacity, len(non_special_rows) - row_idx
                                 )
                                 if actual_allocation > 0:
                                     agent["row_indices"].extend(
-                                        non_ntbp_rows[
+                                        non_special_rows[
                                             row_idx : row_idx + actual_allocation
                                         ]
                                     )

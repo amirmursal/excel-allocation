@@ -4851,8 +4851,117 @@ def expand_insurance_groups(insurance_list_str):
             else ("DD Toolkits" if has_dd_toolkits else "DD")
         )
 
-    # Join back with semicolon
-    return "; ".join(expanded_companies) if expanded_companies else insurance_list_str
+    # Join back with semicolon - ensure all items are strings
+    expanded_companies_str = [str(comp).strip() for comp in expanded_companies if comp is not None and not pd.isna(comp)]
+    return "; ".join(expanded_companies_str) if expanded_companies_str else insurance_list_str
+
+
+def check_insurance_match(row_insurance, agent_insurance_list, is_senior=False):
+    """
+    Check if a row's insurance company matches any of the agent's insurance capabilities.
+    Handles formatting variations, especially for DD Toolkit/Toolkits/DD INS variations.
+
+    Args:
+        row_insurance: Insurance company name from the data row
+        agent_insurance_list: List of insurance companies the agent can work with
+        is_senior: Whether the agent is senior (can work with any insurance)
+
+    Returns:
+        True if the row insurance matches agent capabilities, False otherwise
+    """
+    if is_senior:
+        return True
+
+    if not agent_insurance_list:
+        return True
+
+    # Format the row insurance company name
+    formatted_row_insurance = format_insurance_company_name(row_insurance)
+    # Handle NaN/None/float values
+    if pd.isna(formatted_row_insurance) or not formatted_row_insurance:
+        if pd.isna(row_insurance):
+            formatted_row_insurance = ""
+        else:
+            formatted_row_insurance = str(row_insurance).strip() if row_insurance is not None else ""
+    else:
+        formatted_row_insurance = str(formatted_row_insurance).strip()
+
+    formatted_row_lower = formatted_row_insurance.lower().strip() if formatted_row_insurance else ""
+
+    # Check against each agent capability
+    for comp in agent_insurance_list:
+        # Skip if comp is NaN/None
+        if pd.isna(comp) or comp is None:
+            continue
+            
+        # Format the agent's insurance capability
+        formatted_comp = format_insurance_company_name(comp)
+        # Handle NaN/None/float values
+        if pd.isna(formatted_comp) or not formatted_comp:
+            formatted_comp = str(comp).strip() if comp is not None else ""
+        else:
+            formatted_comp = str(formatted_comp).strip()
+
+        comp_lower = formatted_comp.lower().strip() if formatted_comp else ""
+
+        # Exact match
+        if formatted_row_lower == comp_lower:
+            return True
+
+        # Substring match (handles partial matches)
+        if formatted_row_lower in comp_lower or comp_lower in formatted_row_lower:
+            return True
+
+        # Handle DD Toolkit/Toolkits variations
+        # Check if row insurance is in DD_TOOLKIT_GROUP and agent has DD Toolkit/Toolkits/DD capability
+        if formatted_row_insurance in DD_TOOLKIT_GROUP:
+            if (
+                "dd toolkit" in comp_lower
+                or "dd toolkits" in comp_lower
+                or comp_lower == "dd"
+            ):
+                return True
+
+        # Check if row insurance name contains "DD Toolkit" and agent has DD Toolkit/Toolkits/DD capability
+        if "dd toolkit" in formatted_row_lower or "dd toolkits" in formatted_row_lower:
+            if (
+                "dd toolkit" in comp_lower
+                or "dd toolkits" in comp_lower
+                or comp_lower == "dd"
+            ):
+                return True
+
+        # Handle DD INS variations
+        # Check if row insurance is in DD_INS_GROUP and agent has DD INS/INS capability
+        if formatted_row_insurance in DD_INS_GROUP:
+            if "dd ins" in comp_lower or comp_lower == "ins":
+                return True
+
+        # Check if row insurance name contains "DD INS" and agent has DD INS/INS capability
+        if "dd ins" in formatted_row_lower or formatted_row_lower == "ins":
+            if "dd ins" in comp_lower or comp_lower == "ins":
+                return True
+
+        # Check if row insurance starts with "DD" and agent has "DD" capability (for standalone DD)
+        if formatted_row_lower.startswith("dd ") and comp_lower == "dd":
+            return True
+
+        # Check if row insurance is a DD company (starts with "DD") and agent has DD Toolkit/Toolkits/DD INS/INS capability
+        if formatted_row_lower.startswith("dd "):
+            # Check if it's a DD Toolkit company
+            if formatted_row_insurance in DD_TOOLKIT_GROUP:
+                if (
+                    "dd toolkit" in comp_lower
+                    or "dd toolkits" in comp_lower
+                    or comp_lower == "dd"
+                ):
+                    return True
+            # Check if it's a DD INS company
+            if formatted_row_insurance in DD_INS_GROUP:
+                if "dd ins" in comp_lower or comp_lower == "ins":
+                    return True
+
+    return False
 
 
 def format_insurance_column_in_dataframe(df, column_name):
@@ -4940,7 +5049,7 @@ def detect_and_assign_new_insurance_companies(
                     if pd.notna(row[insurance_working_col])
                     else ""
                 )
-                new_companies_str = "; ".join(new_insurance_companies)
+                new_companies_str = "; ".join([str(comp).strip() for comp in new_insurance_companies if comp is not None and not pd.isna(comp)])
 
                 if current_companies:
                     updated_companies = f"{current_companies}; {new_companies_str}"
@@ -5583,7 +5692,7 @@ def process_allocation_files_with_dates(
                             )
                         )
                         if new_insurance_companies:
-                            agent_summary += f"\n🆕 New insurance companies detected and assigned to senior agents: {', '.join(new_insurance_companies)}"
+                            agent_summary += f"\n🆕 New insurance companies detected and assigned to senior agents: {', '.join([str(comp).strip() for comp in new_insurance_companies if comp is not None and not pd.isna(comp)])}"
                     if not insurance_needs_training_col:
                         agent_data["Exceptions"] = ""
                         insurance_needs_training_col = "Exceptions"
@@ -6200,7 +6309,8 @@ def process_allocation_files_with_dates(
                                 else:
                                     agent_summary += f"\n⚠️ Warning: Found {len(all_ntbp_rows)} NTBP rows but 'Allocation Preference' column not found. NTBP rows will remain unallocated."
                             else:
-                                agent_summary += f"\n✅ Found {len(agents_with_pb_preference)} agent(s) with PB preference ({', '.join(pb_agent_names[:5])}{'...' if len(pb_agent_names) > 5 else ''}) for {len(all_ntbp_rows)} NTBP rows"
+                                pb_names_safe = [str(name).strip() for name in pb_agent_names[:5] if name is not None and not pd.isna(name)]
+                                agent_summary += f"\n✅ Found {len(agents_with_pb_preference)} agent(s) with PB preference ({', '.join(pb_names_safe)}{'...' if len(pb_agent_names) > 5 else ''}) for {len(all_ntbp_rows)} NTBP rows"
 
                         # Only allocate NTBP rows if we have PB preference agents
                         # If no PB preference agents exist, NTBP rows will remain unallocated
@@ -6361,7 +6471,8 @@ def process_allocation_files_with_dates(
                                 else:
                                     agent_summary += f"\n⚠️ Warning: Found {len(all_ntc_rows)} NTC rows but 'Allocation Preference' column not found. NTC rows will remain unallocated."
                             else:
-                                agent_summary += f"\n✅ Found {len(agents_with_ntc_preference)} agent(s) with NTC preference ({', '.join(ntc_agent_names[:5])}{'...' if len(ntc_agent_names) > 5 else ''}) for {len(all_ntc_rows)} NTC rows"
+                                ntc_names_safe = [str(name).strip() for name in ntc_agent_names[:5] if name is not None and not pd.isna(name)]
+                                agent_summary += f"\n✅ Found {len(agents_with_ntc_preference)} agent(s) with NTC preference ({', '.join(ntc_names_safe)}{'...' if len(ntc_agent_names) > 5 else ''}) for {len(all_ntc_rows)} NTC rows"
 
                         # Only allocate NTC rows if we have NTC preference agents
                         if agents_with_ntc_preference and all_ntc_rows:
@@ -6546,30 +6657,16 @@ def process_allocation_files_with_dates(
                                     if pd.notna(
                                         processed_df.at[idx, insurance_carrier_col]
                                     ):
-                                        row_insurance = str(
+                                        row_insurance_raw = str(
                                             processed_df.at[idx, insurance_carrier_col]
                                         ).strip()
 
-                                        # Check if row insurance is in agent's "Insurance List" (capabilities)
-                                        can_work = False
-                                        if agent.get("is_senior", False):
-                                            # Senior agents can work with any insurance company
-                                            can_work = True
-                                        elif not agent_insurance_list:
-                                            # If no specific companies listed, can work with any
-                                            can_work = True
-                                        else:
-                                            # Check if row insurance matches/is in agent's Insurance List (capabilities)
-                                            row_insurance_lower = row_insurance.lower()
-                                            for comp in agent_insurance_list:
-                                                comp_lower = comp.lower()
-                                                if (
-                                                    row_insurance_lower in comp_lower
-                                                    or comp_lower in row_insurance_lower
-                                                    or row_insurance == comp
-                                                ):
-                                                    can_work = True
-                                                    break
+                                        # Use improved matching function that handles formatting variations and "DD All"
+                                        can_work = check_insurance_match(
+                                            row_insurance_raw,
+                                            agent_insurance_list,
+                                            agent.get("is_senior", False),
+                                        )
 
                                         if can_work:
                                             mix_ntc_rows.append(idx)
@@ -7245,44 +7342,19 @@ def process_allocation_files_with_dates(
                                                             ]
                                                         )
                                                     ):
-                                                        row_insurance = str(
+                                                        row_insurance_raw = str(
                                                             processed_df.at[
                                                                 idx,
                                                                 insurance_carrier_col,
                                                             ]
                                                         ).strip()
 
-                                                        # Check if row insurance is in agent's "Insurance List" (capabilities)
-                                                        can_work = False
-                                                        if agent.get(
-                                                            "is_senior", False
-                                                        ):
-                                                            # Senior agents can work with any insurance company
-                                                            can_work = True
-                                                        elif not agent_insurance_list:
-                                                            # If no specific companies listed, can work with any
-                                                            can_work = True
-                                                        else:
-                                                            # Check if row insurance matches/is in agent's Insurance List (capabilities)
-                                                            row_insurance_lower = (
-                                                                row_insurance.lower()
-                                                            )
-                                                            for (
-                                                                comp
-                                                            ) in agent_insurance_list:
-                                                                comp_lower = (
-                                                                    comp.lower()
-                                                                )
-                                                                if (
-                                                                    row_insurance_lower
-                                                                    in comp_lower
-                                                                    or comp_lower
-                                                                    in row_insurance_lower
-                                                                    or row_insurance
-                                                                    == comp
-                                                                ):
-                                                                    can_work = True
-                                                                    break
+                                                        # Use improved matching function that handles formatting variations and "DD All"
+                                                        can_work = check_insurance_match(
+                                                            row_insurance_raw,
+                                                            agent_insurance_list,
+                                                            agent.get("is_senior", False),
+                                                        )
 
                                                         if can_work:
                                                             mix_rows.append(idx)
@@ -7398,44 +7470,19 @@ def process_allocation_files_with_dates(
                                                             ]
                                                         )
                                                     ):
-                                                        row_insurance = str(
+                                                        row_insurance_raw = str(
                                                             processed_df.at[
                                                                 idx,
                                                                 insurance_carrier_col,
                                                             ]
                                                         ).strip()
 
-                                                        # Check if row insurance is in agent's "Insurance List" (capabilities)
-                                                        can_work = False
-                                                        if agent.get(
-                                                            "is_senior", False
-                                                        ):
-                                                            # Senior agents can work with any insurance company
-                                                            can_work = True
-                                                        elif not agent_insurance_list:
-                                                            # If no specific companies listed, can work with any
-                                                            can_work = True
-                                                        else:
-                                                            # Check if row insurance matches/is in agent's Insurance List (capabilities)
-                                                            row_insurance_lower = (
-                                                                row_insurance.lower()
-                                                            )
-                                                            for (
-                                                                comp
-                                                            ) in agent_insurance_list:
-                                                                comp_lower = (
-                                                                    comp.lower()
-                                                                )
-                                                                if (
-                                                                    row_insurance_lower
-                                                                    in comp_lower
-                                                                    or comp_lower
-                                                                    in row_insurance_lower
-                                                                    or row_insurance
-                                                                    == comp
-                                                                ):
-                                                                    can_work = True
-                                                                    break
+                                                        # Use improved matching function that handles formatting variations and "DD All"
+                                                        can_work = check_insurance_match(
+                                                            row_insurance_raw,
+                                                            agent_insurance_list,
+                                                            agent.get("is_senior", False),
+                                                        )
 
                                                         if can_work:
                                                             mix_rows.append(idx)
@@ -7707,22 +7754,35 @@ def process_allocation_files_with_dates(
                                 if remaining_capacity <= 0:
                                     continue
 
-                                # Get the assigned insurance company (should be set from previous allocations)
-                                # If not set, find first row where "Dental Primary Ins Carr" matches agent's "Insurance List" capabilities
-                                assigned_ins = agent.get("assigned_insurance")
-                                if not assigned_ins:
+                                # Special handling for Abdul Hakim, Alisha Mulla, and Iqra Patel: Group by insurance company, then allocate from one matching company
+                                agent_name = agent.get("name", "").strip()
+                                agent_name_lower = agent_name.lower()
+                                is_abdul_hakim = agent_name_lower == "abdul hakim"
+                                is_alisha_mulla = agent_name_lower == "alisha mulla"
+                                is_iqra_patel = agent_name_lower == "iqra patel"
+                                needs_special_grouping = (
+                                    is_abdul_hakim or is_alisha_mulla or is_iqra_patel
+                                )
+
+                                if needs_special_grouping:
+                                    # Special logic for Abdul Hakim, Alisha Mulla, and Iqra Patel: Group unallocated rows by insurance company
+                                    # Then find matching insurance companies from their capabilities and allocate from one
+                                    # Uses formatted insurance names for better matching
                                     agent_insurance_list = agent.get(
                                         "insurance_companies", []
                                     )
 
-                                    # Find first available row where insurance from "Dental Primary Ins Carr" matches agent's "Insurance List"
+                                    # Group unallocated rows by insurance company from "Dental Primary Ins" column
+                                    insurance_groups = {}
+                                    all_allocated_indices = [
+                                        i
+                                        for ag in agent_allocations
+                                        for i in ag["row_indices"]
+                                    ]
+
                                     for idx in processed_df.index:
                                         # Skip already allocated rows
-                                        if idx in [
-                                            i
-                                            for ag in agent_allocations
-                                            for i in ag["row_indices"]
-                                        ]:
+                                        if idx in all_allocated_indices:
                                             continue
 
                                         # Skip rows with secondary insurance (those go to "Sec + X" agents)
@@ -7746,91 +7806,112 @@ def process_allocation_files_with_dates(
                                         if insurance_carrier_col and pd.notna(
                                             processed_df.at[idx, insurance_carrier_col]
                                         ):
-                                            row_insurance = str(
+                                            row_insurance_raw = str(
                                                 processed_df.at[
                                                     idx, insurance_carrier_col
                                                 ]
                                             ).strip()
 
-                                            # Check if row insurance is in agent's "Insurance List" (capabilities)
-                                            can_work = False
-                                            if agent.get("is_senior", False):
-                                                # Senior agents can work with any insurance company
-                                                can_work = True
-                                            elif not agent_insurance_list:
-                                                # If no specific companies listed, can work with any
-                                                can_work = True
-                                            else:
-                                                # Check if row insurance matches/is in agent's Insurance List (capabilities)
-                                                row_insurance_lower = (
-                                                    row_insurance.lower()
+                                            # Format the row insurance company name for consistent matching
+                                            row_insurance = (
+                                                format_insurance_company_name(
+                                                    row_insurance_raw
                                                 )
-                                                for comp in agent_insurance_list:
-                                                    comp_lower = comp.lower()
-                                                    if (
-                                                        row_insurance_lower
-                                                        in comp_lower
-                                                        or comp_lower
-                                                        in row_insurance_lower
-                                                        or row_insurance == comp
-                                                    ):
-                                                        can_work = True
-                                                        break
+                                            )
+                                            if not row_insurance:
+                                                row_insurance = row_insurance_raw
+
+                                            # Use improved matching function that handles formatting variations
+                                            can_work = check_insurance_match(
+                                                row_insurance_raw,
+                                                agent_insurance_list,
+                                                agent.get("is_senior", False),
+                                            )
 
                                             if can_work:
-                                                # Found matching insurance - assign this insurance company to agent
-                                                assigned_ins = row_insurance
-                                                agent["assigned_insurance"] = (
-                                                    assigned_ins
+                                                # Group by formatted insurance company name for consistency
+                                                if (
+                                                    row_insurance
+                                                    not in insurance_groups
+                                                ):
+                                                    insurance_groups[row_insurance] = []
+                                                insurance_groups[row_insurance].append(
+                                                    idx
                                                 )
-                                                break
 
-                                if assigned_ins:
-                                    # Find unallocated rows with the same insurance company
-                                    same_insurance_rows = []
-                                    agent_insurance_list = agent.get(
-                                        "insurance_companies", []
-                                    )
+                                    # Find the insurance company with the most available rows that matches capabilities
+                                    # and allocate from that company until capacity is full
+                                    assigned_ins = agent.get("assigned_insurance")
+                                    if not assigned_ins and insurance_groups:
+                                        # Choose the insurance company with the most available rows
+                                        # This ensures we fill capacity efficiently
+                                        assigned_ins = max(
+                                            insurance_groups.keys(),
+                                            key=lambda k: len(insurance_groups[k]),
+                                        )
+                                        agent["assigned_insurance"] = assigned_ins
 
-                                    for idx in processed_df.index:
-                                        # Skip already allocated rows
-                                        if idx in [
-                                            i
-                                            for ag in agent_allocations
-                                            for i in ag["row_indices"]
-                                        ]:
-                                            continue
+                                    # If already assigned, use that insurance company
+                                    if (
+                                        assigned_ins
+                                        and assigned_ins in insurance_groups
+                                    ):
+                                        same_insurance_rows = insurance_groups[
+                                            assigned_ins
+                                        ]
+                                    else:
+                                        same_insurance_rows = []
 
-                                        # Skip rows with secondary insurance (those go to "Sec + X" agents)
-                                        if secondary_insurance_col and pd.notna(
-                                            processed_df.at[
-                                                idx, secondary_insurance_col
-                                            ]
-                                        ):
-                                            secondary_val = str(
+                                else:
+                                    # Standard Single allocation logic for other agents
+                                    # Get the assigned insurance company (should be set from previous allocations)
+                                    # If not set, find first row where "Dental Primary Ins Carr" matches agent's "Insurance List" capabilities
+                                    assigned_ins = agent.get("assigned_insurance")
+                                    if not assigned_ins:
+                                        agent_insurance_list = agent.get(
+                                            "insurance_companies", []
+                                        )
+
+                                        # Find first available row where insurance from "Dental Primary Ins Carr" matches agent's "Insurance List"
+                                        for idx in processed_df.index:
+                                            # Skip already allocated rows
+                                            if idx in [
+                                                i
+                                                for ag in agent_allocations
+                                                for i in ag["row_indices"]
+                                            ]:
+                                                continue
+
+                                            # Skip rows with secondary insurance (those go to "Sec + X" agents)
+                                            if secondary_insurance_col and pd.notna(
                                                 processed_df.at[
                                                     idx, secondary_insurance_col
                                                 ]
-                                            ).strip()
-                                            if (
-                                                secondary_val
-                                                and secondary_val.lower() != "nan"
                                             ):
-                                                continue
+                                                secondary_val = str(
+                                                    processed_df.at[
+                                                        idx, secondary_insurance_col
+                                                    ]
+                                                ).strip()
+                                                if (
+                                                    secondary_val
+                                                    and secondary_val.lower() != "nan"
+                                                ):
+                                                    continue
 
-                                        # Get insurance company from "Dental Primary Ins Carr" column
-                                        if insurance_carrier_col and pd.notna(
-                                            processed_df.at[idx, insurance_carrier_col]
-                                        ):
-                                            row_insurance = str(
+                                            # Get insurance company from "Dental Primary Ins Carr" column
+                                            if insurance_carrier_col and pd.notna(
                                                 processed_df.at[
                                                     idx, insurance_carrier_col
                                                 ]
-                                            ).strip()
+                                            ):
+                                                row_insurance = str(
+                                                    processed_df.at[
+                                                        idx, insurance_carrier_col
+                                                    ]
+                                                ).strip()
 
-                                            # First check: row insurance must match assigned insurance
-                                            if row_insurance == assigned_ins:
-                                                # Second check: row insurance must be in agent's "Insurance List" (capabilities)
+                                                # Check if row insurance is in agent's "Insurance List" (capabilities)
                                                 can_work = False
                                                 if agent.get("is_senior", False):
                                                     # Senior agents can work with any insurance company
@@ -7856,39 +7937,119 @@ def process_allocation_files_with_dates(
                                                             break
 
                                                 if can_work:
-                                                    same_insurance_rows.append(idx)
+                                                    # Found matching insurance - assign this insurance company to agent
+                                                    assigned_ins = row_insurance
+                                                    agent["assigned_insurance"] = (
+                                                        assigned_ins
+                                                    )
+                                                    break
 
-                                    # Allocate same insurance rows until capacity is full
-                                    if same_insurance_rows:
-                                        allocated_count = 0
-                                        while (
-                                            remaining_capacity > 0
-                                            and allocated_count
-                                            < len(same_insurance_rows)
-                                        ):
-                                            take = min(
-                                                remaining_capacity,
-                                                len(same_insurance_rows)
-                                                - allocated_count,
-                                            )
-                                            if take > 0:
-                                                slice_rows = same_insurance_rows[
-                                                    allocated_count : allocated_count
-                                                    + take
+                                    # For agents without special grouping logic, find unallocated rows with the same insurance company
+                                    if assigned_ins and not needs_special_grouping:
+                                        same_insurance_rows = []
+                                        agent_insurance_list = agent.get(
+                                            "insurance_companies", []
+                                        )
+
+                                        for idx in processed_df.index:
+                                            # Skip already allocated rows
+                                            if idx in [
+                                                i
+                                                for ag in agent_allocations
+                                                for i in ag["row_indices"]
+                                            ]:
+                                                continue
+
+                                            # Skip rows with secondary insurance (those go to "Sec + X" agents)
+                                            if secondary_insurance_col and pd.notna(
+                                                processed_df.at[
+                                                    idx, secondary_insurance_col
                                                 ]
-                                                agent["row_indices"].extend(slice_rows)
-                                                agent["allocated"] += take
-                                                for idx in slice_rows:
+                                            ):
+                                                secondary_val = str(
                                                     processed_df.at[
-                                                        idx, "Agent Name"
-                                                    ] = agent["name"]
-                                                allocated_count += take
-                                                remaining_capacity = (
-                                                    agent["capacity"]
-                                                    - agent["allocated"]
+                                                        idx, secondary_insurance_col
+                                                    ]
+                                                ).strip()
+                                                if (
+                                                    secondary_val
+                                                    and secondary_val.lower() != "nan"
+                                                ):
+                                                    continue
+
+                                            # Get insurance company from "Dental Primary Ins Carr" column
+                                            if insurance_carrier_col and pd.notna(
+                                                processed_df.at[
+                                                    idx, insurance_carrier_col
+                                                ]
+                                            ):
+                                                row_insurance = str(
+                                                    processed_df.at[
+                                                        idx, insurance_carrier_col
+                                                    ]
+                                                ).strip()
+
+                                                # First check: row insurance must match assigned insurance
+                                                if row_insurance == assigned_ins:
+                                                    # Second check: row insurance must be in agent's "Insurance List" (capabilities)
+                                                    can_work = False
+                                                    if agent.get("is_senior", False):
+                                                        # Senior agents can work with any insurance company
+                                                        can_work = True
+                                                    elif not agent_insurance_list:
+                                                        # If no specific companies listed, can work with any
+                                                        can_work = True
+                                                    else:
+                                                        # Check if row insurance matches/is in agent's Insurance List (capabilities)
+                                                        row_insurance_lower = (
+                                                            row_insurance.lower()
+                                                        )
+                                                        for (
+                                                            comp
+                                                        ) in agent_insurance_list:
+                                                            comp_lower = comp.lower()
+                                                            if (
+                                                                row_insurance_lower
+                                                                in comp_lower
+                                                                or comp_lower
+                                                                in row_insurance_lower
+                                                                or row_insurance == comp
+                                                            ):
+                                                                can_work = True
+                                                                break
+
+                                                    if can_work:
+                                                        same_insurance_rows.append(idx)
+                                    else:
+                                        same_insurance_rows = []
+
+                                # Allocate same insurance rows until capacity is full (for both Abdul Hakim and other agents)
+                                if same_insurance_rows:
+                                    allocated_count = 0
+                                    while (
+                                        remaining_capacity > 0
+                                        and allocated_count < len(same_insurance_rows)
+                                    ):
+                                        take = min(
+                                            remaining_capacity,
+                                            len(same_insurance_rows) - allocated_count,
+                                        )
+                                        if take > 0:
+                                            slice_rows = same_insurance_rows[
+                                                allocated_count : allocated_count + take
+                                            ]
+                                            agent["row_indices"].extend(slice_rows)
+                                            agent["allocated"] += take
+                                            for idx in slice_rows:
+                                                processed_df.at[idx, "Agent Name"] = (
+                                                    agent["name"]
                                                 )
-                                            else:
-                                                break
+                                            allocated_count += take
+                                            remaining_capacity = (
+                                                agent["capacity"] - agent["allocated"]
+                                            )
+                                        else:
+                                            break
 
                         # Step 3.8: Global Mix Allocation - Allocate multiple insurance company rows to "Mix" preference agents
                         # Agents with "Mix" preference should get rows from multiple insurance companies (unlike "Single" which gets only one)
@@ -7961,30 +8122,16 @@ def process_allocation_files_with_dates(
                                     if pd.notna(
                                         processed_df.at[idx, insurance_carrier_col]
                                     ):
-                                        row_insurance = str(
+                                        row_insurance_raw = str(
                                             processed_df.at[idx, insurance_carrier_col]
                                         ).strip()
 
-                                        # Check if row insurance is in agent's "Insurance List" (capabilities)
-                                        can_work = False
-                                        if agent.get("is_senior", False):
-                                            # Senior agents can work with any insurance company
-                                            can_work = True
-                                        elif not agent_insurance_list:
-                                            # If no specific companies listed, can work with any
-                                            can_work = True
-                                        else:
-                                            # Check if row insurance matches/is in agent's Insurance List (capabilities)
-                                            row_insurance_lower = row_insurance.lower()
-                                            for comp in agent_insurance_list:
-                                                comp_lower = comp.lower()
-                                                if (
-                                                    row_insurance_lower in comp_lower
-                                                    or comp_lower in row_insurance_lower
-                                                    or row_insurance == comp
-                                                ):
-                                                    can_work = True
-                                                    break
+                                        # Use improved matching function that handles formatting variations and "DD All"
+                                        can_work = check_insurance_match(
+                                            row_insurance_raw,
+                                            agent_insurance_list,
+                                            agent.get("is_senior", False),
+                                        )
 
                                         if can_work:
                                             mix_rows.append(idx)
@@ -9383,7 +9530,8 @@ def process_allocation_files_with_dates(
                     # Get unmatched insurance companies info (if it exists from allocation process)
                     unmatched_info = ""
                     if insurance_carrier_col and unmatched_insurance_companies:
-                        unmatched_info = f"\n🔴 Unmatched Insurance Companies ({len(unmatched_insurance_companies)}): {', '.join(sorted(list(unmatched_insurance_companies))[:5])}{'...' if len(unmatched_insurance_companies) > 5 else ''}\n   ⚠️ These companies were assigned ONLY to senior agents with highest priority."
+                        unmatched_list = [str(comp).strip() for comp in sorted(list(unmatched_insurance_companies))[:5] if comp is not None and not pd.isna(comp)]
+                        unmatched_info = f"\n🔴 Unmatched Insurance Companies ({len(unmatched_insurance_companies)}): {', '.join(unmatched_list)}{'...' if len(unmatched_insurance_companies) > 5 else ''}\n   ⚠️ These companies were assigned ONLY to senior agents with highest priority."
 
                     agent_summary = f"""
 👥 Agent Allocation Summary (Capability-Based):
@@ -9406,10 +9554,12 @@ def process_allocation_files_with_dates(
                         if agent["is_senior"]:
                             insurance_info = " (Can work: Any insurance company)"
                         elif agent["insurance_companies"]:
-                            insurance_info = f" (Can work: {', '.join(agent['insurance_companies'][:2])}{'...' if len(agent['insurance_companies']) > 2 else ''})"
+                            insurance_list = [str(comp).strip() for comp in agent['insurance_companies'][:2] if comp is not None and not pd.isna(comp)]
+                            insurance_info = f" (Can work: {', '.join(insurance_list)}{'...' if len(agent['insurance_companies']) > 2 else ''})"
 
                         if agent["insurance_needs_training"]:
-                            training_info = f" (Needs training: {', '.join(agent['insurance_needs_training'][:2])}{'...' if len(agent['insurance_needs_training']) > 2 else ''})"
+                            training_list = [str(comp).strip() for comp in agent['insurance_needs_training'][:2] if comp is not None and not pd.isna(comp)]
+                            training_info = f" (Needs training: {', '.join(training_list)}{'...' if len(agent['insurance_needs_training']) > 2 else ''})"
                             insurance_info += training_info
 
                         primary = agent.get("assigned_insurance")
@@ -9429,7 +9579,7 @@ def process_allocation_files_with_dates(
                             secondary = [c for c in allocated_carriers if c != primary]
                         primary_info = f" | Primary: {primary}" if primary else ""
                         secondary_info = (
-                            f" | Secondary: {', '.join(secondary[:2])}{'...' if len(secondary) > 2 else ''}"
+                            f" | Secondary: {', '.join([str(c).strip() for c in secondary[:2] if c is not None and not pd.isna(c)])}{'...' if len(secondary) > 2 else ''}"
                             if secondary
                             else ""
                         )

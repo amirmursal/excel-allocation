@@ -12671,20 +12671,41 @@ def get_agent_allocation():
         # Get the specific rows allocated to this agent
         agent_rows = agent_info["allocated"]
         row_indices = agent_info.get("row_indices", [])
+        agent_name = agent_info.get("name", "Unknown")
 
-        # Create a subset of data for this agent using specific row indices
-        if (
-            row_indices
-            and len(row_indices) > 0
-            and len(processed_df) > max(row_indices)
-        ):
-            agent_df = processed_df.iloc[row_indices].copy()
+        # CRITICAL: Filter by Agent Name column first to ensure only this agent's rows are included
+        # This is the most reliable way to ensure correct filtering
+        if "Agent Name" in processed_df.columns:
+            # Filter to only include rows where Agent Name matches this agent exactly
+            agent_df = processed_df[processed_df["Agent Name"] == agent_name].copy()
+            
+            # If no rows found by name, fall back to row_indices
+            if agent_df.empty and row_indices:
+                # Verify row_indices match Agent Name column
+                valid_indices = []
+                for idx in row_indices:
+                    if idx < len(processed_df):
+                        row_agent_name = processed_df.at[idx, "Agent Name"]
+                        # Check if agent name matches (handle NaN/empty values)
+                        if pd.notna(row_agent_name) and str(row_agent_name).strip() == agent_name:
+                            valid_indices.append(idx)
+                
+                if valid_indices:
+                    agent_df = processed_df.iloc[valid_indices].copy()
         else:
-            # Fallback: if row_indices not available, use first N rows
-            if len(processed_df) >= agent_rows:
-                agent_df = processed_df.head(agent_rows).copy()
+            # If Agent Name column doesn't exist, use row_indices
+            if (
+                row_indices
+                and len(row_indices) > 0
+                and len(processed_df) > max(row_indices)
+            ):
+                agent_df = processed_df.iloc[row_indices].copy()
             else:
-                agent_df = processed_df.copy()
+                # Fallback: if row_indices not available, use first N rows
+                if len(processed_df) >= agent_rows:
+                    agent_df = processed_df.head(agent_rows).copy()
+                else:
+                    agent_df = processed_df.copy()
 
         # Add serial number column
         agent_df_with_sr = agent_df.copy()
@@ -12797,21 +12818,41 @@ def download_agent_file():
         agent_rows = agent_info["allocated"]
         row_indices = agent_info.get("row_indices", [])
 
-        # Create a subset of data for this agent using specific row indices
-        if (
-            row_indices
-            and len(row_indices) > 0
-            and len(processed_df) > max(row_indices)
-        ):
-            agent_df = processed_df.iloc[row_indices].copy()
+        # CRITICAL: Filter by Agent Name column first to ensure only this agent's rows are included
+        # This is the most reliable way to ensure correct filtering
+        if "Agent Name" in processed_df.columns:
+            # Filter to only include rows where Agent Name matches this agent exactly
+            agent_df = processed_df[processed_df["Agent Name"] == agent_name].copy()
+            
+            # If no rows found by name, fall back to row_indices
+            if agent_df.empty and row_indices:
+                # Verify row_indices match Agent Name column
+                valid_indices = []
+                for idx in row_indices:
+                    if idx < len(processed_df):
+                        row_agent_name = processed_df.at[idx, "Agent Name"]
+                        # Check if agent name matches (handle NaN/empty values)
+                        if pd.notna(row_agent_name) and str(row_agent_name).strip() == agent_name:
+                            valid_indices.append(idx)
+                
+                if valid_indices:
+                    agent_df = processed_df.iloc[valid_indices].copy()
         else:
-            # Fallback: if row_indices not available, use first N rows
-            if len(processed_df) >= agent_rows:
-                agent_df = processed_df.head(agent_rows).copy()
+            # If Agent Name column doesn't exist, use row_indices
+            if (
+                row_indices
+                and len(row_indices) > 0
+                and len(processed_df) > max(row_indices)
+            ):
+                agent_df = processed_df.iloc[row_indices].copy()
             else:
-                agent_df = processed_df.copy()
+                # Fallback: if row_indices not available, use first N rows
+                if len(processed_df) >= agent_rows:
+                    agent_df = processed_df.head(agent_rows).copy()
+                else:
+                    agent_df = processed_df.copy()
 
-        # Add agent information to the dataframe
+        # Ensure Agent Name column is set correctly for all rows
         agent_df["Agent Name"] = agent_name
         agent_df["Allocated Rows"] = agent_rows
         agent_df["Agent Capacity"] = agent_info["capacity"]
@@ -14240,8 +14281,25 @@ def create_agent_excel_file(agent_name, agent_info):
                 # If it's already a DataFrame
                 main_df = data_file_data
 
-            # Get the actual allocated rows from the processed data using row indices
-            allocated_df = main_df.iloc[row_indices].copy()
+            # CRITICAL: Filter by Agent Name column to ensure only this agent's rows are included
+            if "Agent Name" in main_df.columns:
+                # Filter to only include rows where Agent Name matches this agent exactly
+                allocated_df = main_df[main_df["Agent Name"] == agent_name].copy()
+                
+                # If no rows found by name, verify row_indices match Agent Name
+                if allocated_df.empty:
+                    valid_indices = []
+                    for idx in row_indices:
+                        if idx < len(main_df):
+                            row_agent_name = main_df.at[idx, "Agent Name"]
+                            if pd.notna(row_agent_name) and str(row_agent_name).strip() == agent_name:
+                                valid_indices.append(idx)
+                    
+                    if valid_indices:
+                        allocated_df = main_df.iloc[valid_indices].copy()
+            else:
+                # If Agent Name column doesn't exist, use row_indices directly
+                allocated_df = main_df.iloc[row_indices].copy()
 
         # Create Excel buffer
         excel_buffer = io.BytesIO()

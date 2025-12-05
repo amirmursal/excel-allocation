@@ -4901,6 +4901,19 @@ def should_skip_row_for_allocation(idx, processed_df, remark_col):
     return False
 
 
+# Maximum secondary insurance rows that can be allocated to "Sec + XX" agents
+MAX_SECONDARY_ROWS_PER_AGENT = 10
+
+
+def get_available_secondary_slots(agent):
+    """
+    Get the number of secondary insurance rows that can still be allocated to a "Sec + XX" agent (max 10 total).
+    Returns the number of available slots for secondary insurance rows.
+    """
+    secondary_count = agent.get("secondary_insurance_count", 0)
+    return max(0, MAX_SECONDARY_ROWS_PER_AGENT - secondary_count)
+
+
 def safe_extend_row_indices(
     agent, row_indices_list, processed_df, remark_col, agent_name
 ):
@@ -6979,6 +6992,11 @@ def process_allocation_files_with_dates(
                                 and (a["capacity"] - a["allocated"]) > 0
                             ]
 
+                            # Initialize secondary insurance count for all "Sec + XX" agents
+                            for agent in sec_preference_agents:
+                                if "secondary_insurance_count" not in agent:
+                                    agent["secondary_insurance_count"] = 0
+
                             if sec_preference_agents:
                                 # Find all unallocated rows that have secondary insurance
                                 rows_with_secondary_insurance = []
@@ -7084,9 +7102,21 @@ def process_allocation_files_with_dates(
                                                 for agent in available_sec_single:
                                                     if row_pos >= len(carrier_rows):
                                                         break
-                                                    remaining = (
+                                                    # Calculate remaining capacity
+                                                    remaining_capacity = (
                                                         agent["capacity"]
                                                         - agent["allocated"]
+                                                    )
+                                                    # Calculate remaining secondary insurance slots (max 10)
+                                                    remaining_secondary_slots = (
+                                                        get_available_secondary_slots(
+                                                            agent
+                                                        )
+                                                    )
+                                                    # Take the minimum of capacity and secondary slots
+                                                    remaining = min(
+                                                        remaining_capacity,
+                                                        remaining_secondary_slots,
                                                     )
                                                     if remaining <= 0:
                                                         continue
@@ -7102,6 +7132,17 @@ def process_allocation_files_with_dates(
                                                             slice_rows
                                                         )
                                                         agent["allocated"] += take
+                                                        # Track secondary insurance row count
+                                                        if (
+                                                            "secondary_insurance_count"
+                                                            not in agent
+                                                        ):
+                                                            agent[
+                                                                "secondary_insurance_count"
+                                                            ] = 0
+                                                        agent[
+                                                            "secondary_insurance_count"
+                                                        ] += take
                                                         if (
                                                             agent.get(
                                                                 "assigned_insurance"
@@ -7326,8 +7367,18 @@ def process_allocation_files_with_dates(
                                                 rows_with_secondary_insurance
                                             ):
                                                 break
-                                            remaining = (
+                                            # Calculate remaining capacity
+                                            remaining_capacity = (
                                                 agent["capacity"] - agent["allocated"]
+                                            )
+                                            # Calculate remaining secondary insurance slots (max 10)
+                                            remaining_secondary_slots = (
+                                                get_available_secondary_slots(agent)
+                                            )
+                                            # Take the minimum of capacity and secondary slots
+                                            remaining = min(
+                                                remaining_capacity,
+                                                remaining_secondary_slots,
                                             )
                                             if remaining <= 0:
                                                 continue
@@ -7342,40 +7393,58 @@ def process_allocation_files_with_dates(
                                                         row_pos : row_pos + take
                                                     ]
                                                 )
-                                                # Use safe extend function to filter out "Not to work" rows
-                                                actual_allocated = (
-                                                    safe_extend_row_indices(
-                                                        agent,
-                                                        slice_rows,
-                                                        processed_df,
-                                                        remark_col,
-                                                        agent["name"],
+                                                # Filter out "Not to work" rows manually to track secondary count
+                                                filtered_slice = []
+                                                for idx in slice_rows:
+                                                    if not should_skip_row_for_allocation(
+                                                        idx, processed_df, remark_col
+                                                    ):
+                                                        filtered_slice.append(idx)
+
+                                                if filtered_slice:
+                                                    agent["row_indices"].extend(
+                                                        filtered_slice
                                                     )
-                                                )
+                                                    agent["allocated"] += len(
+                                                        filtered_slice
+                                                    )
+                                                    # Track secondary insurance row count
+                                                    if (
+                                                        "secondary_insurance_count"
+                                                        not in agent
+                                                    ):
+                                                        agent[
+                                                            "secondary_insurance_count"
+                                                        ] = 0
+                                                    agent[
+                                                        "secondary_insurance_count"
+                                                    ] += len(filtered_slice)
+                                                    for idx in filtered_slice:
+                                                        processed_df.at[
+                                                            idx, "Agent Name"
+                                                        ] = agent["name"]
+                                                actual_allocated = len(filtered_slice)
                                                 # Set assigned insurance if not set (use primary insurance carrier)
                                                 if (
                                                     agent.get("assigned_insurance")
                                                     is None
                                                     and insurance_carrier_col
+                                                    and filtered_slice
                                                 ):
-                                                    if slice_rows and pd.notna(
+                                                    if pd.notna(
                                                         processed_df.at[
-                                                            slice_rows[0],
+                                                            filtered_slice[0],
                                                             insurance_carrier_col,
                                                         ]
                                                     ):
                                                         agent["assigned_insurance"] = (
                                                             str(
                                                                 processed_df.at[
-                                                                    slice_rows[0],
+                                                                    filtered_slice[0],
                                                                     insurance_carrier_col,
                                                                 ]
                                                             ).strip()
                                                         )
-                                                for idx in slice_rows:
-                                                    processed_df.at[
-                                                        idx, "Agent Name"
-                                                    ] = agent["name"]
                                                 row_pos += take
 
                                     # After allocating secondary insurance rows, if agents still have capacity,

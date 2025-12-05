@@ -12667,7 +12667,6 @@ def validate_agent_work_file_columns(file_data):
         "Patient Name",
         "Dental Primary Ins Carr",
         "Dental Secondary Ins Carr",
-        "Provider Name",
         "Received date",
         "Type",
         "Status Code",

@@ -5696,6 +5696,7 @@ def process_allocation_files_with_dates(
                 shift_group_col = None
                 domain_col = None
                 allocation_preference_col = None
+                status_col = None
                 for col in agent_df.columns:
                     col_lower = col.lower()
                     if "agent" in col_lower and "name" in col_lower:
@@ -5748,6 +5749,8 @@ def process_allocation_files_with_dates(
                         domain_col = col
                     elif "allocation" in col_lower and "preference" in col_lower:
                         allocation_preference_col = col
+                    elif col_lower == "status":
+                        status_col = col
 
                 # Use CC column if available, otherwise fallback to counts_col
                 capacity_col = cc_col if cc_col else counts_col
@@ -5777,10 +5780,24 @@ def process_allocation_files_with_dates(
                         columns_to_select.append(domain_col)
                     if allocation_preference_col:
                         columns_to_select.append(allocation_preference_col)
+                    if status_col:
+                        columns_to_select.append(status_col)
 
                     agent_data = agent_df[columns_to_select].dropna(
                         subset=[agent_name_col, capacity_col]
                     )
+
+                    # Filter out agents with "Status" = "No Allocation"
+                    if status_col:
+                        agent_data = agent_data[
+                            ~(
+                                agent_data[status_col]
+                                .astype(str)
+                                .str.strip()
+                                .str.upper()
+                                .isin(["NO ALLOCATION", "NOALLOCATION"])
+                            )
+                        ]
 
                     # Filter out "Auditor" role based on Category column (priority) or role column (fallback)
                     if category_col:
@@ -8191,10 +8208,10 @@ def process_allocation_files_with_dates(
                                     # Get the assigned insurance company (should be set from previous allocations)
                                     # If not set, find first row where "Dental Primary Ins Carr" matches agent's "Insurance List" capabilities
                                     assigned_ins = agent.get("assigned_insurance")
-                                    if not assigned_ins:
-                                        agent_insurance_list = agent.get(
-                                            "insurance_companies", []
-                                        )
+                                if not assigned_ins:
+                                    agent_insurance_list = agent.get(
+                                        "insurance_companies", []
+                                    )
 
                                     # Find first available row where insurance from "Dental Primary Ins Carr" matches agent's "Insurance List"
                                     for idx in processed_df.index:
@@ -8269,9 +8286,9 @@ def process_allocation_files_with_dates(
                                     # For agents without special grouping logic, find unallocated rows with the same insurance company
                                     if assigned_ins and not needs_special_grouping:
                                         same_insurance_rows = []
-                                        agent_insurance_list = agent.get(
-                                            "insurance_companies", []
-                                        )
+                                    agent_insurance_list = agent.get(
+                                        "insurance_companies", []
+                                    )
 
                                     for idx in processed_df.index:
                                         # Skip already allocated rows
@@ -8375,15 +8392,15 @@ def process_allocation_files_with_dates(
                                                             comp
                                                         ) in agent_insurance_list:
                                                             comp_lower = comp.lower()
-                                                            if (
-                                                                row_insurance_lower
-                                                                in comp_lower
-                                                                or comp_lower
-                                                                in row_insurance_lower
-                                                                or row_insurance == comp
-                                                            ):
-                                                                can_work = True
-                                                                break
+                                                        if (
+                                                            row_insurance_lower
+                                                            in comp_lower
+                                                            or comp_lower
+                                                            in row_insurance_lower
+                                                            or row_insurance == comp
+                                                        ):
+                                                            can_work = True
+                                                            break
 
                                                 if can_work:
                                                     same_insurance_rows.append(idx)
@@ -10292,11 +10309,11 @@ def process_allocation_files_with_dates(
                         unmatched_info = f"\n🔴 Unmatched Insurance Companies ({len(unmatched_insurance_companies)}): {', '.join(unmatched_list)}{'...' if len(unmatched_insurance_companies) > 5 else ''}\n   ⚠️ These companies were assigned ONLY to senior agents with highest priority."
 
                     agent_summary = f"""
-                    👥 Agent Allocation Summary (Capability-Based):
-                    - Total Agents: {total_agents}
-                    - Agents with Work: {agents_with_work}
+👥 Agent Allocation Summary (Capability-Based):
+- Total Agents: {total_agents}
+- Agents with Work: {agents_with_work}
                     - Total Rows to Allocate: {total_rows_excluding_not_to_work}
-                    - Total Allocated: {total_allocated}
+- Total Allocated: {total_allocated}
                     - Remaining Unallocated: {total_rows_excluding_not_to_work - total_allocated}
 - Insurance Matching: {'Enabled' if insurance_carrier_col else 'Disabled'}
 {unmatched_info}

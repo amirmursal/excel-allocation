@@ -4904,6 +4904,9 @@ def should_skip_row_for_allocation(idx, processed_df, remark_col):
 # Maximum secondary insurance rows that can be allocated to "Sec + XX" agents
 MAX_SECONDARY_ROWS_PER_AGENT = 10
 
+# Maximum rows per appointment date that can be allocated to any agent
+MAX_ROWS_PER_APPOINTMENT_DATE = 20
+
 
 def get_available_secondary_slots(agent):
     """
@@ -4914,11 +4917,64 @@ def get_available_secondary_slots(agent):
     return max(0, MAX_SECONDARY_ROWS_PER_AGENT - secondary_count)
 
 
+def can_allocate_row_by_appointment_date(agent, row_idx, processed_df, appointment_date_col):
+    """
+    Check if a row can be allocated to an agent based on appointment date limit (max 20 per date).
+    Returns True if row can be allocated, False otherwise.
+    Also updates the agent's appointment_date_counts if allocation is allowed.
+    """
+    if not appointment_date_col or appointment_date_col not in processed_df.columns:
+        return True  # No appointment date column - allow allocation
+    
+    if row_idx >= len(processed_df):
+        return False
+    
+    # Initialize appointment date tracking for agent if not exists
+    if "appointment_date_counts" not in agent:
+        agent["appointment_date_counts"] = {}
+    
+    # Get appointment date for this row
+    appointment_date = None
+    if pd.notna(processed_df.at[row_idx, appointment_date_col]):
+        appointment_date_val = processed_df.at[row_idx, appointment_date_col]
+        # Convert to date if it's datetime
+        if hasattr(appointment_date_val, "date"):
+            appointment_date = appointment_date_val.date()
+        elif isinstance(appointment_date_val, str):
+            try:
+                # Try to parse date string
+                from datetime import datetime
+                appointment_date = datetime.strptime(
+                    appointment_date_val.split()[0], "%Y-%m-%d"
+                ).date()
+            except:
+                appointment_date = str(appointment_date_val).strip()
+        else:
+            appointment_date = str(appointment_date_val).strip()
+    
+    if appointment_date:
+        # Convert to string key for dictionary
+        date_key = str(appointment_date)
+        # Check if agent already has 20 rows for this appointment date
+        current_count = agent["appointment_date_counts"].get(date_key, 0)
+        if current_count < MAX_ROWS_PER_APPOINTMENT_DATE:
+            # Update count and allow allocation
+            agent["appointment_date_counts"][date_key] = current_count + 1
+            return True
+        else:
+            # Agent already has 20 rows for this appointment date
+            return False
+    else:
+        # If no appointment date, allow allocation (fallback)
+        return True
+
+
 def safe_extend_row_indices(
-    agent, row_indices_list, processed_df, remark_col, agent_name
+    agent, row_indices_list, processed_df, remark_col, agent_name, appointment_date_col=None
 ):
     """
     Safely extend agent's row_indices, filtering out "Not to work" rows.
+    Also enforces limit of 20 rows per appointment date per agent.
     Returns the number of rows actually allocated.
     """
     filtered_indices = [
@@ -4926,6 +4982,20 @@ def safe_extend_row_indices(
         for idx in row_indices_list
         if not should_skip_row_for_allocation(idx, processed_df, remark_col)
     ]
+
+    # Filter by appointment date limit (max 20 rows per appointment date per agent)
+    if appointment_date_col and appointment_date_col in processed_df.columns:
+        final_filtered_indices = []
+        for idx in filtered_indices:
+            if idx < len(processed_df):
+                if can_allocate_row_by_appointment_date(
+                    agent,
+                    idx,
+                    processed_df,
+                    appointment_date_col,
+                ):
+                    final_filtered_indices.append(idx)
+        filtered_indices = final_filtered_indices
 
     if filtered_indices:
         agent["row_indices"].extend(filtered_indices)
@@ -6540,19 +6610,30 @@ def process_allocation_files_with_dates(
                                                 agent_idx % len(available_pb_agents)
                                             ]
 
+                                            # Check capacity and appointment date limit (max 20 per date)
                                             if agent["capacity"] > agent["allocated"]:
-                                                agent["row_indices"].append(
-                                                    ntbp_row_idx
-                                                )
-                                                agent["allocated"] += 1
-                                                processed_df.at[
-                                                    ntbp_row_idx, "Agent Name"
-                                                ] = agent["name"]
-                                                assigned = True
-                                                agent_idx += (
-                                                    1  # Move to next agent for next row
-                                                )
-                                                break
+                                                # Check appointment date limit before allocating
+                                                if can_allocate_row_by_appointment_date(
+                                                    agent,
+                                                    ntbp_row_idx,
+                                                    processed_df,
+                                                    appointment_date_col,
+                                                ):
+                                                    agent["row_indices"].append(
+                                                        ntbp_row_idx
+                                                    )
+                                                    agent["allocated"] += 1
+                                                    processed_df.at[
+                                                        ntbp_row_idx, "Agent Name"
+                                                    ] = agent["name"]
+                                                    assigned = True
+                                                    agent_idx += (
+                                                        1  # Move to next agent for next row
+                                                    )
+                                                    break
+                                                else:
+                                                    # Can't allocate due to appointment date limit, try next agent
+                                                    agent_idx += 1
                                             else:
                                                 # This agent is full, try next one
                                                 agent_idx += 1
@@ -6600,7 +6681,7 @@ def process_allocation_files_with_dates(
                                                 assigned = remaining_ntbp_rows[
                                                     :rows_to_assign
                                                 ]
-                                                # Safety check: Filter out any "Not to work" rows before allocating
+                                                # Safety check: Filter out any "Not to work" rows and check appointment date limit
                                                 filtered_assigned = []
                                                 for idx in assigned:
                                                     if remark_col and pd.notna(
@@ -6622,7 +6703,14 @@ def process_allocation_files_with_dates(
                                                             == "NOT TO WORK"
                                                         ):
                                                             continue  # Skip this row
-                                                    filtered_assigned.append(idx)
+                                                    # Check appointment date limit (max 20 per date)
+                                                    if can_allocate_row_by_appointment_date(
+                                                        agent,
+                                                        idx,
+                                                        processed_df,
+                                                        appointment_date_col,
+                                                    ):
+                                                        filtered_assigned.append(idx)
 
                                                 if filtered_assigned:
                                                     agent["row_indices"].extend(
@@ -6759,16 +6847,26 @@ def process_allocation_files_with_dates(
                                                     ):
                                                         continue  # Skip this row
 
-                                                agent["row_indices"].append(ntc_row_idx)
-                                                agent["allocated"] += 1
-                                                processed_df.at[
-                                                    ntc_row_idx, "Agent Name"
-                                                ] = agent["name"]
-                                                assigned = True
-                                                agent_idx += (
-                                                    1  # Move to next agent for next row
-                                                )
-                                                break
+                                                # Check appointment date limit (max 20 per date)
+                                                if can_allocate_row_by_appointment_date(
+                                                    agent,
+                                                    ntc_row_idx,
+                                                    processed_df,
+                                                    appointment_date_col,
+                                                ):
+                                                    agent["row_indices"].append(ntc_row_idx)
+                                                    agent["allocated"] += 1
+                                                    processed_df.at[
+                                                        ntc_row_idx, "Agent Name"
+                                                    ] = agent["name"]
+                                                    assigned = True
+                                                    agent_idx += (
+                                                        1  # Move to next agent for next row
+                                                    )
+                                                    break
+                                                else:
+                                                    # Can't allocate due to appointment date limit, try next agent
+                                                    agent_idx += 1
                                             else:
                                                 # This agent is full, try next one
                                                 agent_idx += 1
@@ -6816,7 +6914,7 @@ def process_allocation_files_with_dates(
                                                 assigned = remaining_ntc_rows[
                                                     :rows_to_assign
                                                 ]
-                                                # Safety check: Filter out any "Not to work" rows before allocating
+                                                # Safety check: Filter out any "Not to work" rows and check appointment date limit
                                                 filtered_assigned = []
                                                 for idx in assigned:
                                                     if remark_col and pd.notna(
@@ -6838,7 +6936,14 @@ def process_allocation_files_with_dates(
                                                             == "NOT TO WORK"
                                                         ):
                                                             continue  # Skip this row
-                                                    filtered_assigned.append(idx)
+                                                    # Check appointment date limit (max 20 per date)
+                                                    if can_allocate_row_by_appointment_date(
+                                                        agent,
+                                                        idx,
+                                                        processed_df,
+                                                        appointment_date_col,
+                                                    ):
+                                                        filtered_assigned.append(idx)
 
                                                 if filtered_assigned:
                                                     agent["row_indices"].extend(
@@ -6970,6 +7075,7 @@ def process_allocation_files_with_dates(
                                                 processed_df,
                                                 remark_col,
                                                 agent["name"],
+                                                appointment_date_col,
                                             )
                                             allocated_count += take
                                             remaining_capacity = (
@@ -7128,35 +7234,50 @@ def process_allocation_files_with_dates(
                                                         slice_rows = carrier_rows[
                                                             row_pos : row_pos + take
                                                         ]
-                                                        agent["row_indices"].extend(
-                                                            slice_rows
-                                                        )
-                                                        agent["allocated"] += take
-                                                        # Track secondary insurance row count
-                                                        if (
-                                                            "secondary_insurance_count"
-                                                            not in agent
-                                                        ):
+                                                        # Filter by appointment date limit (max 20 per date)
+                                                        final_slice = []
+                                                        for idx in slice_rows:
+                                                            if can_allocate_row_by_appointment_date(
+                                                                agent,
+                                                                idx,
+                                                                processed_df,
+                                                                appointment_date_col,
+                                                            ):
+                                                                final_slice.append(idx)
+                                                        
+                                                        if final_slice:
+                                                            agent["row_indices"].extend(
+                                                                final_slice
+                                                            )
+                                                            agent["allocated"] += len(final_slice)
+                                                            # Track secondary insurance row count
+                                                            if (
+                                                                "secondary_insurance_count"
+                                                                not in agent
+                                                            ):
+                                                                agent[
+                                                                    "secondary_insurance_count"
+                                                                ] = 0
                                                             agent[
                                                                 "secondary_insurance_count"
-                                                            ] = 0
-                                                        agent[
-                                                            "secondary_insurance_count"
-                                                        ] += take
-                                                        if (
-                                                            agent.get(
-                                                                "assigned_insurance"
-                                                            )
-                                                            is None
-                                                        ):
-                                                            agent[
-                                                                "assigned_insurance"
-                                                            ] = carrier
-                                                        for idx in slice_rows:
-                                                            processed_df.at[
-                                                                idx, "Agent Name"
-                                                            ] = agent["name"]
-                                                        row_pos += take
+                                                            ] += len(final_slice)
+                                                            if (
+                                                                agent.get(
+                                                                    "assigned_insurance"
+                                                                )
+                                                                is None
+                                                            ):
+                                                                agent[
+                                                                    "assigned_insurance"
+                                                                ] = carrier
+                                                            for idx in final_slice:
+                                                                processed_df.at[
+                                                                    idx, "Agent Name"
+                                                                ] = agent["name"]
+                                                            row_pos += len(final_slice)
+                                                        else:
+                                                            # No rows could be allocated due to appointment date limit, move to next agent
+                                                            break
                                                         # Track this agent for same insurance allocation
                                                         agents_with_secondary.append(
                                                             agent
@@ -7393,13 +7514,20 @@ def process_allocation_files_with_dates(
                                                         row_pos : row_pos + take
                                                     ]
                                                 )
-                                                # Filter out "Not to work" rows manually to track secondary count
+                                                # Filter out "Not to work" rows and check appointment date limit
                                                 filtered_slice = []
                                                 for idx in slice_rows:
                                                     if not should_skip_row_for_allocation(
                                                         idx, processed_df, remark_col
                                                     ):
-                                                        filtered_slice.append(idx)
+                                                        # Check appointment date limit (max 20 per date)
+                                                        if can_allocate_row_by_appointment_date(
+                                                            agent,
+                                                            idx,
+                                                            processed_df,
+                                                            appointment_date_col,
+                                                        ):
+                                                            filtered_slice.append(idx)
 
                                                 if filtered_slice:
                                                     agent["row_indices"].extend(
@@ -8116,6 +8244,7 @@ def process_allocation_files_with_dates(
                                                 processed_df,
                                                 remark_col,
                                                 agent["name"],
+                                                appointment_date_col,
                                             )
                                             allocated_count += take
                                             remaining_capacity = (
@@ -8638,6 +8767,7 @@ def process_allocation_files_with_dates(
                                                 processed_df,
                                                 remark_col,
                                                 agent["name"],
+                                                appointment_date_col,
                                             )
                                             allocated_count += take
                                             remaining_capacity = (

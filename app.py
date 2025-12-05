@@ -23,6 +23,7 @@ import re
 from datetime import datetime, timedelta
 from werkzeug.utils import secure_filename
 from werkzeug.security import generate_password_hash, check_password_hash
+import hashlib
 import tempfile
 import io
 import uuid
@@ -121,11 +122,27 @@ class User(db.Model):
 
     def set_password(self, password):
         """Hash and set password"""
-        self.password_hash = generate_password_hash(password)
+        # Use pbkdf2:sha256 method to avoid scrypt compatibility issues
+        self.password_hash = generate_password_hash(password, method="pbkdf2:sha256")
 
     def check_password(self, password):
         """Check if provided password matches hash"""
-        return check_password_hash(self.password_hash, password)
+        # Check if hash uses scrypt (which isn't available)
+        if self.password_hash and self.password_hash.startswith("scrypt:"):
+            # Can't verify scrypt hash - return False to trigger rehashing in login route
+            return False
+
+        try:
+            return check_password_hash(self.password_hash, password)
+        except (AttributeError, ValueError) as e:
+            # Handle case where hashlib.scrypt is not available or other hash issues
+            if "scrypt" in str(e).lower() or (
+                self.password_hash and "scrypt" in self.password_hash.lower()
+            ):
+                # If hash uses scrypt, we can't verify it - return False to trigger rehashing
+                return False
+            # For other errors, re-raise
+            raise
 
     def to_dict(self):
         """Convert user to dictionary"""
@@ -4852,11 +4869,93 @@ def expand_insurance_groups(insurance_list_str):
         )
 
     # Join back with semicolon - ensure all items are strings
-    expanded_companies_str = [str(comp).strip() for comp in expanded_companies if comp is not None and not pd.isna(comp)]
-    return "; ".join(expanded_companies_str) if expanded_companies_str else insurance_list_str
+    expanded_companies_str = [
+        str(comp).strip()
+        for comp in expanded_companies
+        if comp is not None and not pd.isna(comp)
+    ]
+    return (
+        "; ".join(expanded_companies_str)
+        if expanded_companies_str
+        else insurance_list_str
+    )
 
 
-def check_insurance_match(row_insurance, agent_insurance_list, is_senior=False):
+def should_skip_row_for_allocation(idx, processed_df, remark_col):
+    """
+    Check if a row should be skipped for allocation (e.g., "Not to work" remark).
+    Returns True if row should be skipped, False otherwise.
+    """
+    if remark_col and remark_col in processed_df.columns:
+        if pd.notna(processed_df.at[idx, remark_col]):
+            remark_val = str(processed_df.at[idx, remark_col]).strip().upper()
+            # Skip rows with "Not to work" remark (check multiple variations)
+            remark_val_clean = remark_val.replace("-", " ").replace("_", " ").strip()
+            if (
+                "NOT TO WORK" in remark_val
+                or remark_val == "NOT TO WORK"
+                or "NOTTOWORK" in remark_val.replace(" ", "")
+                or remark_val_clean == "NOT TO WORK"
+            ):
+                return True
+    return False
+
+
+def safe_extend_row_indices(
+    agent, row_indices_list, processed_df, remark_col, agent_name
+):
+    """
+    Safely extend agent's row_indices, filtering out "Not to work" rows.
+    Returns the number of rows actually allocated.
+    """
+    filtered_indices = [
+        idx
+        for idx in row_indices_list
+        if not should_skip_row_for_allocation(idx, processed_df, remark_col)
+    ]
+
+    if filtered_indices:
+        agent["row_indices"].extend(filtered_indices)
+        agent["allocated"] += len(filtered_indices)
+        for idx in filtered_indices:
+            processed_df.at[idx, "Agent Name"] = agent_name
+
+    return len(filtered_indices)
+
+
+# Insurance companies that "Afreen Ansari" can work with (in addition to her regular list)
+AFREEN_ANSARI_ADDITIONAL_INSURANCE = [
+    "Beam",
+    "Best Life",
+    "Careington Benefit Solutions",
+    "Cypress Ancillary Benefits",
+    "Delta Denta WI",
+    "Delta MN CDMN1 07000",
+    "Employer Driven Insurance Services (E.D.I.S",
+    "Meritain",
+    "MODA HEALTH",
+    "NESIKA HEALTH LLC",
+    "NTCA",
+    "ODS/Moda",
+    "Pacific Life Dental",
+    "PACIFIC SOURCE",
+    "Physicians Mutual",
+    "Purchase & Referred Care",
+    "Reliance Standard",
+    "Southwest Service Administrators",
+    "Superior Dental Care",
+    "TRUST DENTAL CLAIMS",
+    "UHC",
+    "UMR",
+    "Unum",
+    "Westfield Dental Membership",
+    "Zenith American Solutions",
+]
+
+
+def check_insurance_match(
+    row_insurance, agent_insurance_list, is_senior=False, agent_name=None
+):
     """
     Check if a row's insurance company matches any of the agent's insurance capabilities.
     Handles formatting variations, especially for DD Toolkit/Toolkits/DD INS variations.
@@ -4865,12 +4964,39 @@ def check_insurance_match(row_insurance, agent_insurance_list, is_senior=False):
         row_insurance: Insurance company name from the data row
         agent_insurance_list: List of insurance companies the agent can work with
         is_senior: Whether the agent is senior (can work with any insurance)
+        agent_name: Name of the agent (for special cases like "Afreen Ansari")
 
     Returns:
         True if the row insurance matches agent capabilities, False otherwise
     """
     if is_senior:
         return True
+
+    # Special case: "Afreen Ansari" can work with additional insurance companies
+    if agent_name == "Afreen Ansari":
+        # Format row insurance for comparison
+        formatted_row_insurance = format_insurance_company_name(row_insurance)
+        if pd.isna(formatted_row_insurance) or not formatted_row_insurance:
+            formatted_row_insurance = (
+                str(row_insurance).strip() if row_insurance is not None else ""
+            )
+        else:
+            formatted_row_insurance = str(formatted_row_insurance).strip()
+
+        formatted_row_lower = (
+            formatted_row_insurance.lower().strip() if formatted_row_insurance else ""
+        )
+
+        # Check against Afreen Ansari's additional insurance list
+        for allowed_insurance in AFREEN_ANSARI_ADDITIONAL_INSURANCE:
+            allowed_lower = str(allowed_insurance).strip().lower()
+            # Exact match or substring match
+            if (
+                formatted_row_lower == allowed_lower
+                or allowed_lower in formatted_row_lower
+                or formatted_row_lower in allowed_lower
+            ):
+                return True
 
     if not agent_insurance_list:
         return True
@@ -4882,18 +5008,22 @@ def check_insurance_match(row_insurance, agent_insurance_list, is_senior=False):
         if pd.isna(row_insurance):
             formatted_row_insurance = ""
         else:
-            formatted_row_insurance = str(row_insurance).strip() if row_insurance is not None else ""
+            formatted_row_insurance = (
+                str(row_insurance).strip() if row_insurance is not None else ""
+            )
     else:
         formatted_row_insurance = str(formatted_row_insurance).strip()
 
-    formatted_row_lower = formatted_row_insurance.lower().strip() if formatted_row_insurance else ""
+    formatted_row_lower = (
+        formatted_row_insurance.lower().strip() if formatted_row_insurance else ""
+    )
 
     # Check against each agent capability
     for comp in agent_insurance_list:
         # Skip if comp is NaN/None
         if pd.isna(comp) or comp is None:
             continue
-            
+
         # Format the agent's insurance capability
         formatted_comp = format_insurance_company_name(comp)
         # Handle NaN/None/float values
@@ -5049,7 +5179,13 @@ def detect_and_assign_new_insurance_companies(
                     if pd.notna(row[insurance_working_col])
                     else ""
                 )
-                new_companies_str = "; ".join([str(comp).strip() for comp in new_insurance_companies if comp is not None and not pd.isna(comp)])
+                new_companies_str = "; ".join(
+                    [
+                        str(comp).strip()
+                        for comp in new_insurance_companies
+                        if comp is not None and not pd.isna(comp)
+                    ]
+                )
 
                 if current_companies:
                     updated_companies = f"{current_companies}; {new_companies_str}"
@@ -6105,9 +6241,14 @@ def process_allocation_files_with_dates(
                                 all_data_insurance_companies.add(insurance_carrier)
 
                         # Collect all insurance companies from non-senior agents (normalize to lowercase for comparison)
+                        # Exclude "Afreen Ansari" from this check so unmatched insurance companies can be allocated to her
                         agent_insurance_lower = set()
                         for agent in agent_allocations:
-                            if not agent["is_senior"] and agent["insurance_companies"]:
+                            if (
+                                not agent["is_senior"]
+                                and agent["name"] != "Afreen Ansari"
+                                and agent["insurance_companies"]
+                            ):
                                 for comp in agent["insurance_companies"]:
                                     if comp != "ALL_COMPANIES":
                                         agent_insurance_lower.add(comp.strip().lower())
@@ -6285,6 +6426,12 @@ def process_allocation_files_with_dates(
                                         .strip()
                                         .upper()
                                     )
+                                    # Skip rows with "Not to work" remark - they should never be allocated
+                                    if (
+                                        "NOT TO WORK" in row_remark
+                                        or row_remark == "NOT TO WORK"
+                                    ):
+                                        continue
                                     if row_remark == "NTBP":
                                         all_ntbp_rows.append(idx)
 
@@ -6309,7 +6456,11 @@ def process_allocation_files_with_dates(
                                 else:
                                     agent_summary += f"\n⚠️ Warning: Found {len(all_ntbp_rows)} NTBP rows but 'Allocation Preference' column not found. NTBP rows will remain unallocated."
                             else:
-                                pb_names_safe = [str(name).strip() for name in pb_agent_names[:5] if name is not None and not pd.isna(name)]
+                                pb_names_safe = [
+                                    str(name).strip()
+                                    for name in pb_agent_names[:5]
+                                    if name is not None and not pd.isna(name)
+                                ]
                                 agent_summary += f"\n✅ Found {len(agents_with_pb_preference)} agent(s) with PB preference ({', '.join(pb_names_safe)}{'...' if len(pb_agent_names) > 5 else ''}) for {len(all_ntbp_rows)} NTBP rows"
 
                         # Only allocate NTBP rows if we have PB preference agents
@@ -6419,12 +6570,41 @@ def process_allocation_files_with_dates(
                                                 assigned = remaining_ntbp_rows[
                                                     :rows_to_assign
                                                 ]
-                                                agent["row_indices"].extend(assigned)
-                                                agent["allocated"] += rows_to_assign
+                                                # Safety check: Filter out any "Not to work" rows before allocating
+                                                filtered_assigned = []
                                                 for idx in assigned:
-                                                    processed_df.at[
-                                                        idx, "Agent Name"
-                                                    ] = agent["name"]
+                                                    if remark_col and pd.notna(
+                                                        processed_df.at[idx, remark_col]
+                                                    ):
+                                                        remark_check = (
+                                                            str(
+                                                                processed_df.at[
+                                                                    idx, remark_col
+                                                                ]
+                                                            )
+                                                            .strip()
+                                                            .upper()
+                                                        )
+                                                        if (
+                                                            "NOT TO WORK"
+                                                            in remark_check
+                                                            or remark_check
+                                                            == "NOT TO WORK"
+                                                        ):
+                                                            continue  # Skip this row
+                                                    filtered_assigned.append(idx)
+
+                                                if filtered_assigned:
+                                                    agent["row_indices"].extend(
+                                                        filtered_assigned
+                                                    )
+                                                    agent["allocated"] += len(
+                                                        filtered_assigned
+                                                    )
+                                                    for idx in filtered_assigned:
+                                                        processed_df.at[
+                                                            idx, "Agent Name"
+                                                        ] = agent["name"]
                                                 remaining_ntbp_rows = (
                                                     remaining_ntbp_rows[rows_to_assign:]
                                                 )
@@ -6449,6 +6629,12 @@ def process_allocation_files_with_dates(
                                         .strip()
                                         .upper()
                                     )
+                                    # Skip rows with "Not to work" remark - they should never be allocated
+                                    if (
+                                        "NOT TO WORK" in row_remark
+                                        or row_remark == "NOT TO WORK"
+                                    ):
+                                        continue
                                     if row_remark == "NTC":
                                         all_ntc_rows.append(idx)
 
@@ -6471,7 +6657,11 @@ def process_allocation_files_with_dates(
                                 else:
                                     agent_summary += f"\n⚠️ Warning: Found {len(all_ntc_rows)} NTC rows but 'Allocation Preference' column not found. NTC rows will remain unallocated."
                             else:
-                                ntc_names_safe = [str(name).strip() for name in ntc_agent_names[:5] if name is not None and not pd.isna(name)]
+                                ntc_names_safe = [
+                                    str(name).strip()
+                                    for name in ntc_agent_names[:5]
+                                    if name is not None and not pd.isna(name)
+                                ]
                                 agent_summary += f"\n✅ Found {len(agents_with_ntc_preference)} agent(s) with NTC preference ({', '.join(ntc_names_safe)}{'...' if len(ntc_agent_names) > 5 else ''}) for {len(all_ntc_rows)} NTC rows"
 
                         # Only allocate NTC rows if we have NTC preference agents
@@ -6518,6 +6708,27 @@ def process_allocation_files_with_dates(
                                             ]
 
                                             if agent["capacity"] > agent["allocated"]:
+                                                # Safety check: Verify this is not a "Not to work" row before allocating
+                                                if remark_col and pd.notna(
+                                                    processed_df.at[
+                                                        ntc_row_idx, remark_col
+                                                    ]
+                                                ):
+                                                    remark_check = (
+                                                        str(
+                                                            processed_df.at[
+                                                                ntc_row_idx, remark_col
+                                                            ]
+                                                        )
+                                                        .strip()
+                                                        .upper()
+                                                    )
+                                                    if (
+                                                        "NOT TO WORK" in remark_check
+                                                        or remark_check == "NOT TO WORK"
+                                                    ):
+                                                        continue  # Skip this row
+
                                                 agent["row_indices"].append(ntc_row_idx)
                                                 agent["allocated"] += 1
                                                 processed_df.at[
@@ -6575,12 +6786,41 @@ def process_allocation_files_with_dates(
                                                 assigned = remaining_ntc_rows[
                                                     :rows_to_assign
                                                 ]
-                                                agent["row_indices"].extend(assigned)
-                                                agent["allocated"] += rows_to_assign
+                                                # Safety check: Filter out any "Not to work" rows before allocating
+                                                filtered_assigned = []
                                                 for idx in assigned:
-                                                    processed_df.at[
-                                                        idx, "Agent Name"
-                                                    ] = agent["name"]
+                                                    if remark_col and pd.notna(
+                                                        processed_df.at[idx, remark_col]
+                                                    ):
+                                                        remark_check = (
+                                                            str(
+                                                                processed_df.at[
+                                                                    idx, remark_col
+                                                                ]
+                                                            )
+                                                            .strip()
+                                                            .upper()
+                                                        )
+                                                        if (
+                                                            "NOT TO WORK"
+                                                            in remark_check
+                                                            or remark_check
+                                                            == "NOT TO WORK"
+                                                        ):
+                                                            continue  # Skip this row
+                                                    filtered_assigned.append(idx)
+
+                                                if filtered_assigned:
+                                                    agent["row_indices"].extend(
+                                                        filtered_assigned
+                                                    )
+                                                    agent["allocated"] += len(
+                                                        filtered_assigned
+                                                    )
+                                                    for idx in filtered_assigned:
+                                                        processed_df.at[
+                                                            idx, "Agent Name"
+                                                        ] = agent["name"]
                                                 remaining_ntc_rows = remaining_ntc_rows[
                                                     rows_to_assign:
                                                 ]
@@ -6652,6 +6892,12 @@ def process_allocation_files_with_dates(
                                         # Skip NTC rows (already allocated in Step 3.5)
                                         if remark_val == "NTC":
                                             continue
+                                        # Skip rows with "Not to work" remark
+                                        if (
+                                            "NOT TO WORK" in remark_val
+                                            or remark_val == "NOT TO WORK"
+                                        ):
+                                            continue
 
                                     # Get insurance company from "Dental Primary Ins Carr" column
                                     if pd.notna(
@@ -6666,6 +6912,7 @@ def process_allocation_files_with_dates(
                                             row_insurance_raw,
                                             agent_insurance_list,
                                             agent.get("is_senior", False),
+                                            agent.get("name"),
                                         )
 
                                         if can_work:
@@ -6686,12 +6933,14 @@ def process_allocation_files_with_dates(
                                             slice_rows = mix_ntc_rows[
                                                 allocated_count : allocated_count + take
                                             ]
-                                            agent["row_indices"].extend(slice_rows)
-                                            agent["allocated"] += take
-                                            for idx in slice_rows:
-                                                processed_df.at[idx, "Agent Name"] = (
-                                                    agent["name"]
-                                                )
+                                            # Use safe extend function to filter out "Not to work" rows
+                                            actual_allocated = safe_extend_row_indices(
+                                                agent,
+                                                slice_rows,
+                                                processed_df,
+                                                remark_col,
+                                                agent["name"],
+                                            )
                                             allocated_count += take
                                             remaining_capacity = (
                                                 agent["capacity"] - agent["allocated"]
@@ -6738,7 +6987,13 @@ def process_allocation_files_with_dates(
                                             secondary_val
                                             and secondary_val.lower() != "nan"
                                         ):
-                                            rows_with_secondary_insurance.append(idx)
+                                            # Skip "Not to work" rows before adding to list
+                                            if not should_skip_row_for_allocation(
+                                                idx, processed_df, remark_col
+                                            ):
+                                                rows_with_secondary_insurance.append(
+                                                    idx
+                                                )
 
                                 if rows_with_secondary_insurance:
                                     # Allocate secondary insurance rows to "Sec + X" agents
@@ -6777,7 +7032,13 @@ def process_allocation_files_with_dates(
                                                 ).strip()
                                                 if carrier not in rows_by_carrier:
                                                     rows_by_carrier[carrier] = []
-                                                rows_by_carrier[carrier].append(row_idx)
+                                                # Skip "Not to work" rows before adding to list
+                                                if not should_skip_row_for_allocation(
+                                                    row_idx, processed_df, remark_col
+                                                ):
+                                                    rows_by_carrier[carrier].append(
+                                                        row_idx
+                                                    )
 
                                         # Allocate to "Sec + Single" agents, one carrier at a time
                                         for (
@@ -6985,9 +7246,15 @@ def process_allocation_files_with_dates(
                                                                             break
 
                                                                 if can_work:
-                                                                    same_insurance_rows.append(
-                                                                        idx
-                                                                    )
+                                                                    # Skip "Not to work" rows before adding to list
+                                                                    if not should_skip_row_for_allocation(
+                                                                        idx,
+                                                                        processed_df,
+                                                                        remark_col,
+                                                                    ):
+                                                                        same_insurance_rows.append(
+                                                                            idx
+                                                                        )
 
                                                     # Allocate same insurance rows (up to remaining capacity)
                                                     # Keep allocating until capacity is full or no more rows available
@@ -7007,14 +7274,16 @@ def process_allocation_files_with_dates(
                                                                 allocated_count : allocated_count
                                                                 + take
                                                             ]
-                                                            agent["row_indices"].extend(
-                                                                slice_rows
+                                                            # Use safe extend function to filter out "Not to work" rows
+                                                            actual_allocated = (
+                                                                safe_extend_row_indices(
+                                                                    agent,
+                                                                    slice_rows,
+                                                                    processed_df,
+                                                                    remark_col,
+                                                                    agent["name"],
+                                                                )
                                                             )
-                                                            agent["allocated"] += take
-                                                            for idx in slice_rows:
-                                                                processed_df.at[
-                                                                    idx, "Agent Name"
-                                                                ] = agent["name"]
                                                             allocated_count += take
                                                             remaining_capacity = (
                                                                 agent["capacity"]
@@ -7056,8 +7325,16 @@ def process_allocation_files_with_dates(
                                                         row_pos : row_pos + take
                                                     ]
                                                 )
-                                                agent["row_indices"].extend(slice_rows)
-                                                agent["allocated"] += take
+                                                # Use safe extend function to filter out "Not to work" rows
+                                                actual_allocated = (
+                                                    safe_extend_row_indices(
+                                                        agent,
+                                                        slice_rows,
+                                                        processed_df,
+                                                        remark_col,
+                                                        agent["name"],
+                                                    )
+                                                )
                                                 # Set assigned insurance if not set (use primary insurance carrier)
                                                 if (
                                                     agent.get("assigned_insurance")
@@ -7164,9 +7441,15 @@ def process_allocation_files_with_dates(
                                                                 row_carrier
                                                                 == assigned_ins
                                                             ):
-                                                                same_insurance_rows.append(
-                                                                    idx
-                                                                )
+                                                                # Skip "Not to work" rows before adding to list
+                                                                if not should_skip_row_for_allocation(
+                                                                    idx,
+                                                                    processed_df,
+                                                                    remark_col,
+                                                                ):
+                                                                    same_insurance_rows.append(
+                                                                        idx
+                                                                    )
 
                                                     # Allocate same insurance rows
                                                     if same_insurance_rows:
@@ -7350,14 +7633,25 @@ def process_allocation_files_with_dates(
                                                         ).strip()
 
                                                         # Use improved matching function that handles formatting variations and "DD All"
-                                                        can_work = check_insurance_match(
-                                                            row_insurance_raw,
-                                                            agent_insurance_list,
-                                                            agent.get("is_senior", False),
+                                                        can_work = (
+                                                            check_insurance_match(
+                                                                row_insurance_raw,
+                                                                agent_insurance_list,
+                                                                agent.get(
+                                                                    "is_senior", False
+                                                                ),
+                                                                agent.get("name"),
+                                                            )
                                                         )
 
                                                         if can_work:
-                                                            mix_rows.append(idx)
+                                                            # Skip "Not to work" rows before adding to list
+                                                            if not should_skip_row_for_allocation(
+                                                                idx,
+                                                                processed_df,
+                                                                remark_col,
+                                                            ):
+                                                                mix_rows.append(idx)
 
                                                 # Allocate Mix rows until capacity is full
                                                 if mix_rows:
@@ -7478,14 +7772,25 @@ def process_allocation_files_with_dates(
                                                         ).strip()
 
                                                         # Use improved matching function that handles formatting variations and "DD All"
-                                                        can_work = check_insurance_match(
-                                                            row_insurance_raw,
-                                                            agent_insurance_list,
-                                                            agent.get("is_senior", False),
+                                                        can_work = (
+                                                            check_insurance_match(
+                                                                row_insurance_raw,
+                                                                agent_insurance_list,
+                                                                agent.get(
+                                                                    "is_senior", False
+                                                                ),
+                                                                agent.get("name"),
+                                                            )
                                                         )
 
                                                         if can_work:
-                                                            mix_rows.append(idx)
+                                                            # Skip "Not to work" rows before adding to list
+                                                            if not should_skip_row_for_allocation(
+                                                                idx,
+                                                                processed_df,
+                                                                remark_col,
+                                                            ):
+                                                                mix_rows.append(idx)
 
                                                 # Allocate Mix rows until capacity is full or no more rows
                                                 if mix_rows:
@@ -7598,17 +7903,14 @@ def process_allocation_files_with_dates(
                                                                     allocated_count : allocated_count
                                                                     + take
                                                                 ]
-                                                                agent[
-                                                                    "row_indices"
-                                                                ].extend(slice_rows)
-                                                                agent[
-                                                                    "allocated"
-                                                                ] += take
-                                                                for idx in slice_rows:
-                                                                    processed_df.at[
-                                                                        idx,
-                                                                        "Agent Name",
-                                                                    ] = agent["name"]
+                                                                # Use safe extend function to filter out "Not to work" rows
+                                                                actual_allocated = safe_extend_row_indices(
+                                                                    agent,
+                                                                    slice_rows,
+                                                                    processed_df,
+                                                                    remark_col,
+                                                                    agent["name"],
+                                                                )
                                                                 allocated_count += take
                                                                 remaining_capacity = (
                                                                     agent["capacity"]
@@ -7721,12 +8023,14 @@ def process_allocation_files_with_dates(
                                             slice_rows = same_insurance_rows[
                                                 allocated_count : allocated_count + take
                                             ]
-                                            agent["row_indices"].extend(slice_rows)
-                                            agent["allocated"] += take
-                                            for idx in slice_rows:
-                                                processed_df.at[idx, "Agent Name"] = (
-                                                    agent["name"]
-                                                )
+                                            # Use safe extend function to filter out "Not to work" rows
+                                            actual_allocated = safe_extend_row_indices(
+                                                agent,
+                                                slice_rows,
+                                                processed_df,
+                                                remark_col,
+                                                agent["name"],
+                                            )
                                             allocated_count += take
                                             remaining_capacity = (
                                                 agent["capacity"] - agent["allocated"]
@@ -7736,6 +8040,7 @@ def process_allocation_files_with_dates(
 
                         # Step 3.7: Global Single Allocation - Allocate same insurance company rows to "Single" preference agents
                         # This ensures agents with "Single" preference (not "Sec + Single") get same insurance company rows to fill their capacity
+                        # Exclude PB preference agents (should only get NTBP rows in Step 2.5)
                         single_preference_agents = [
                             a
                             for a in agent_allocations
@@ -7743,6 +8048,9 @@ def process_allocation_files_with_dates(
                             and not a.get(
                                 "has_sec_preference", False
                             )  # Exclude "Sec + Single" (handled in Step 3.6)
+                            and not a.get(
+                                "has_pb_preference", False
+                            )  # Exclude PB preference agents
                             and (a["capacity"] - a["allocated"]) > 0
                         ]
 
@@ -7802,6 +8110,21 @@ def process_allocation_files_with_dates(
                                             ):
                                                 continue
 
+                                        # Skip rows with "Not to work" remark
+                                        if remark_col and pd.notna(
+                                            processed_df.at[idx, remark_col]
+                                        ):
+                                            remark_val = (
+                                                str(processed_df.at[idx, remark_col])
+                                                .strip()
+                                                .upper()
+                                            )
+                                            if (
+                                                "NOT TO WORK" in remark_val
+                                                or remark_val == "NOT TO WORK"
+                                            ):
+                                                continue
+
                                         # Get insurance company from "Dental Primary Ins Carr" column
                                         if insurance_carrier_col and pd.notna(
                                             processed_df.at[idx, insurance_carrier_col]
@@ -7826,6 +8149,7 @@ def process_allocation_files_with_dates(
                                                 row_insurance_raw,
                                                 agent_insurance_list,
                                                 agent.get("is_senior", False),
+                                                agent.get("name"),
                                             )
 
                                             if can_work:
@@ -7872,46 +8196,137 @@ def process_allocation_files_with_dates(
                                             "insurance_companies", []
                                         )
 
-                                        # Find first available row where insurance from "Dental Primary Ins Carr" matches agent's "Insurance List"
-                                        for idx in processed_df.index:
-                                            # Skip already allocated rows
-                                            if idx in [
-                                                i
-                                                for ag in agent_allocations
-                                                for i in ag["row_indices"]
-                                            ]:
-                                                continue
+                                    # Find first available row where insurance from "Dental Primary Ins Carr" matches agent's "Insurance List"
+                                    for idx in processed_df.index:
+                                        # Skip already allocated rows
+                                        if idx in [
+                                            i
+                                            for ag in agent_allocations
+                                            for i in ag["row_indices"]
+                                        ]:
+                                            continue
 
-                                            # Skip rows with secondary insurance (those go to "Sec + X" agents)
-                                            if secondary_insurance_col and pd.notna(
+                                        # Skip rows with secondary insurance (those go to "Sec + X" agents)
+                                        if secondary_insurance_col and pd.notna(
+                                            processed_df.at[
+                                                idx, secondary_insurance_col
+                                            ]
+                                        ):
+                                            secondary_val = str(
                                                 processed_df.at[
                                                     idx, secondary_insurance_col
                                                 ]
+                                            ).strip()
+                                            if (
+                                                secondary_val
+                                                and secondary_val.lower() != "nan"
                                             ):
-                                                secondary_val = str(
-                                                    processed_df.at[
-                                                        idx, secondary_insurance_col
-                                                    ]
-                                                ).strip()
-                                                if (
-                                                    secondary_val
-                                                    and secondary_val.lower() != "nan"
-                                                ):
-                                                    continue
+                                                continue
 
-                                            # Get insurance company from "Dental Primary Ins Carr" column
-                                            if insurance_carrier_col and pd.notna(
+                                        # Get insurance company from "Dental Primary Ins Carr" column
+                                        if insurance_carrier_col and pd.notna(
+                                            processed_df.at[idx, insurance_carrier_col]
+                                        ):
+                                            row_insurance = str(
                                                 processed_df.at[
                                                     idx, insurance_carrier_col
                                                 ]
-                                            ):
-                                                row_insurance = str(
-                                                    processed_df.at[
-                                                        idx, insurance_carrier_col
-                                                    ]
-                                                ).strip()
+                                            ).strip()
 
-                                                # Check if row insurance is in agent's "Insurance List" (capabilities)
+                                            # Check if row insurance is in agent's "Insurance List" (capabilities)
+                                            can_work = False
+                                            if agent.get("is_senior", False):
+                                                # Senior agents can work with any insurance company
+                                                can_work = True
+                                            elif not agent_insurance_list:
+                                                # If no specific companies listed, can work with any
+                                                can_work = True
+                                            else:
+                                                # Check if row insurance matches/is in agent's Insurance List (capabilities)
+                                                row_insurance_lower = (
+                                                    row_insurance.lower()
+                                                )
+                                                for comp in agent_insurance_list:
+                                                    comp_lower = comp.lower()
+                                                    if (
+                                                        row_insurance_lower
+                                                        in comp_lower
+                                                        or comp_lower
+                                                        in row_insurance_lower
+                                                        or row_insurance == comp
+                                                    ):
+                                                        can_work = True
+                                                        break
+
+                                            if can_work:
+                                                # Found matching insurance - assign this insurance company to agent
+                                                assigned_ins = row_insurance
+                                                agent["assigned_insurance"] = (
+                                                    assigned_ins
+                                                )
+                                                break
+
+                                    # For agents without special grouping logic, find unallocated rows with the same insurance company
+                                    if assigned_ins and not needs_special_grouping:
+                                        same_insurance_rows = []
+                                        agent_insurance_list = agent.get(
+                                            "insurance_companies", []
+                                        )
+
+                                    for idx in processed_df.index:
+                                        # Skip already allocated rows
+                                        if idx in [
+                                            i
+                                            for ag in agent_allocations
+                                            for i in ag["row_indices"]
+                                        ]:
+                                            continue
+
+                                        # Skip rows with secondary insurance (those go to "Sec + X" agents)
+                                        if secondary_insurance_col and pd.notna(
+                                            processed_df.at[
+                                                idx, secondary_insurance_col
+                                            ]
+                                        ):
+                                            secondary_val = str(
+                                                processed_df.at[
+                                                    idx, secondary_insurance_col
+                                                ]
+                                            ).strip()
+                                            if (
+                                                secondary_val
+                                                and secondary_val.lower() != "nan"
+                                            ):
+                                                continue
+
+                                        # Skip rows with "Not to work" remark
+                                        if remark_col and pd.notna(
+                                            processed_df.at[idx, remark_col]
+                                        ):
+                                            remark_val = (
+                                                str(processed_df.at[idx, remark_col])
+                                                .strip()
+                                                .upper()
+                                            )
+                                            if (
+                                                "NOT TO WORK" in remark_val
+                                                or remark_val == "NOT TO WORK"
+                                            ):
+                                                continue
+
+                                        # Get insurance company from "Dental Primary Ins Carr" column
+                                        if insurance_carrier_col and pd.notna(
+                                            processed_df.at[idx, insurance_carrier_col]
+                                        ):
+                                            row_insurance = str(
+                                                processed_df.at[
+                                                    idx, insurance_carrier_col
+                                                ]
+                                            ).strip()
+
+                                            # First check: row insurance must match assigned insurance
+                                            if row_insurance == assigned_ins:
+                                                # Second check: row insurance must be in agent's "Insurance List" (capabilities)
                                                 can_work = False
                                                 if agent.get("is_senior", False):
                                                     # Senior agents can work with any insurance company
@@ -7921,86 +8336,38 @@ def process_allocation_files_with_dates(
                                                     can_work = True
                                                 else:
                                                     # Check if row insurance matches/is in agent's Insurance List (capabilities)
-                                                    row_insurance_lower = (
-                                                        row_insurance.lower()
+                                                    # Also check if this is "Afreen Ansari" and insurance is in her additional list
+                                                    is_afreen_ansari = (
+                                                        agent.get("name")
+                                                        == "Afreen Ansari"
                                                     )
-                                                    for comp in agent_insurance_list:
-                                                        comp_lower = comp.lower()
-                                                        if (
-                                                            row_insurance_lower
-                                                            in comp_lower
-                                                            or comp_lower
-                                                            in row_insurance_lower
-                                                            or row_insurance == comp
-                                                        ):
-                                                            can_work = True
-                                                            break
 
-                                                if can_work:
-                                                    # Found matching insurance - assign this insurance company to agent
-                                                    assigned_ins = row_insurance
-                                                    agent["assigned_insurance"] = (
-                                                        assigned_ins
-                                                    )
-                                                    break
+                                                    # Check against Afreen Ansari's additional insurance list first
+                                                    if is_afreen_ansari:
+                                                        row_insurance_lower = (
+                                                            row_insurance.lower()
+                                                        )
+                                                        for (
+                                                            allowed_insurance
+                                                        ) in AFREEN_ANSARI_ADDITIONAL_INSURANCE:
+                                                            allowed_lower = (
+                                                                str(allowed_insurance)
+                                                                .strip()
+                                                                .lower()
+                                                            )
+                                                            if (
+                                                                row_insurance_lower
+                                                                == allowed_lower
+                                                                or allowed_lower
+                                                                in row_insurance_lower
+                                                                or row_insurance_lower
+                                                                in allowed_lower
+                                                            ):
+                                                                can_work = True
+                                                                break
 
-                                    # For agents without special grouping logic, find unallocated rows with the same insurance company
-                                    if assigned_ins and not needs_special_grouping:
-                                        same_insurance_rows = []
-                                        agent_insurance_list = agent.get(
-                                            "insurance_companies", []
-                                        )
-
-                                        for idx in processed_df.index:
-                                            # Skip already allocated rows
-                                            if idx in [
-                                                i
-                                                for ag in agent_allocations
-                                                for i in ag["row_indices"]
-                                            ]:
-                                                continue
-
-                                            # Skip rows with secondary insurance (those go to "Sec + X" agents)
-                                            if secondary_insurance_col and pd.notna(
-                                                processed_df.at[
-                                                    idx, secondary_insurance_col
-                                                ]
-                                            ):
-                                                secondary_val = str(
-                                                    processed_df.at[
-                                                        idx, secondary_insurance_col
-                                                    ]
-                                                ).strip()
-                                                if (
-                                                    secondary_val
-                                                    and secondary_val.lower() != "nan"
-                                                ):
-                                                    continue
-
-                                            # Get insurance company from "Dental Primary Ins Carr" column
-                                            if insurance_carrier_col and pd.notna(
-                                                processed_df.at[
-                                                    idx, insurance_carrier_col
-                                                ]
-                                            ):
-                                                row_insurance = str(
-                                                    processed_df.at[
-                                                        idx, insurance_carrier_col
-                                                    ]
-                                                ).strip()
-
-                                                # First check: row insurance must match assigned insurance
-                                                if row_insurance == assigned_ins:
-                                                    # Second check: row insurance must be in agent's "Insurance List" (capabilities)
-                                                    can_work = False
-                                                    if agent.get("is_senior", False):
-                                                        # Senior agents can work with any insurance company
-                                                        can_work = True
-                                                    elif not agent_insurance_list:
-                                                        # If no specific companies listed, can work with any
-                                                        can_work = True
-                                                    else:
-                                                        # Check if row insurance matches/is in agent's Insurance List (capabilities)
+                                                    # If not matched yet, check against agent's regular insurance list
+                                                    if not can_work:
                                                         row_insurance_lower = (
                                                             row_insurance.lower()
                                                         )
@@ -8018,42 +8385,59 @@ def process_allocation_files_with_dates(
                                                                 can_work = True
                                                                 break
 
-                                                    if can_work:
-                                                        same_insurance_rows.append(idx)
+                                                if can_work:
+                                                    same_insurance_rows.append(idx)
                                     else:
                                         same_insurance_rows = []
 
-                                # Allocate same insurance rows until capacity is full (for both Abdul Hakim and other agents)
-                                if same_insurance_rows:
-                                    allocated_count = 0
-                                    while (
-                                        remaining_capacity > 0
-                                        and allocated_count < len(same_insurance_rows)
-                                    ):
-                                        take = min(
-                                            remaining_capacity,
-                                            len(same_insurance_rows) - allocated_count,
-                                        )
-                                        if take > 0:
-                                            slice_rows = same_insurance_rows[
-                                                allocated_count : allocated_count + take
-                                            ]
-                                            agent["row_indices"].extend(slice_rows)
-                                            agent["allocated"] += take
-                                            for idx in slice_rows:
-                                                processed_df.at[idx, "Agent Name"] = (
-                                                    agent["name"]
-                                                )
-                                            allocated_count += take
-                                            remaining_capacity = (
-                                                agent["capacity"] - agent["allocated"]
+                                    # Allocate same insurance rows until capacity is full (for both Abdul Hakim and other agents)
+                                    if same_insurance_rows:
+                                        # Final safety check: Filter out any "Not to work" rows
+                                        filtered_same_insurance_rows = [
+                                            idx
+                                            for idx in same_insurance_rows
+                                            if not should_skip_row_for_allocation(
+                                                idx, processed_df, remark_col
                                             )
-                                        else:
-                                            break
+                                        ]
+
+                                        allocated_count = 0
+                                        while (
+                                            remaining_capacity > 0
+                                            and allocated_count
+                                            < len(filtered_same_insurance_rows)
+                                        ):
+                                            take = min(
+                                                remaining_capacity,
+                                                len(filtered_same_insurance_rows)
+                                                - allocated_count,
+                                            )
+                                            if take > 0:
+                                                slice_rows = filtered_same_insurance_rows[
+                                                    allocated_count : allocated_count
+                                                    + take
+                                                ]
+                                                # Use safe extend function to filter out "Not to work" rows
+                                                actual_allocated = (
+                                                    safe_extend_row_indices(
+                                                        agent,
+                                                        slice_rows,
+                                                        processed_df,
+                                                        remark_col,
+                                                        agent["name"],
+                                                    )
+                                                )
+                                                allocated_count += take
+                                                remaining_capacity = (
+                                                    agent["capacity"]
+                                                    - agent["allocated"]
+                                                )
+                                            else:
+                                                break
 
                         # Step 3.8: Global Mix Allocation - Allocate multiple insurance company rows to "Mix" preference agents
                         # Agents with "Mix" preference should get rows from multiple insurance companies (unlike "Single" which gets only one)
-                        # Exclude "Sec + Mix" agents (handled in Step 3.6) and "Mix + NTC" agents (handled in Step 3.5.5)
+                        # Exclude "Sec + Mix" agents (handled in Step 3.6), "Mix + NTC" agents (handled in Step 3.5.5), and "PB" preference agents (should only get NTBP rows)
                         mix_preference_agents = [
                             a
                             for a in agent_allocations
@@ -8064,6 +8448,9 @@ def process_allocation_files_with_dates(
                             and not (
                                 a.get("has_ntc_preference", False)
                             )  # Exclude "Mix + NTC" (handled in Step 3.5.5)
+                            and not a.get(
+                                "has_pb_preference", False
+                            )  # Exclude "PB" preference agents (should only get NTBP rows in Step 2.5)
                             and (a["capacity"] - a["allocated"]) > 0
                         ]
 
@@ -8106,7 +8493,7 @@ def process_allocation_files_with_dates(
                                         ):
                                             continue
 
-                                    # Skip NTBP and NTC rows (handled in their dedicated steps)
+                                    # Skip NTBP, NTC, and "Not to work" rows
                                     if remark_col and pd.notna(
                                         processed_df.at[idx, remark_col]
                                     ):
@@ -8116,6 +8503,12 @@ def process_allocation_files_with_dates(
                                             .upper()
                                         )
                                         if remark_val == "NTBP" or remark_val == "NTC":
+                                            continue
+                                        # Skip rows with "Not to work" remark
+                                        if (
+                                            "NOT TO WORK" in remark_val
+                                            or remark_val == "NOT TO WORK"
+                                        ):
                                             continue
 
                                     # Get insurance company from "Dental Primary Ins Carr" column
@@ -8131,6 +8524,7 @@ def process_allocation_files_with_dates(
                                             row_insurance_raw,
                                             agent_insurance_list,
                                             agent.get("is_senior", False),
+                                            agent.get("name"),
                                         )
 
                                         if can_work:
@@ -8151,12 +8545,14 @@ def process_allocation_files_with_dates(
                                             slice_rows = mix_rows[
                                                 allocated_count : allocated_count + take
                                             ]
-                                            agent["row_indices"].extend(slice_rows)
-                                            agent["allocated"] += take
-                                            for idx in slice_rows:
-                                                processed_df.at[idx, "Agent Name"] = (
-                                                    agent["name"]
-                                                )
+                                            # Use safe extend function to filter out "Not to work" rows
+                                            actual_allocated = safe_extend_row_indices(
+                                                agent,
+                                                slice_rows,
+                                                processed_df,
+                                                remark_col,
+                                                agent["name"],
+                                            )
                                             allocated_count += take
                                             remaining_capacity = (
                                                 agent["capacity"] - agent["allocated"]
@@ -8196,7 +8592,11 @@ def process_allocation_files_with_dates(
                                     ]
                                 ]
                                 for idx in unallocated_indices:
-                                    priority_work.append((insurance_carrier, idx))
+                                    # Skip "Not to work" rows before adding to list
+                                    if not should_skip_row_for_allocation(
+                                        idx, processed_df, remark_col
+                                    ):
+                                        priority_work.append((insurance_carrier, idx))
 
                         if priority_work:
                             pass
@@ -8419,7 +8819,17 @@ def process_allocation_files_with_dates(
                                             insurance_carrier,
                                             row_idx,
                                         ) in assignable_rows:
-                                            senior_agent["row_indices"].append(row_idx)
+                                            # Safety check: Verify this is not a "Not to work" row before allocating
+                                            if not should_skip_row_for_allocation(
+                                                row_idx, processed_df, remark_col
+                                            ):
+                                                senior_agent["row_indices"].append(
+                                                    row_idx
+                                                )
+                                                senior_agent["allocated"] += 1
+                                                processed_df.at[
+                                                    row_idx, "Agent Name"
+                                                ] = senior_agent["name"]
 
                                             if agent_id in ins_group_allocations:
                                                 insurance_carrier_upper = (
@@ -8464,7 +8874,14 @@ def process_allocation_files_with_dates(
                         )
 
                         # Step 4: Allocate unmatched insurance companies to senior agents (after First Priority matched work)
-                        if unmatched_insurance_companies and senior_agents:
+                        # Also include "Afreen Ansari" even if not marked as senior
+                        # Check if we have unmatched insurance and (senior agents OR Afreen Ansari)
+                        has_afreen_ansari = any(
+                            a["name"] == "Afreen Ansari" for a in agent_allocations
+                        )
+                        if unmatched_insurance_companies and (
+                            senior_agents or has_afreen_ansari
+                        ):
                             for (
                                 insurance_carrier,
                                 priority_data,
@@ -8479,11 +8896,32 @@ def process_allocation_files_with_dates(
                                         row_indices = priority_data[priority]
 
                                         # Only senior agents can handle unmatched insurance
+                                        # Also include "Afreen Ansari" even if not marked as senior
                                         available_senior_agents = [
                                             a
                                             for a in senior_agents
                                             if (a["capacity"] - a["allocated"]) > 0
                                         ]
+
+                                        # Also add "Afreen Ansari" if not already in the list and has capacity
+                                        # Check if she's already in available_senior_agents by name
+                                        afreen_in_available = any(
+                                            a["name"] == "Afreen Ansari"
+                                            for a in available_senior_agents
+                                        )
+                                        if not afreen_in_available:
+                                            for agent in agent_allocations:
+                                                if agent["name"] == "Afreen Ansari":
+                                                    if (
+                                                        agent["capacity"]
+                                                        - agent["allocated"]
+                                                    ) > 0:
+                                                        # Add Afreen Ansari to available agents for unmatched insurance
+                                                        # We'll use the original agent object but treat her as senior for unmatched insurance
+                                                        available_senior_agents.append(
+                                                            agent
+                                                        )
+                                                        break
 
                                         # Filter row indices based on Domain/Remark rule: NTBP rows only go to PB agents
                                         filtered_row_indices = []
@@ -8518,6 +8956,17 @@ def process_allocation_files_with_dates(
                                             available_senior_agents
                                             and filtered_row_indices
                                         ):
+                                            # Filter to only agents with available capacity (double-check before allocation)
+                                            available_senior_agents = [
+                                                a
+                                                for a in available_senior_agents
+                                                if (a["capacity"] - a["allocated"]) > 0
+                                            ]
+
+                                            if not available_senior_agents:
+                                                # No senior agents with capacity - skip this insurance company
+                                                continue
+
                                             # Distribute unmatched insurance rows among senior agents by priority
                                             # Sort by remaining capacity (highest first)
                                             available_senior_agents.sort(
@@ -8529,8 +8978,22 @@ def process_allocation_files_with_dates(
                                             # Allocate to senior agents up to their capacity
                                             row_idx = 0
                                             for senior_agent in available_senior_agents:
+                                                # Check if agent still has capacity before processing
+                                                if (
+                                                    senior_agent["capacity"]
+                                                    - senior_agent["allocated"]
+                                                ) <= 0:
+                                                    continue  # Skip agents that are at capacity
+
                                                 if row_idx >= len(filtered_row_indices):
                                                     break
+
+                                                # For unmatched insurance, treat "Afreen Ansari" as if she can work with any insurance
+                                                # Check if this is Afreen Ansari
+                                                is_afreen_ansari = (
+                                                    senior_agent.get("name")
+                                                    == "Afreen Ansari"
+                                                )
 
                                                 # Check if this insurance company is in the agent's "do not allocate" list
                                                 should_not_allocate = False
@@ -8667,6 +9130,13 @@ def process_allocation_files_with_dates(
                                                         elif row_is_ntc:
                                                             # Skip NTC rows - they should only go to NTC preference agents (Step 3.5)
                                                             continue
+                                                        # Skip rows with "Not to work" remark
+                                                        elif (
+                                                            "NOT TO WORK" in row_remark
+                                                            or row_remark
+                                                            == "NOT TO WORK"
+                                                        ):
+                                                            continue
                                                         elif (
                                                             not row_is_ntbp
                                                             and not row_is_ntc
@@ -8733,13 +9203,24 @@ def process_allocation_files_with_dates(
                                                                         agent_id
                                                                     ] += 1
 
-                                                        senior_agent[
-                                                            "row_indices"
-                                                        ].extend(matching_rows)
-                                                        senior_agent[
-                                                            "allocated"
-                                                        ] += rows_to_assign
+                                                        # Use safe extend function to filter out "Not to work" rows
+                                                        actual_allocated = (
+                                                            safe_extend_row_indices(
+                                                                senior_agent,
+                                                                matching_rows,
+                                                                processed_df,
+                                                                remark_col,
+                                                                senior_agent["name"],
+                                                            )
+                                                        )
                                                         row_idx += len(matching_rows)
+
+                                                        # Check if agent is now at capacity - if so, break to next agent
+                                                        if (
+                                                            senior_agent["capacity"]
+                                                            - senior_agent["allocated"]
+                                                        ) <= 0:
+                                                            break  # Agent is at capacity, move to next agent
 
                                             # If there are remaining unmatched rows that couldn't fit in senior capacity
                                             # they will be handled later or logged
@@ -8828,6 +9309,10 @@ def process_allocation_files_with_dates(
                                     for agent in agents_to_check:
                                         # Skip if agent is at capacity
                                         if agent["capacity"] - agent["allocated"] <= 0:
+                                            continue
+
+                                        # CRITICAL: Skip PB preference agents - they should ONLY get NTBP rows (allocated in Step 2.5)
+                                        if agent.get("has_pb_preference", False):
                                             continue
 
                                         # Check if agent can work with this insurance company
@@ -8958,6 +9443,12 @@ def process_allocation_files_with_dates(
                                                 # Skip NTC rows - they should only go to NTC preference agents (Step 3.5)
                                                 elif row_remark == "NTC":
                                                     continue  # Skip NTC rows completely
+                                                # Skip rows with "Not to work" remark
+                                                elif (
+                                                    "NOT TO WORK" in row_remark
+                                                    or row_remark == "NOT TO WORK"
+                                                ):
+                                                    continue  # Skip "Not to work" rows completely
                                                 else:
                                                     non_special_rows.append(r_idx)
                                         else:
@@ -9099,10 +9590,16 @@ def process_allocation_files_with_dates(
                                                                     + take
                                                                 ]
                                                             )
-                                                            agent["row_indices"].extend(
-                                                                slice_rows
+                                                            # Use safe extend function to filter out "Not to work" rows
+                                                            actual_allocated = (
+                                                                safe_extend_row_indices(
+                                                                    agent,
+                                                                    slice_rows,
+                                                                    processed_df,
+                                                                    remark_col,
+                                                                    agent["name"],
+                                                                )
                                                             )
-                                                            agent["allocated"] += take
                                                             # Set assigned insurance if not set
                                                             if (
                                                                 agent.get(
@@ -9213,10 +9710,16 @@ def process_allocation_files_with_dates(
                                                     slice_rows = rows[
                                                         row_pos : row_pos + take
                                                     ]
-                                                    agent["row_indices"].extend(
-                                                        slice_rows
+                                                    # Use safe extend function to filter out "Not to work" rows
+                                                    actual_allocated = (
+                                                        safe_extend_row_indices(
+                                                            agent,
+                                                            slice_rows,
+                                                            processed_df,
+                                                            remark_col,
+                                                            agent["name"],
+                                                        )
                                                     )
-                                                    agent["allocated"] += take
                                                     if (
                                                         agent.get("assigned_insurance")
                                                         is None
@@ -9302,10 +9805,16 @@ def process_allocation_files_with_dates(
                                                         slice_rows = rows[
                                                             row_pos : row_pos + take
                                                         ]
-                                                        agent["row_indices"].extend(
-                                                            slice_rows
+                                                        # Use safe extend function to filter out "Not to work" rows
+                                                        actual_allocated = (
+                                                            safe_extend_row_indices(
+                                                                agent,
+                                                                slice_rows,
+                                                                processed_df,
+                                                                remark_col,
+                                                                agent["name"],
+                                                            )
                                                         )
-                                                        agent["allocated"] += take
                                                         # Do NOT change assigned_insurance here (keep original primary)
                                                         agent_id = agent.get(
                                                             "id",
@@ -9383,6 +9892,12 @@ def process_allocation_files_with_dates(
                                 # Skip NTC rows - they should only go to NTC preference agents (Step 3.5)
                                 elif row_remark == "NTC":
                                     continue
+                                # Skip rows with "Not to work" remark - they should never be allocated
+                                elif (
+                                    "NOT TO WORK" in row_remark
+                                    or row_remark == "NOT TO WORK"
+                                ):
+                                    continue
                                 else:
                                     non_special_rows.append(idx)
                         else:
@@ -9410,13 +9925,198 @@ def process_allocation_files_with_dates(
                                     available_capacity, len(non_special_rows) - row_idx
                                 )
                                 if actual_allocation > 0:
-                                    agent["row_indices"].extend(
-                                        non_special_rows[
-                                            row_idx : row_idx + actual_allocation
-                                        ]
+                                    slice_rows = non_special_rows[
+                                        row_idx : row_idx + actual_allocation
+                                    ]
+                                    # Use safe extend function to filter out "Not to work" rows
+                                    actual_allocated = safe_extend_row_indices(
+                                        agent,
+                                        slice_rows,
+                                        processed_df,
+                                        remark_col,
+                                        agent["name"],
                                     )
-                                    agent["allocated"] += actual_allocation
                                     row_idx += actual_allocation
+
+                    # Step 6: Final Fallback - Allocate ANY remaining unallocated rows to agents with matching capabilities
+                    # This ensures that unallocated work matching agent capabilities gets allocated, regardless of allocation preference
+                    if insurance_carrier_col:
+                        # Find all unallocated rows
+                        unallocated_indices = [
+                            idx
+                            for idx in processed_df.index
+                            if idx
+                            not in [
+                                i for ag in agent_allocations for i in ag["row_indices"]
+                            ]
+                        ]
+
+                        if unallocated_indices:
+                            # Group unallocated rows by insurance company
+                            unallocated_by_insurance = {}
+                            for idx in unallocated_indices:
+                                # Skip rows with secondary insurance (those should go to Sec + X agents)
+                                if secondary_insurance_col and pd.notna(
+                                    processed_df.at[idx, secondary_insurance_col]
+                                ):
+                                    secondary_val = str(
+                                        processed_df.at[idx, secondary_insurance_col]
+                                    ).strip()
+                                    if secondary_val and secondary_val.lower() != "nan":
+                                        continue
+
+                                # Skip NTBP, NTC, and "Not to work" rows
+                                if remark_col and pd.notna(
+                                    processed_df.at[idx, remark_col]
+                                ):
+                                    remark_val = (
+                                        str(processed_df.at[idx, remark_col])
+                                        .strip()
+                                        .upper()
+                                    )
+                                    if remark_val == "NTBP" or remark_val == "NTC":
+                                        continue
+                                    # Skip rows with "Not to work" remark
+                                    if (
+                                        "NOT TO WORK" in remark_val
+                                        or remark_val == "NOT TO WORK"
+                                    ):
+                                        continue
+
+                                # Get insurance company
+                                if pd.notna(
+                                    processed_df.at[idx, insurance_carrier_col]
+                                ):
+                                    insurance_carrier = str(
+                                        processed_df.at[idx, insurance_carrier_col]
+                                    ).strip()
+                                    if insurance_carrier:
+                                        if (
+                                            insurance_carrier
+                                            not in unallocated_by_insurance
+                                        ):
+                                            unallocated_by_insurance[
+                                                insurance_carrier
+                                            ] = []
+                                        unallocated_by_insurance[
+                                            insurance_carrier
+                                        ].append(idx)
+
+                            # Allocate unallocated rows to ALL agents with capacity (not just matching capabilities)
+                            # This ensures maximum utilization of agent capacity
+                            for (
+                                insurance_carrier,
+                                row_indices_list,
+                            ) in unallocated_by_insurance.items():
+                                # Find ALL agents with capacity (except PB agents)
+                                # Prioritize agents with matching capabilities, but include all agents with capacity
+                                capable_agents = []  # Agents with matching capabilities
+                                all_capable_agents = []  # All agents with capacity
+
+                                for agent in agent_allocations:
+                                    remaining_capacity = (
+                                        agent["capacity"] - agent["allocated"]
+                                    )
+                                    if remaining_capacity <= 0:
+                                        continue
+
+                                    # CRITICAL: Skip PB preference agents - they should ONLY get NTBP rows (allocated in Step 2.5)
+                                    if agent.get("has_pb_preference", False):
+                                        continue
+
+                                    # Check if this is "Afreen Ansari" - she can work with any unallocated insurance
+                                    is_afreen_ansari = (
+                                        agent.get("name") == "Afreen Ansari"
+                                    )
+
+                                    # Check if agent can work with this insurance company
+                                    agent_insurance_list = agent.get(
+                                        "insurance_companies", []
+                                    )
+                                    can_work = check_insurance_match(
+                                        insurance_carrier,
+                                        agent_insurance_list,
+                                        agent.get("is_senior", False),
+                                        agent.get("name"),
+                                    )
+
+                                    # Add to all_capable_agents (all agents with capacity)
+                                    all_capable_agents.append(agent)
+
+                                    # Add to capable_agents if they match capabilities or are Afreen Ansari
+                                    if can_work or is_afreen_ansari:
+                                        capable_agents.append(agent)
+
+                                # Use capable_agents first (matching capabilities), then fall back to all_capable_agents
+                                agents_to_use = (
+                                    capable_agents
+                                    if capable_agents
+                                    else all_capable_agents
+                                )
+
+                                # Allocate rows to agents (round-robin)
+                                # Prioritize agents with matching capabilities, but use all agents with capacity if needed
+                                if agents_to_use:
+                                    agent_idx = 0
+                                    for row_idx in row_indices_list:
+                                        # Find next agent with capacity
+                                        attempts = 0
+                                        max_attempts = len(agents_to_use)
+                                        while attempts < max_attempts:
+                                            if agent_idx >= len(agents_to_use):
+                                                agent_idx = 0
+
+                                            agent = agents_to_use[agent_idx]
+                                            remaining_capacity = (
+                                                agent["capacity"] - agent["allocated"]
+                                            )
+
+                                            if remaining_capacity > 0:
+                                                break  # Found agent with capacity
+
+                                            # Move to next agent
+                                            agent_idx += 1
+                                            attempts += 1
+                                        else:
+                                            # No agents with capacity left - break
+                                            break
+
+                                        if remaining_capacity > 0:
+                                            # Safety check: Verify this is not a "Not to work" row before allocating
+                                            if remark_col and pd.notna(
+                                                processed_df.at[row_idx, remark_col]
+                                            ):
+                                                remark_check = (
+                                                    str(
+                                                        processed_df.at[
+                                                            row_idx, remark_col
+                                                        ]
+                                                    )
+                                                    .strip()
+                                                    .upper()
+                                                )
+                                                if (
+                                                    "NOT TO WORK" in remark_check
+                                                    or remark_check == "NOT TO WORK"
+                                                ):
+                                                    continue  # Skip this row
+
+                                            # Safety check: Verify this is not a "Not to work" row before allocating
+                                            if not should_skip_row_for_allocation(
+                                                row_idx, processed_df, remark_col
+                                            ):
+                                                agent["row_indices"].append(row_idx)
+                                                agent["allocated"] += 1
+                                                processed_df.at[
+                                                    row_idx, "Agent Name"
+                                                ] = agent["name"]
+                                                agent_idx += 1
+                                            else:
+                                                # Skip this row if it's "Not to work", but continue to next row
+                                                continue
+                                        # Note: We check capacity each iteration, so agents at capacity are automatically skipped
+                                        # Move to next agent for next row
+                                        agent_idx += 1
 
                     # Soft stickiness rule: prefer keeping same insurance per agent, allow adding new carrier only after
                     # existing carrier rows are exhausted. Actual assignment handled in Step 5 logic.
@@ -9450,10 +10150,25 @@ def process_allocation_files_with_dates(
                     # Sort agents by name for display
                     agent_allocations.sort(key=lambda x: x["name"])
 
-                    # Calculate total allocated rows
-                    total_allocated = sum(
-                        agent["allocated"] for agent in agent_allocations
-                    )
+                    # CRITICAL: Deduplicate row_indices for each agent and recalculate allocated counts
+                    # This prevents counting the same row multiple times
+                    for agent in agent_allocations:
+                        row_indices = agent.get("row_indices", [])
+                        if row_indices:
+                            # Remove duplicates and invalid indices
+                            unique_valid_indices = [
+                                idx
+                                for idx in set(row_indices)
+                                if idx < len(processed_df)
+                            ]
+                            agent["row_indices"] = unique_valid_indices
+                            agent["allocated"] = len(unique_valid_indices)
+
+                    # Calculate total allocated rows based on unique row indices across all agents
+                    all_allocated_indices = set()
+                    for agent in agent_allocations:
+                        all_allocated_indices.update(agent.get("row_indices", []))
+                    total_allocated = len(all_allocated_indices)
 
                     # Print INS and Toolkit group allocation summary
                     # Ensure dictionaries exist (they should be initialized earlier)
@@ -9522,24 +10237,67 @@ def process_allocation_files_with_dates(
                     agent_allocations_for_reminders = agent_allocations
 
                     # Calculate allocation statistics
-                    total_allocated = sum(a["allocated"] for a in agent_allocations)
+                    # CRITICAL: Calculate total_allocated based on unique row indices to avoid duplicates
+                    # Collect all unique row indices across all agents
+                    # Also filter out "Not to work" rows from the count
+                    all_allocated_indices = set()
+                    for agent in agent_allocations:
+                        row_indices = agent.get("row_indices", [])
+                        # Deduplicate row_indices for this agent
+                        unique_indices = list(set(row_indices))
+                        # Filter out "Not to work" rows from indices
+                        if remark_col and remark_col in processed_df.columns:
+                            unique_indices = [
+                                idx
+                                for idx in unique_indices
+                                if not should_skip_row_for_allocation(
+                                    idx, processed_df, remark_col
+                                )
+                            ]
+                        # Update agent's row_indices to be unique
+                        agent["row_indices"] = unique_indices
+                        # Update agent's allocated count to match actual unique indices
+                        agent["allocated"] = len(unique_indices)
+                        # Add to global set
+                        all_allocated_indices.update(unique_indices)
+
+                    # Total allocated is the count of unique row indices (excluding "Not to work" rows)
+                    total_allocated = len(all_allocated_indices)
                     agents_with_work = len(
                         [a for a in agent_allocations if a["allocated"] > 0]
                     )
 
+                    # Calculate total_rows excluding "Not to work" rows
+                    # This matches what we actually allocate (we skip "Not to work" rows)
+                    total_rows_excluding_not_to_work = total_rows
+                    if remark_col and remark_col in processed_df.columns:
+                        not_to_work_count = 0
+                        for idx in processed_df.index:
+                            if should_skip_row_for_allocation(
+                                idx, processed_df, remark_col
+                            ):
+                                not_to_work_count += 1
+                        total_rows_excluding_not_to_work = (
+                            total_rows - not_to_work_count
+                        )
+
                     # Get unmatched insurance companies info (if it exists from allocation process)
                     unmatched_info = ""
                     if insurance_carrier_col and unmatched_insurance_companies:
-                        unmatched_list = [str(comp).strip() for comp in sorted(list(unmatched_insurance_companies))[:5] if comp is not None and not pd.isna(comp)]
+                        unmatched_list = [
+                            str(comp).strip()
+                            for comp in sorted(list(unmatched_insurance_companies))[:5]
+                            if comp is not None and not pd.isna(comp)
+                        ]
                         unmatched_info = f"\n🔴 Unmatched Insurance Companies ({len(unmatched_insurance_companies)}): {', '.join(unmatched_list)}{'...' if len(unmatched_insurance_companies) > 5 else ''}\n   ⚠️ These companies were assigned ONLY to senior agents with highest priority."
 
                     agent_summary = f"""
-👥 Agent Allocation Summary (Capability-Based):
-- Total Agents: {total_agents}
-- Agents with Work: {agents_with_work}
-- Total Rows to Allocate: {total_rows}
-- Total Allocated: {total_allocated}
-- Remaining Unallocated: {total_rows - total_allocated}
+                    👥 Agent Allocation Summary (Capability-Based):
+                    - Total Agents: {total_agents}
+                    - Agents with Work: {agents_with_work}
+                    - Total Rows to Allocate: {total_rows_excluding_not_to_work}
+                    - Total Allocated: {total_allocated}
+                    - Remaining Unallocated: {total_rows_excluding_not_to_work - total_allocated}
 - Insurance Matching: {'Enabled' if insurance_carrier_col else 'Disabled'}
 {unmatched_info}
 
@@ -9554,11 +10312,19 @@ def process_allocation_files_with_dates(
                         if agent["is_senior"]:
                             insurance_info = " (Can work: Any insurance company)"
                         elif agent["insurance_companies"]:
-                            insurance_list = [str(comp).strip() for comp in agent['insurance_companies'][:2] if comp is not None and not pd.isna(comp)]
+                            insurance_list = [
+                                str(comp).strip()
+                                for comp in agent["insurance_companies"][:2]
+                                if comp is not None and not pd.isna(comp)
+                            ]
                             insurance_info = f" (Can work: {', '.join(insurance_list)}{'...' if len(agent['insurance_companies']) > 2 else ''})"
 
                         if agent["insurance_needs_training"]:
-                            training_list = [str(comp).strip() for comp in agent['insurance_needs_training'][:2] if comp is not None and not pd.isna(comp)]
+                            training_list = [
+                                str(comp).strip()
+                                for comp in agent["insurance_needs_training"][:2]
+                                if comp is not None and not pd.isna(comp)
+                            ]
                             training_info = f" (Needs training: {', '.join(training_list)}{'...' if len(agent['insurance_needs_training']) > 2 else ''})"
                             insurance_info += training_info
 
@@ -9586,7 +10352,21 @@ def process_allocation_files_with_dates(
                         agent_summary += f"  {i+1}. {agent['name']}: {agent['allocated']}/{agent['capacity']} rows{senior_info}{insurance_info}{primary_info}{secondary_info}\n"
 
                     # Calculate priority distribution based on actual allocations
-                    total_allocated = sum(a["allocated"] for a in agent_allocations)
+                    # CRITICAL: Calculate total_allocated based on unique row indices to avoid duplicates
+                    all_allocated_indices = set()
+                    for agent in agent_allocations:
+                        row_indices = agent.get("row_indices", [])
+                        # Deduplicate row_indices for this agent
+                        unique_indices = list(set(row_indices))
+                        # Update agent's row_indices to be unique
+                        agent["row_indices"] = unique_indices
+                        # Update agent's allocated count to match actual unique indices
+                        agent["allocated"] = len(unique_indices)
+                        # Add to global set
+                        all_allocated_indices.update(unique_indices)
+
+                    # Total allocated is the count of unique row indices
+                    total_allocated = len(all_allocated_indices)
                     if total_allocated > 0:
                         agent_summary += f"""
 📊 Priority Distribution (Based on Actual Allocations):
@@ -9727,25 +10507,45 @@ def login():
 
         # Try database authentication first
         user = get_user_by_username(username)
-        if user and user.check_password(password):
-            # Update last login
-            user.last_login = datetime.utcnow()
-            db.session.commit()
+        if user:
+            password_valid = user.check_password(password)
 
-            # Create database session
-            session_data = {
-                "user_id": user.username,
-                "user_role": user.role,
-                "user_name": user.name,
-                "user_email": user.email,
-            }
-            db_session = create_user_session(user.id, session_data)
+            # If password check failed and user has scrypt hash, rehash and try again
+            if (
+                not password_valid
+                and user.password_hash
+                and (
+                    "scrypt" in user.password_hash.lower()
+                    or user.password_hash.startswith("scrypt:")
+                )
+            ):
+                # Rehash the password with pbkdf2:sha256 and update user
+                user.set_password(password)
+                db.session.commit()
+                # Verify the new hash works
+                password_valid = user.check_password(password)
 
-            # Set Flask session
-            session["db_session_id"] = db_session.id
-            session.update(session_data)
+            if password_valid:
+                # Update last login
+                user.last_login = datetime.utcnow()
+                db.session.commit()
 
-            return redirect(url_for("dashboard"))
+                # Create database session
+                session_data = {
+                    "user_id": user.username,
+                    "user_role": user.role,
+                    "user_name": user.name,
+                    "user_email": user.email,
+                }
+                db_session = create_user_session(user.id, session_data)
+
+                # Set Flask session
+                session["db_session_id"] = db_session.id
+                session.update(session_data)
+
+                return redirect(url_for("dashboard"))
+            else:
+                flash("Invalid username or password. Please try again.", "error")
         else:
             flash("Invalid username or password. Please try again.", "error")
 
@@ -12673,35 +13473,51 @@ def get_agent_allocation():
         row_indices = agent_info.get("row_indices", [])
         agent_name = agent_info.get("name", "Unknown")
 
-        # CRITICAL: Filter by Agent Name column first to ensure only this agent's rows are included
-        # This is the most reliable way to ensure correct filtering
-        if "Agent Name" in processed_df.columns:
-            # Filter to only include rows where Agent Name matches this agent exactly
-            agent_df = processed_df[processed_df["Agent Name"] == agent_name].copy()
-            
-            # If no rows found by name, fall back to row_indices
-            if agent_df.empty and row_indices:
-                # Verify row_indices match Agent Name column
-                valid_indices = []
-                for idx in row_indices:
-                    if idx < len(processed_df):
-                        row_agent_name = processed_df.at[idx, "Agent Name"]
-                        # Check if agent name matches (handle NaN/empty values)
-                        if pd.notna(row_agent_name) and str(row_agent_name).strip() == agent_name:
-                            valid_indices.append(idx)
-                
-                if valid_indices:
-                    agent_df = processed_df.iloc[valid_indices].copy()
+        # Use row_indices as primary source (most reliable) since they track actual allocations
+        # row_indices are the source of truth - they contain the actual rows allocated to this agent
+        if row_indices and len(row_indices) > 0:
+            # Filter to only valid indices within the dataframe
+            valid_indices = [idx for idx in row_indices if idx < len(processed_df)]
+
+            if valid_indices:
+                # Get rows by indices (this is the source of truth)
+                agent_df = processed_df.iloc[valid_indices].copy()
+
+                # Then verify/filter by Agent Name column if it exists (for data integrity check)
+                if "Agent Name" in agent_df.columns:
+                    # Check if Agent Name matches (case-insensitive, handle whitespace)
+                    agent_name_matches = (
+                        agent_df["Agent Name"].astype(str).str.strip().str.lower()
+                        == agent_name.lower().strip()
+                    )
+                    empty_agent_name = agent_df["Agent Name"].isna() | (
+                        agent_df["Agent Name"].astype(str).str.strip() == ""
+                    )
+
+                    # If some rows don't have matching Agent Name, still include them (row_indices are source of truth)
+                    # But prioritize rows with matching Agent Name if available
+                    matching_rows = agent_df[agent_name_matches].copy()
+                    empty_rows = agent_df[empty_agent_name].copy()
+
+                    if not matching_rows.empty:
+                        # Use rows with matching Agent Name
+                        agent_df = matching_rows.copy()
+                    elif not empty_rows.empty:
+                        # Use rows with empty Agent Name (they were allocated but name not set)
+                        agent_df = empty_rows.copy()
+                    # else: use all rows from row_indices even if name doesn't match (data integrity issue)
         else:
-            # If Agent Name column doesn't exist, use row_indices
-            if (
-                row_indices
-                and len(row_indices) > 0
-                and len(processed_df) > max(row_indices)
-            ):
-                agent_df = processed_df.iloc[row_indices].copy()
+            agent_df = pd.DataFrame()
+
+        # If no row_indices, try filtering by Agent Name column
+        if agent_df.empty and not row_indices:
+            if "Agent Name" in processed_df.columns:
+                agent_df = processed_df[
+                    processed_df["Agent Name"].astype(str).str.strip().str.lower()
+                    == agent_name.lower().strip()
+                ].copy()
             else:
-                # Fallback: if row_indices not available, use first N rows
+                # Fallback: if row_indices not available and no Agent Name column, use first N rows
                 if len(processed_df) >= agent_rows:
                     agent_df = processed_df.head(agent_rows).copy()
                 else:
@@ -12823,7 +13639,7 @@ def download_agent_file():
         if "Agent Name" in processed_df.columns:
             # Filter to only include rows where Agent Name matches this agent exactly
             agent_df = processed_df[processed_df["Agent Name"] == agent_name].copy()
-            
+
             # If no rows found by name, fall back to row_indices
             if agent_df.empty and row_indices:
                 # Verify row_indices match Agent Name column
@@ -12832,9 +13648,12 @@ def download_agent_file():
                     if idx < len(processed_df):
                         row_agent_name = processed_df.at[idx, "Agent Name"]
                         # Check if agent name matches (handle NaN/empty values)
-                        if pd.notna(row_agent_name) and str(row_agent_name).strip() == agent_name:
+                        if (
+                            pd.notna(row_agent_name)
+                            and str(row_agent_name).strip() == agent_name
+                        ):
                             valid_indices.append(idx)
-                
+
                 if valid_indices:
                     agent_df = processed_df.iloc[valid_indices].copy()
         else:
@@ -12845,12 +13664,11 @@ def download_agent_file():
                 and len(processed_df) > max(row_indices)
             ):
                 agent_df = processed_df.iloc[row_indices].copy()
+            # Fallback: if row_indices not available, use first N rows
+            if len(processed_df) >= agent_rows:
+                agent_df = processed_df.head(agent_rows).copy()
             else:
-                # Fallback: if row_indices not available, use first N rows
-                if len(processed_df) >= agent_rows:
-                    agent_df = processed_df.head(agent_rows).copy()
-                else:
-                    agent_df = processed_df.copy()
+                agent_df = processed_df.copy()
 
         # Ensure Agent Name column is set correctly for all rows
         agent_df["Agent Name"] = agent_name
@@ -14285,16 +15103,19 @@ def create_agent_excel_file(agent_name, agent_info):
             if "Agent Name" in main_df.columns:
                 # Filter to only include rows where Agent Name matches this agent exactly
                 allocated_df = main_df[main_df["Agent Name"] == agent_name].copy()
-                
+
                 # If no rows found by name, verify row_indices match Agent Name
                 if allocated_df.empty:
                     valid_indices = []
                     for idx in row_indices:
                         if idx < len(main_df):
                             row_agent_name = main_df.at[idx, "Agent Name"]
-                            if pd.notna(row_agent_name) and str(row_agent_name).strip() == agent_name:
+                            if (
+                                pd.notna(row_agent_name)
+                                and str(row_agent_name).strip() == agent_name
+                            ):
                                 valid_indices.append(idx)
-                    
+
                     if valid_indices:
                         allocated_df = main_df.iloc[valid_indices].copy()
             else:

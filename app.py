@@ -810,7 +810,7 @@ def send_email_with_resend(
     """
     try:
         email_data = {
-            "from": os.environ.get("RESEND_FROM_EMAIL", "onboarding@resend.dev"),
+            "from": os.environ.get("RESEND_FROM_EMAIL", "onboarding@excellabs.shop"),
             "to": to_email,
             "subject": subject,
             "html": html_content,

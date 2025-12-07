@@ -476,7 +476,7 @@ def init_database():
     with app.app_context():
         db.create_all()
 
-        # Create default admin user if it doesn't exist
+        # Create default admin user if it doesn't exist, or reset password if it exists
         admin_user = User.query.filter_by(username="admin").first()
         if not admin_user:
             admin_user = User(
@@ -487,6 +487,11 @@ def init_database():
             )
             admin_user.set_password("admin123")
             db.session.add(admin_user)
+        else:
+            # Reset password to admin123 if user already exists
+            admin_user.set_password("admin123")
+            admin_user.role = "admin"  # Ensure role is admin
+            admin_user.is_active = True  # Ensure user is active
 
         # Note: Agent users will be created automatically via Google OAuth
         # No need to create static agent accounts
@@ -4917,7 +4922,9 @@ def get_available_secondary_slots(agent):
     return max(0, MAX_SECONDARY_ROWS_PER_AGENT - secondary_count)
 
 
-def can_allocate_row_by_appointment_date(agent, row_idx, processed_df, appointment_date_col):
+def can_allocate_row_by_appointment_date(
+    agent, row_idx, processed_df, appointment_date_col
+):
     """
     Check if a row can be allocated to an agent based on appointment date limit (max 20 per date).
     Returns True if row can be allocated, False otherwise.
@@ -4925,14 +4932,14 @@ def can_allocate_row_by_appointment_date(agent, row_idx, processed_df, appointme
     """
     if not appointment_date_col or appointment_date_col not in processed_df.columns:
         return True  # No appointment date column - allow allocation
-    
+
     if row_idx >= len(processed_df):
         return False
-    
+
     # Initialize appointment date tracking for agent if not exists
     if "appointment_date_counts" not in agent:
         agent["appointment_date_counts"] = {}
-    
+
     # Get appointment date for this row
     appointment_date = None
     if pd.notna(processed_df.at[row_idx, appointment_date_col]):
@@ -4944,6 +4951,7 @@ def can_allocate_row_by_appointment_date(agent, row_idx, processed_df, appointme
             try:
                 # Try to parse date string
                 from datetime import datetime
+
                 appointment_date = datetime.strptime(
                     appointment_date_val.split()[0], "%Y-%m-%d"
                 ).date()
@@ -4951,7 +4959,7 @@ def can_allocate_row_by_appointment_date(agent, row_idx, processed_df, appointme
                 appointment_date = str(appointment_date_val).strip()
         else:
             appointment_date = str(appointment_date_val).strip()
-    
+
     if appointment_date:
         # Convert to string key for dictionary
         date_key = str(appointment_date)
@@ -4970,7 +4978,12 @@ def can_allocate_row_by_appointment_date(agent, row_idx, processed_df, appointme
 
 
 def safe_extend_row_indices(
-    agent, row_indices_list, processed_df, remark_col, agent_name, appointment_date_col=None
+    agent,
+    row_indices_list,
+    processed_df,
+    remark_col,
+    agent_name,
+    appointment_date_col=None,
 ):
     """
     Safely extend agent's row_indices, filtering out "Not to work" rows.
@@ -6628,9 +6641,7 @@ def process_allocation_files_with_dates(
                                                         ntbp_row_idx, "Agent Name"
                                                     ] = agent["name"]
                                                     assigned = True
-                                                    agent_idx += (
-                                                        1  # Move to next agent for next row
-                                                    )
+                                                    agent_idx += 1  # Move to next agent for next row
                                                     break
                                                 else:
                                                     # Can't allocate due to appointment date limit, try next agent
@@ -6798,7 +6809,8 @@ def process_allocation_files_with_dates(
                                 available_ntc_agents = [
                                     a
                                     for a in agents_with_ntc_preference
-                                    if a["capacity"] > a["allocated"] and a.get("ntc_allocated", 0) < 10
+                                    if a["capacity"] > a["allocated"]
+                                    and a.get("ntc_allocated", 0) < 10
                                 ]
 
                                 if available_ntc_agents:
@@ -6817,7 +6829,8 @@ def process_allocation_files_with_dates(
                                             available_ntc_agents = [
                                                 a
                                                 for a in agents_with_ntc_preference
-                                                if a["capacity"] > a["allocated"] and a.get("ntc_allocated", 0) < 10
+                                                if a["capacity"] > a["allocated"]
+                                                and a.get("ntc_allocated", 0) < 10
                                             ]
 
                                             if not available_ntc_agents:
@@ -6828,7 +6841,10 @@ def process_allocation_files_with_dates(
                                                 agent_idx % len(available_ntc_agents)
                                             ]
 
-                                            if agent["capacity"] > agent["allocated"] and agent.get("ntc_allocated", 0) < 10:
+                                            if (
+                                                agent["capacity"] > agent["allocated"]
+                                                and agent.get("ntc_allocated", 0) < 10
+                                            ):
                                                 # Safety check: Verify this is not a "Not to work" row before allocating
                                                 if remark_col and pd.notna(
                                                     processed_df.at[
@@ -6857,16 +6873,19 @@ def process_allocation_files_with_dates(
                                                     processed_df,
                                                     appointment_date_col,
                                                 ):
-                                                    agent["row_indices"].append(ntc_row_idx)
+                                                    agent["row_indices"].append(
+                                                        ntc_row_idx
+                                                    )
                                                     agent["allocated"] += 1
-                                                    agent["ntc_allocated"] = agent.get("ntc_allocated", 0) + 1
+                                                    agent["ntc_allocated"] = (
+                                                        agent.get("ntc_allocated", 0)
+                                                        + 1
+                                                    )
                                                     processed_df.at[
                                                         ntc_row_idx, "Agent Name"
                                                     ] = agent["name"]
                                                     assigned = True
-                                                    agent_idx += (
-                                                        1  # Move to next agent for next row
-                                                    )
+                                                    agent_idx += 1  # Move to next agent for next row
                                                     break
                                                 else:
                                                     # Can't allocate due to appointment date limit, try next agent
@@ -6884,7 +6903,8 @@ def process_allocation_files_with_dates(
                                             available_ntc_agents = [
                                                 a
                                                 for a in agents_with_ntc_preference
-                                                if a["capacity"] > a["allocated"] and a.get("ntc_allocated", 0) < 10
+                                                if a["capacity"] > a["allocated"]
+                                                and a.get("ntc_allocated", 0) < 10
                                             ]
                                             if not available_ntc_agents:
                                                 # No more capacity or all agents reached NTC limit - stop allocation
@@ -6895,7 +6915,8 @@ def process_allocation_files_with_dates(
                                 available_ntc_agents = [
                                     a
                                     for a in agents_with_ntc_preference
-                                    if a["capacity"] > a["allocated"] and a.get("ntc_allocated", 0) < 10
+                                    if a["capacity"] > a["allocated"]
+                                    and a.get("ntc_allocated", 0) < 10
                                 ]
                                 if available_ntc_agents:
                                     # Sort by remaining capacity (highest first) to pick best agent
@@ -6913,10 +6934,14 @@ def process_allocation_files_with_dates(
                                         available = (
                                             agent["capacity"] - agent["allocated"]
                                         )
-                                        ntc_limit_remaining = 10 - agent.get("ntc_allocated", 0)
+                                        ntc_limit_remaining = 10 - agent.get(
+                                            "ntc_allocated", 0
+                                        )
                                         if available > 0 and ntc_limit_remaining > 0:
                                             rows_to_assign = min(
-                                                available, len(remaining_ntc_rows), ntc_limit_remaining
+                                                available,
+                                                len(remaining_ntc_rows),
+                                                ntc_limit_remaining,
                                             )
                                             if rows_to_assign > 0:
                                                 assigned = remaining_ntc_rows[
@@ -6960,7 +6985,9 @@ def process_allocation_files_with_dates(
                                                     agent["allocated"] += len(
                                                         filtered_assigned
                                                     )
-                                                    agent["ntc_allocated"] = agent.get("ntc_allocated", 0) + len(filtered_assigned)
+                                                    agent["ntc_allocated"] = agent.get(
+                                                        "ntc_allocated", 0
+                                                    ) + len(filtered_assigned)
                                                     for idx in filtered_assigned:
                                                         processed_df.at[
                                                             idx, "Agent Name"
@@ -7253,12 +7280,14 @@ def process_allocation_files_with_dates(
                                                                 appointment_date_col,
                                                             ):
                                                                 final_slice.append(idx)
-                                                        
+
                                                         if final_slice:
                                                             agent["row_indices"].extend(
                                                                 final_slice
                                                             )
-                                                            agent["allocated"] += len(final_slice)
+                                                            agent["allocated"] += len(
+                                                                final_slice
+                                                            )
                                                             # Track secondary insurance row count
                                                             if (
                                                                 "secondary_insurance_count"
@@ -7758,7 +7787,10 @@ def process_allocation_files_with_dates(
                                                 # Allocate NTC rows
                                                 # Limit: No agent can receive more than 10 NTC rows
                                                 if ntc_rows:
-                                                    ntc_limit_remaining = 10 - agent.get("ntc_allocated", 0)
+                                                    ntc_limit_remaining = (
+                                                        10
+                                                        - agent.get("ntc_allocated", 0)
+                                                    )
                                                     take = min(
                                                         remaining_capacity,
                                                         len(ntc_rows),
@@ -7770,7 +7802,12 @@ def process_allocation_files_with_dates(
                                                             slice_rows
                                                         )
                                                         agent["allocated"] += take
-                                                        agent["ntc_allocated"] = agent.get("ntc_allocated", 0) + take
+                                                        agent["ntc_allocated"] = (
+                                                            agent.get(
+                                                                "ntc_allocated", 0
+                                                            )
+                                                            + take
+                                                        )
                                                         for idx in slice_rows:
                                                             processed_df.at[
                                                                 idx, "Agent Name"
@@ -8116,7 +8153,12 @@ def process_allocation_files_with_dates(
                                                     # Limit: No agent can receive more than 10 NTC rows
                                                     if ntc_rows:
                                                         allocated_count = 0
-                                                        ntc_limit_remaining = 10 - agent.get("ntc_allocated", 0)
+                                                        ntc_limit_remaining = (
+                                                            10
+                                                            - agent.get(
+                                                                "ntc_allocated", 0
+                                                            )
+                                                        )
                                                         while (
                                                             remaining_capacity > 0
                                                             and allocated_count
@@ -8143,12 +8185,26 @@ def process_allocation_files_with_dates(
                                                                     agent["name"],
                                                                 )
                                                                 allocated_count += take  # Move forward in the list by take positions
-                                                                agent["ntc_allocated"] = agent.get("ntc_allocated", 0) + actual_allocated  # Track actual NTC rows allocated
+                                                                agent[
+                                                                    "ntc_allocated"
+                                                                ] = (
+                                                                    agent.get(
+                                                                        "ntc_allocated",
+                                                                        0,
+                                                                    )
+                                                                    + actual_allocated
+                                                                )  # Track actual NTC rows allocated
                                                                 remaining_capacity = (
                                                                     agent["capacity"]
                                                                     - agent["allocated"]
                                                                 )
-                                                                ntc_limit_remaining = 10 - agent.get("ntc_allocated", 0)
+                                                                ntc_limit_remaining = (
+                                                                    10
+                                                                    - agent.get(
+                                                                        "ntc_allocated",
+                                                                        0,
+                                                                    )
+                                                                )
                                                             else:
                                                                 break
 

@@ -5094,8 +5094,10 @@ def check_insurance_match(
             ):
                 return True
 
+    # STRICT: If insurance list is empty, agent cannot work with any insurance
+    # (unless they are senior, which is checked above)
     if not agent_insurance_list:
-        return True
+        return False
 
     # Format the row insurance company name
     formatted_row_insurance = format_insurance_company_name(row_insurance)
@@ -5130,13 +5132,15 @@ def check_insurance_match(
 
         comp_lower = formatted_comp.lower().strip() if formatted_comp else ""
 
-        # Exact match
+        # EXACT MATCH ONLY (case-insensitive) - STRICT VALIDATION
+        # This prevents false matches like "Medico Insurance Company" matching "Metlife"
+        # or "Dental Claims" matching anything not explicitly in the list
         if formatted_row_lower == comp_lower:
             return True
-
-        # Substring match (handles partial matches)
-        if formatted_row_lower in comp_lower or comp_lower in formatted_row_lower:
-            return True
+        
+        # NO substring matching to prevent false positives
+        # "Medico Insurance Company" will ONLY match if "Medico Insurance Company" is EXACTLY in the list
+        # "Dental Claims" will ONLY match if "Dental Claims" is EXACTLY in the list
 
         # Handle DD Toolkit/Toolkits variations
         # Check if row insurance is in DD_TOOLKIT_GROUP and agent has DD Toolkit/Toolkits/DD capability
@@ -5187,6 +5191,56 @@ def check_insurance_match(
                 if "dd ins" in comp_lower or comp_lower == "ins":
                     return True
 
+    return False
+
+
+def can_agent_work_with_insurance(agent, row_insurance):
+    """
+    Centralized function to check if an agent can work with a specific insurance company.
+    Uses the agent's insurance_companies array for strict validation.
+    
+    Args:
+        agent: Agent dictionary containing 'insurance_companies' array and 'is_senior' flag
+        row_insurance: Insurance company name from data row
+    
+    Returns:
+        True if agent can work with this insurance, False otherwise
+    
+    Rules:
+        - Senior agents with "ALL_COMPANIES" in their list can work with any insurance
+        - Senior agents with populated insurance list are restricted to their list
+        - Non-senior agents are always restricted to their insurance list
+        - Empty insurance list means no insurance allowed (unless senior with ALL_COMPANIES)
+    """
+    # Get agent's insurance list and senior status
+    agent_insurance_list = agent.get("insurance_companies", [])
+    is_senior = agent.get("is_senior", False)
+    agent_name = agent.get("name")
+    
+    # Check if agent has "ALL_COMPANIES" marker (truly unrestricted senior)
+    if is_senior and agent_insurance_list and "ALL_COMPANIES" in agent_insurance_list:
+        return True
+    
+    # If agent has a populated insurance list, validate against it strictly
+    # Even senior agents with specific lists should be restricted
+    if agent_insurance_list and "ALL_COMPANIES" not in agent_insurance_list:
+        # Use check_insurance_match for detailed matching
+        return check_insurance_match(
+            row_insurance,
+            agent_insurance_list,
+            is_senior=False,  # Don't bypass check - validate against list
+            agent_name=agent_name
+        )
+    
+    # If no insurance list and not senior, cannot work with any insurance
+    if not agent_insurance_list and not is_senior:
+        return False
+    
+    # Fallback: truly senior agent with no restrictions (empty list or None)
+    if is_senior and (not agent_insurance_list or len(agent_insurance_list) == 0):
+        return True
+    
+    # Default: cannot work
     return False
 
 
@@ -7353,28 +7407,12 @@ def process_allocation_files_with_dates(
                                                         "insurance_companies", []
                                                     )
 
-                                                    # Senior agents can work with any insurance company
-                                                    if agent.get("is_senior", False):
-                                                        agent_can_work = True
-                                                    elif not agent_insurance_list:
-                                                        # If no specific companies listed, can work with any
-                                                        agent_can_work = True
-                                                    else:
-                                                        # Check if the carrier is in the agent's insurance list
-                                                        carrier_lower = carrier.lower()
-                                                        for (
-                                                            comp
-                                                        ) in agent_insurance_list:
-                                                            comp_lower = comp.lower()
-                                                            if (
-                                                                carrier_lower
-                                                                in comp_lower
-                                                                or comp_lower
-                                                                in carrier_lower
-                                                                or carrier == comp
-                                                            ):
-                                                                agent_can_work = True
-                                                                break
+                                                    # Check if agent can work with this insurance company
+                                                    # Use centralized validation function for strict checking
+                                                    agent_can_work = can_agent_work_with_insurance(
+                                                        agent,
+                                                        carrier
+                                                    )
 
                                                     # Only proceed if agent can work with this insurance company
                                                     if not agent_can_work:
@@ -8278,29 +8316,11 @@ def process_allocation_files_with_dates(
                                         # First check: row insurance must match assigned insurance
                                         if row_insurance == assigned_ins:
                                             # Second check: row insurance must be in agent's "Insurance List" (capabilities)
-                                            can_work = False
-                                            if agent.get("is_senior", False):
-                                                # Senior agents can work with any insurance company
-                                                can_work = True
-                                            elif not agent_insurance_list:
-                                                # If no specific companies listed, can work with any
-                                                can_work = True
-                                            else:
-                                                # Check if row insurance matches/is in agent's Insurance List (capabilities)
-                                                row_insurance_lower = (
-                                                    row_insurance.lower()
-                                                )
-                                                for comp in agent_insurance_list:
-                                                    comp_lower = comp.lower()
-                                                    if (
-                                                        row_insurance_lower
-                                                        in comp_lower
-                                                        or comp_lower
-                                                        in row_insurance_lower
-                                                        or row_insurance == comp
-                                                    ):
-                                                        can_work = True
-                                                        break
+                                            # Use centralized validation function for strict checking
+                                            can_work = can_agent_work_with_insurance(
+                                                agent,
+                                                row_insurance
+                                            )
 
                                             if can_work:
                                                 same_insurance_rows.append(idx)
@@ -8532,29 +8552,11 @@ def process_allocation_files_with_dates(
                                             ).strip()
 
                                             # Check if row insurance is in agent's "Insurance List" (capabilities)
-                                            can_work = False
-                                            if agent.get("is_senior", False):
-                                                # Senior agents can work with any insurance company
-                                                can_work = True
-                                            elif not agent_insurance_list:
-                                                # If no specific companies listed, can work with any
-                                                can_work = True
-                                            else:
-                                                # Check if row insurance matches/is in agent's Insurance List (capabilities)
-                                                row_insurance_lower = (
-                                                    row_insurance.lower()
-                                                )
-                                                for comp in agent_insurance_list:
-                                                    comp_lower = comp.lower()
-                                                    if (
-                                                        row_insurance_lower
-                                                        in comp_lower
-                                                        or comp_lower
-                                                        in row_insurance_lower
-                                                        or row_insurance == comp
-                                                    ):
-                                                        can_work = True
-                                                        break
+                                            # Use centralized validation function for strict checking
+                                            can_work = can_agent_work_with_insurance(
+                                                agent,
+                                                row_insurance
+                                            )
 
                                             if can_work:
                                                 # Found matching insurance - assign this insurance company to agent
@@ -8625,63 +8627,11 @@ def process_allocation_files_with_dates(
                                             # First check: row insurance must match assigned insurance
                                             if row_insurance == assigned_ins:
                                                 # Second check: row insurance must be in agent's "Insurance List" (capabilities)
-                                                can_work = False
-                                                if agent.get("is_senior", False):
-                                                    # Senior agents can work with any insurance company
-                                                    can_work = True
-                                                elif not agent_insurance_list:
-                                                    # If no specific companies listed, can work with any
-                                                    can_work = True
-                                                else:
-                                                    # Check if row insurance matches/is in agent's Insurance List (capabilities)
-                                                    # Also check if this is "Afreen Ansari" and insurance is in her additional list
-                                                    is_afreen_ansari = (
-                                                        agent.get("name")
-                                                        == "Afreen Ansari"
-                                                    )
-
-                                                    # Check against Afreen Ansari's additional insurance list first
-                                                    if is_afreen_ansari:
-                                                        row_insurance_lower = (
-                                                            row_insurance.lower()
-                                                        )
-                                                        for (
-                                                            allowed_insurance
-                                                        ) in AFREEN_ANSARI_ADDITIONAL_INSURANCE:
-                                                            allowed_lower = (
-                                                                str(allowed_insurance)
-                                                                .strip()
-                                                                .lower()
-                                                            )
-                                                            if (
-                                                                row_insurance_lower
-                                                                == allowed_lower
-                                                                or allowed_lower
-                                                                in row_insurance_lower
-                                                                or row_insurance_lower
-                                                                in allowed_lower
-                                                            ):
-                                                                can_work = True
-                                                                break
-
-                                                    # If not matched yet, check against agent's regular insurance list
-                                                    if not can_work:
-                                                        row_insurance_lower = (
-                                                            row_insurance.lower()
-                                                        )
-                                                        for (
-                                                            comp
-                                                        ) in agent_insurance_list:
-                                                            comp_lower = comp.lower()
-                                                        if (
-                                                            row_insurance_lower
-                                                            in comp_lower
-                                                            or comp_lower
-                                                            in row_insurance_lower
-                                                            or row_insurance == comp
-                                                        ):
-                                                            can_work = True
-                                                            break
+                                                # Use centralized validation function for strict checking
+                                                can_work = can_agent_work_with_insurance(
+                                                    agent,
+                                                    row_insurance
+                                                )
 
                                                 if can_work:
                                                     same_insurance_rows.append(idx)
@@ -8859,318 +8809,11 @@ def process_allocation_files_with_dates(
                                         else:
                                             break
 
-                        # Step 3: FIRST PRIORITY - Allocate First Priority matched work to senior agents FIRST
-                        # This takes precedence over unmatched insurance
-
-                        # Check senior agent remaining capacity before Step 3
-                        senior_capacity_before = sum(
-                            a["capacity"] - a["allocated"] for a in senior_agents
-                        )
-
-                        # ONLY process First Priority matched work for senior agents
-                        priority = "First Priority"
-                        # Collect all unallocated First Priority matched work across all insurance carriers
-                        priority_work = (
-                            []
-                        )  # List of (insurance_carrier, row_index) tuples
-                        for (
-                            insurance_carrier,
-                            priority_data,
-                        ) in matched_data_by_insurance_priority.items():
-                            if priority in priority_data:
-                                row_indices = priority_data[priority]
-                                # Get unallocated indices for this insurance carrier and priority
-                                unallocated_indices = [
-                                    idx
-                                    for idx in row_indices
-                                    if idx
-                                    not in [
-                                        i
-                                        for ag in agent_allocations
-                                        for i in ag["row_indices"]
-                                    ]
-                                ]
-                                for idx in unallocated_indices:
-                                    # Skip "Not to work" rows before adding to list
-                                    if not should_skip_row_for_allocation(
-                                        idx, processed_df, remark_col
-                                    ):
-                                        priority_work.append((insurance_carrier, idx))
-
-                        if priority_work:
-                            pass
-
-                            # Allocate all First Priority matched work to senior agents, maximizing capacity utilization
-                            # But apply Domain/Remark rule: NTBP rows only to PB agents, PB agents only get NTBP rows
-
-                            # Separate priority work into NTBP, NTC, and other rows
-                            # IMPORTANT: NTBP rows should have been allocated in Step 2.5 to PB preference agents
-                            # IMPORTANT: NTC rows should have been allocated in Step 3.5 to NTC preference agents
-                            # Skip NTBP and NTC rows here - they should only go to their respective preference agents
-                            ntbp_priority_work = []
-                            ntc_priority_work = []
-                            non_special_priority_work = []
-
-                            if remark_col and remark_col in processed_df.columns:
-                                for insurance_carrier, row_idx in priority_work:
-                                    # Skip if already allocated (should have been allocated in Step 2.5 or 3.5)
-                                    if row_idx in [
-                                        i
-                                        for ag in agent_allocations
-                                        for i in ag["row_indices"]
-                                    ]:
-                                        continue
-
-                                    row_remark = None
-                                    if pd.notna(processed_df.at[row_idx, remark_col]):
-                                        row_remark = (
-                                            str(processed_df.at[row_idx, remark_col])
-                                            .strip()
-                                            .upper()
-                                        )
-
-                                    if row_remark == "NTBP":
-                                        # NTBP rows should only go to PB preference agents (allocated in Step 2.5)
-                                        # Skip them here - don't allocate to senior agents
-                                        continue
-                                    elif row_remark == "NTC":
-                                        # NTC rows should only go to NTC preference agents (allocated in Step 3.5)
-                                        # Skip them here - don't allocate to senior agents
-                                        continue
-                                    else:
-                                        non_special_priority_work.append(
-                                            (insurance_carrier, row_idx)
-                                        )
-                            else:
-                                # If no remark column, all rows are non-special
-                                non_special_priority_work = priority_work.copy()
-
-                            # Separate senior agents into PB and non-PB
-                            # Check both domain == 'PB' and allocation preference contains 'PB'
-                            pb_senior_agents = [
-                                a
-                                for a in senior_agents
-                                if (
-                                    (
-                                        a.get("domain")
-                                        and str(a.get("domain")).strip().upper() == "PB"
-                                    )
-                                    or a.get("has_pb_preference", False)
-                                )
-                            ]
-                            non_pb_senior_agents = [
-                                a
-                                for a in senior_agents
-                                if not (
-                                    (
-                                        a.get("domain")
-                                        and str(a.get("domain")).strip().upper() == "PB"
-                                    )
-                                    or a.get("has_pb_preference", False)
-                                )
-                            ]
-
-                            # NTBP rows should have been allocated in Step 2.5 to PB preference agents only
-                            # Skip NTBP allocation here - ntbp_priority_work should be empty since we skip NTBP rows above
-                            # NTBP rows are NOT allocated in Step 3 - they should only go to PB preference agents (Step 2.5)
-
-                            # Allocate non-NTBP priority work only to non-PB senior agents
-                            work_idx = 0
-                            while work_idx < len(non_special_priority_work):
-                                available_non_pb_seniors = [
-                                    a
-                                    for a in non_pb_senior_agents
-                                    if (a["capacity"] - a["allocated"]) > 0
-                                ]
-                                if not available_non_pb_seniors:
-                                    break
-
-                                available_non_pb_seniors.sort(
-                                    key=lambda x: x["capacity"] - x["allocated"],
-                                    reverse=True,
-                                )
-
-                                for senior_agent in available_non_pb_seniors:
-                                    if work_idx >= len(non_special_priority_work):
-                                        break
-
-                                    available_capacity = (
-                                        senior_agent["capacity"]
-                                        - senior_agent["allocated"]
-                                    )
-                                    if available_capacity <= 0:
-                                        continue
-
-                                    # Collect rows that can be allocated to this agent (checking "do not allocate" list and "Single" preference)
-                                    assignable_rows = []
-                                    rows_processed = 0
-                                    for i in range(
-                                        work_idx,
-                                        min(
-                                            work_idx + available_capacity,
-                                            len(non_special_priority_work),
-                                        ),
-                                    ):
-                                        insurance_carrier, row_idx = (
-                                            non_special_priority_work[i]
-                                        )
-
-                                        # For agents with "Single" preference, only allow rows from their assigned insurance
-                                        if senior_agent.get(
-                                            "has_single_preference", False
-                                        ):
-                                            assigned_ins = senior_agent.get(
-                                                "assigned_insurance"
-                                            )
-                                            # If agent already has an assigned insurance, only allow that insurance
-                                            if (
-                                                assigned_ins is not None
-                                                and assigned_ins != insurance_carrier
-                                            ):
-                                                rows_processed += 1
-                                                continue  # Skip this row - agent with "Single" already has different insurance
-
-                                        rows_processed += 1
-
-                                        # Check if this insurance company is in the agent's "do not allocate" list
-                                        should_not_allocate = False
-                                        if senior_agent.get(
-                                            "insurance_do_not_allocate"
-                                        ):
-                                            insurance_carrier_str = (
-                                                str(insurance_carrier)
-                                                if insurance_carrier
-                                                else ""
-                                            )
-                                            for do_not_allocate_comp in senior_agent[
-                                                "insurance_do_not_allocate"
-                                            ]:
-                                                do_not_allocate_comp_str = (
-                                                    str(do_not_allocate_comp)
-                                                    if do_not_allocate_comp
-                                                    else ""
-                                                )
-                                                if (
-                                                    insurance_carrier_str
-                                                    and do_not_allocate_comp_str
-                                                ):
-                                                    if (
-                                                        insurance_carrier_str.lower()
-                                                        in do_not_allocate_comp_str.lower()
-                                                        or do_not_allocate_comp_str.lower()
-                                                        in insurance_carrier_str.lower()
-                                                        or insurance_carrier_str
-                                                        == do_not_allocate_comp_str
-                                                    ):
-                                                        should_not_allocate = True
-                                                        break
-
-                                        # Only add row if agent can be allocated this insurance company
-                                        # For agents with "Single" preference, ensure they only get one insurance company
-                                        if not should_not_allocate:
-                                            # If agent has "Single" preference and already has assigned insurance,
-                                            # only allow rows from that same insurance
-                                            if senior_agent.get(
-                                                "has_single_preference", False
-                                            ):
-                                                assigned_ins = senior_agent.get(
-                                                    "assigned_insurance"
-                                                )
-                                                if assigned_ins is None:
-                                                    # Agent doesn't have assigned insurance yet - can assign this one
-                                                    assignable_rows.append(
-                                                        (insurance_carrier, row_idx)
-                                                    )
-                                                elif assigned_ins == insurance_carrier:
-                                                    # Agent already has this insurance - can assign more rows
-                                                    assignable_rows.append(
-                                                        (insurance_carrier, row_idx)
-                                                    )
-                                                # else: agent has different insurance - skip this row (already handled above)
-                                            else:
-                                                # Agent doesn't have "Single" preference - normal allocation
-                                                assignable_rows.append(
-                                                    (insurance_carrier, row_idx)
-                                                )
-
-                                    rows_to_assign = len(assignable_rows)
-
-                                    if rows_to_assign > 0:
-                                        agent_id = senior_agent.get(
-                                            "id", senior_agent.get("name", "Unknown")
-                                        )
-                                        # Set assigned_insurance for agents with "Single" preference when they get their first allocation
-                                        if (
-                                            senior_agent.get(
-                                                "has_single_preference", False
-                                            )
-                                            and senior_agent.get("assigned_insurance")
-                                            is None
-                                        ):
-                                            # Get the insurance carrier from the first assignable row
-                                            if assignable_rows:
-                                                first_insurance, _ = assignable_rows[0]
-                                                senior_agent["assigned_insurance"] = (
-                                                    first_insurance
-                                                )
-
-                                        for (
-                                            insurance_carrier,
-                                            row_idx,
-                                        ) in assignable_rows:
-                                            # Safety check: Verify this is not a "Not to work" row before allocating
-                                            if not should_skip_row_for_allocation(
-                                                row_idx, processed_df, remark_col
-                                            ):
-                                                senior_agent["row_indices"].append(
-                                                    row_idx
-                                                )
-                                                senior_agent["allocated"] += 1
-                                                processed_df.at[
-                                                    row_idx, "Agent Name"
-                                                ] = senior_agent["name"]
-
-                                            if agent_id in ins_group_allocations:
-                                                insurance_carrier_upper = (
-                                                    insurance_carrier.upper().strip()
-                                                )
-                                                if any(
-                                                    insurance_carrier_upper
-                                                    == ic.upper().strip()
-                                                    for ic in DD_INS_GROUP
-                                                ):
-                                                    ins_group_allocations[agent_id] += 1
-                                            if agent_id in toolkit_group_allocations:
-                                                insurance_carrier_upper = (
-                                                    insurance_carrier.upper().strip()
-                                                )
-                                                if any(
-                                                    insurance_carrier_upper
-                                                    == ic.upper().strip()
-                                                    for ic in DD_TOOLKIT_GROUP
-                                                ):
-                                                    toolkit_group_allocations[
-                                                        agent_id
-                                                    ] += 1
-
-                                        senior_agent["allocated"] += rows_to_assign
-
-                                    # Increment work_idx by number of rows processed (including skipped ones)
-                                    work_idx += rows_processed
-
-                                # Log progress
-                                if work_idx % 50 == 0 and work_idx < len(
-                                    non_special_priority_work
-                                ):
-                                    pass
-
-                        else:
-                            pass
-
-                        # Note: Second/Third Priority matched work will be allocated to non-seniors in Step 5
-                        senior_capacity_after = sum(
-                            a["capacity"] - a["allocated"] for a in senior_agents
-                        )
+                        # Step 3: REMOVED - First Priority allocation to senior agents
+                        # Senior agents will ONLY get unmatched insurance companies (handled in Step 4)
+                        # This ensures senior agents are restricted to their insurance list for unmatched insurance
+                        
+                        # Note: First/Second/Third Priority matched work will be allocated to non-seniors in Step 5
 
                         # Step 4: Allocate unmatched insurance companies to senior agents (after First Priority matched work)
                         # Also include "Afreen Ansari" even if not marked as senior
@@ -9441,10 +9084,23 @@ def process_allocation_files_with_dates(
                                                             and not row_is_ntc
                                                             and not agent_is_pb
                                                         ):
-                                                            # Non-NTBP, non-NTC row and non-PB agent - match
-                                                            matching_rows.append(
-                                                                actual_row_idx
+                                                            # Non-NTBP, non-NTC row and non-PB agent
+                                                            # IMPORTANT: Validate that this unmatched insurance is in agent's insurance list
+                                                            # Even for senior agents, if they have a populated insurance list, validate against it
+                                                            agent_insurance_list = senior_agent.get("insurance_companies", [])
+                                                            
+                                                            # Check if agent can work with this insurance
+                                                            can_work = can_agent_work_with_insurance(
+                                                                senior_agent,
+                                                                insurance_carrier
                                                             )
+                                                            
+                                                            if can_work:
+                                                                # Insurance is in agent's list - add to matching rows
+                                                                matching_rows.append(
+                                                                    actual_row_idx
+                                                                )
+                                                            # If can_work is False, skip this row (insurance not in agent's list)
                                                         # Otherwise: non-NTBP, non-NTC row with PB agent - no match (PB agents should only get NTBP, but NTBP is handled in Step 2.5)
 
                                                     rows_to_assign = len(matching_rows)
@@ -9652,25 +9308,18 @@ def process_allocation_files_with_dates(
                                         if should_not_allocate:
                                             continue
 
-                                        # Senior agents can work with any insurance company (unless in do not allocate list)
-                                        if agent["is_senior"]:
-                                            can_work = True
-                                        elif not agent[
-                                            "insurance_companies"
-                                        ]:  # If no specific companies listed, can work with any
-                                            can_work = True
-                                        else:
-                                            # Check if insurance carrier matches any of the agent's working companies
-                                            for comp in agent["insurance_companies"]:
-                                                if (
-                                                    insurance_carrier.lower()
-                                                    in comp.lower()
-                                                    or comp.lower()
-                                                    in insurance_carrier.lower()
-                                                    or insurance_carrier == comp
-                                                ):
-                                                    can_work = True
-                                                    break
+                                        # ✅ STRICT: Check if agent can work with this insurance company
+                                        # Senior agents MUST check their insurance list (unless they have "ALL_COMPANIES")
+                                        can_work = can_agent_work_with_insurance(
+                                            agent,
+                                            insurance_carrier
+                                        )
+                                        
+                                        # Legacy code below - replaced by centralized validation above
+                                        # Old logic (disabled):
+                                        # - Senior agents could work with any insurance (WRONG!)
+                                        # - Empty list meant can work with any (WRONG!)
+                                        # Now using can_agent_work_with_insurance() for strict validation
 
                                         # Check if agent needs training for this insurance company
                                         needs_training = False
@@ -10307,10 +9956,9 @@ def process_allocation_files_with_dates(
                                 insurance_carrier,
                                 row_indices_list,
                             ) in unallocated_by_insurance.items():
-                                # Find ALL agents with capacity (except PB agents)
-                                # Prioritize agents with matching capabilities, but include all agents with capacity
-                                capable_agents = []  # Agents with matching capabilities
-                                all_capable_agents = []  # All agents with capacity
+                                # Find agents with matching insurance capabilities (except PB agents)
+                                # ✅ STRICT: Only agents with matching insurance are considered
+                                capable_agents = []  # Agents with matching insurance capabilities
 
                                 for agent in agent_allocations:
                                     remaining_capacity = (
@@ -10328,7 +9976,7 @@ def process_allocation_files_with_dates(
                                         agent.get("name") == "Afreen Ansari"
                                     )
 
-                                    # Check if agent can work with this insurance company
+                                    # ✅ STRICT: Check if agent can work with this insurance company
                                     agent_insurance_list = agent.get(
                                         "insurance_companies", []
                                     )
@@ -10339,22 +9987,17 @@ def process_allocation_files_with_dates(
                                         agent.get("name"),
                                     )
 
-                                    # Add to all_capable_agents (all agents with capacity)
-                                    all_capable_agents.append(agent)
-
-                                    # Add to capable_agents if they match capabilities or are Afreen Ansari
+                                    # Add to capable_agents ONLY if they match capabilities or are Afreen Ansari
+                                    # ✅ STRICT: Only agents with matching insurance are added
                                     if can_work or is_afreen_ansari:
                                         capable_agents.append(agent)
 
-                                # Use capable_agents first (matching capabilities), then fall back to all_capable_agents
-                                agents_to_use = (
-                                    capable_agents
-                                    if capable_agents
-                                    else all_capable_agents
-                                )
+                                # ✅ STRICT: Only use agents with matching insurance capabilities
+                                # NO FALLBACK to all agents - if no matching agents, rows remain unallocated
+                                agents_to_use = capable_agents
 
                                 # Allocate rows to agents (round-robin)
-                                # Prioritize agents with matching capabilities, but use all agents with capacity if needed
+                                # Only allocate to agents with matching insurance capabilities
                                 if agents_to_use:
                                     agent_idx = 0
                                     for row_idx in row_indices_list:

@@ -6302,7 +6302,7 @@ def process_allocation_files_with_dates(
                                 "name": agent_name,  # Display name
                                 "capacity": capacity,
                                 "allocated": 0,
-                                "ntc_allocated": 0,  # Track number of NTC rows allocated to this agent (max 10)
+                                "ntc_allocated": 0,  # Track number of NTC rows allocated to this agent (max 15)
                                 "email": agent_email,
                                 "insurance_companies": insurance_companies,
                                 "insurance_needs_training": insurance_needs_training,
@@ -6805,12 +6805,12 @@ def process_allocation_files_with_dates(
                             if len(all_ntc_rows) >= total_ntc_capacity:
                                 # Distribute equally when NTC count >= total capacity
                                 # Round-robin distribution: assign rows one by one to each agent in turn
-                                # Limit: No agent can receive more than 10 NTC rows
+                                # Limit: No agent can receive more than 15 NTC rows
                                 available_ntc_agents = [
                                     a
                                     for a in agents_with_ntc_preference
                                     if a["capacity"] > a["allocated"]
-                                    and a.get("ntc_allocated", 0) < 10
+                                    and a.get("ntc_allocated", 0) < 15
                                 ]
 
                                 if available_ntc_agents:
@@ -6825,12 +6825,12 @@ def process_allocation_files_with_dates(
 
                                         while attempts < max_attempts and not assigned:
                                             # Refresh available agents list in case some filled up
-                                            # Limit: No agent can receive more than 10 NTC rows
+                                            # Limit: No agent can receive more than 15 NTC rows
                                             available_ntc_agents = [
                                                 a
                                                 for a in agents_with_ntc_preference
                                                 if a["capacity"] > a["allocated"]
-                                                and a.get("ntc_allocated", 0) < 10
+                                                and a.get("ntc_allocated", 0) < 15
                                             ]
 
                                             if not available_ntc_agents:
@@ -6843,7 +6843,7 @@ def process_allocation_files_with_dates(
 
                                             if (
                                                 agent["capacity"] > agent["allocated"]
-                                                and agent.get("ntc_allocated", 0) < 10
+                                                and agent.get("ntc_allocated", 0) < 15
                                             ):
                                                 # Safety check: Verify this is not a "Not to work" row before allocating
                                                 if remark_col and pd.notna(
@@ -6899,24 +6899,24 @@ def process_allocation_files_with_dates(
                                         # If we couldn't assign this row, check if any agents still have capacity
                                         if not assigned:
                                             # Final check - refresh available agents
-                                            # Limit: No agent can receive more than 10 NTC rows
+                                            # Limit: No agent can receive more than 15 NTC rows
                                             available_ntc_agents = [
                                                 a
                                                 for a in agents_with_ntc_preference
                                                 if a["capacity"] > a["allocated"]
-                                                and a.get("ntc_allocated", 0) < 10
+                                                and a.get("ntc_allocated", 0) < 15
                                             ]
                                             if not available_ntc_agents:
                                                 # No more capacity or all agents reached NTC limit - stop allocation
                                                 break
                             else:
                                 # If NTC rows are fewer than total capacity, allocate ALL to a single agent
-                                # Limit: No agent can receive more than 10 NTC rows
+                                # Limit: No agent can receive more than 15 NTC rows
                                 available_ntc_agents = [
                                     a
                                     for a in agents_with_ntc_preference
                                     if a["capacity"] > a["allocated"]
-                                    and a.get("ntc_allocated", 0) < 10
+                                    and a.get("ntc_allocated", 0) < 15
                                 ]
                                 if available_ntc_agents:
                                     # Sort by remaining capacity (highest first) to pick best agent
@@ -6926,7 +6926,7 @@ def process_allocation_files_with_dates(
                                     )
                                     # Allocate NTC rows, starting with the agent with highest capacity
                                     # If that agent fills up or reaches NTC limit, continue with next agent
-                                    # Limit: No agent can receive more than 10 NTC rows
+                                    # Limit: No agent can receive more than 15 NTC rows
                                     remaining_ntc_rows = all_ntc_rows.copy()
                                     for agent in available_ntc_agents:
                                         if not remaining_ntc_rows:
@@ -6934,7 +6934,7 @@ def process_allocation_files_with_dates(
                                         available = (
                                             agent["capacity"] - agent["allocated"]
                                         )
-                                        ntc_limit_remaining = 10 - agent.get(
+                                        ntc_limit_remaining = 15 - agent.get(
                                             "ntc_allocated", 0
                                         )
                                         if available > 0 and ntc_limit_remaining > 0:
@@ -7785,10 +7785,10 @@ def process_allocation_files_with_dates(
                                                                 ntc_rows.append(idx)
 
                                                 # Allocate NTC rows
-                                                # Limit: No agent can receive more than 10 NTC rows
+                                                # Limit: No agent can receive more than 15 NTC rows
                                                 if ntc_rows:
                                                     ntc_limit_remaining = (
-                                                        10
+                                                        15
                                                         - agent.get("ntc_allocated", 0)
                                                     )
                                                     take = min(
@@ -8150,11 +8150,11 @@ def process_allocation_files_with_dates(
                                                                     ntc_rows.append(idx)
 
                                                     # Allocate NTC rows until capacity is full
-                                                    # Limit: No agent can receive more than 10 NTC rows
+                                                    # Limit: No agent can receive more than 15 NTC rows
                                                     if ntc_rows:
                                                         allocated_count = 0
                                                         ntc_limit_remaining = (
-                                                            10
+                                                            15
                                                             - agent.get(
                                                                 "ntc_allocated", 0
                                                             )
@@ -8199,7 +8199,7 @@ def process_allocation_files_with_dates(
                                                                     - agent["allocated"]
                                                                 )
                                                                 ntc_limit_remaining = (
-                                                                    10
+                                                                    15
                                                                     - agent.get(
                                                                         "ntc_allocated",
                                                                         0,

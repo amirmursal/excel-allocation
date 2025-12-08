@@ -6303,6 +6303,7 @@ def process_allocation_files_with_dates(
                                 "capacity": capacity,
                                 "allocated": 0,
                                 "ntc_allocated": 0,  # Track number of NTC rows allocated to this agent (max 15)
+                                "ntbp_allocated": 0,  # Track number of NTBP rows allocated to this agent (max 15)
                                 "email": agent_email,
                                 "insurance_companies": insurance_companies,
                                 "insurance_needs_training": insurance_needs_training,
@@ -6590,11 +6591,11 @@ def process_allocation_files_with_dates(
                             if len(all_ntbp_rows) >= total_pb_capacity:
                                 # Distribute equally when NTBP count >= total capacity
                                 # Round-robin distribution: assign rows one by one to each agent in turn
-                                # Filter to only agents with available capacity
+                                # Limit: No agent can receive more than 15 NTBP rows
                                 available_pb_agents = [
                                     a
                                     for a in agents_with_pb_preference
-                                    if a["capacity"] > a["allocated"]
+                                    if a["capacity"] > a["allocated"] and a.get("ntbp_allocated", 0) < 15
                                 ]
 
                                 if available_pb_agents:
@@ -6610,22 +6611,23 @@ def process_allocation_files_with_dates(
 
                                         while attempts < max_attempts and not assigned:
                                             # Refresh available agents list in case some filled up
+                                            # Limit: No agent can receive more than 15 NTBP rows
                                             available_pb_agents = [
                                                 a
                                                 for a in agents_with_pb_preference
-                                                if a["capacity"] > a["allocated"]
+                                                if a["capacity"] > a["allocated"] and a.get("ntbp_allocated", 0) < 15
                                             ]
 
                                             if not available_pb_agents:
-                                                # No more capacity available - stop allocation
+                                                # No more capacity available or all agents reached NTBP limit - stop allocation
                                                 break
 
                                             agent = available_pb_agents[
                                                 agent_idx % len(available_pb_agents)
                                             ]
 
-                                            # Check capacity and appointment date limit (max 20 per date)
-                                            if agent["capacity"] > agent["allocated"]:
+                                            # Check capacity, NTBP limit, and appointment date limit (max 20 per date)
+                                            if agent["capacity"] > agent["allocated"] and agent.get("ntbp_allocated", 0) < 15:
                                                 # Check appointment date limit before allocating
                                                 if can_allocate_row_by_appointment_date(
                                                     agent,
@@ -6637,6 +6639,7 @@ def process_allocation_files_with_dates(
                                                         ntbp_row_idx
                                                     )
                                                     agent["allocated"] += 1
+                                                    agent["ntbp_allocated"] = agent.get("ntbp_allocated", 0) + 1
                                                     processed_df.at[
                                                         ntbp_row_idx, "Agent Name"
                                                     ] = agent["name"]
@@ -6655,20 +6658,22 @@ def process_allocation_files_with_dates(
                                         # If we couldn't assign this row, check if any agents still have capacity
                                         if not assigned:
                                             # Final check - refresh available agents
+                                            # Limit: No agent can receive more than 15 NTBP rows
                                             available_pb_agents = [
                                                 a
                                                 for a in agents_with_pb_preference
-                                                if a["capacity"] > a["allocated"]
+                                                if a["capacity"] > a["allocated"] and a.get("ntbp_allocated", 0) < 15
                                             ]
                                             if not available_pb_agents:
-                                                # No more capacity - stop allocation
+                                                # No more capacity or all agents reached NTBP limit - stop allocation
                                                 break
                             else:
-                                # If NTBP rows are fewer than total capacity, allocate ALL to a single agent
+                                # If NTBP rows are fewer than total capacity, allocate to agents
+                                # Limit: No agent can receive more than 15 NTBP rows
                                 available_pb_agents = [
                                     a
                                     for a in agents_with_pb_preference
-                                    if a["capacity"] > a["allocated"]
+                                    if a["capacity"] > a["allocated"] and a.get("ntbp_allocated", 0) < 15
                                 ]
                                 if available_pb_agents:
                                     # Sort by remaining capacity (highest first) to pick best agent
@@ -6676,8 +6681,9 @@ def process_allocation_files_with_dates(
                                         key=lambda x: x["capacity"] - x["allocated"],
                                         reverse=True,
                                     )
-                                    # Allocate ALL NTBP rows, starting with the agent with highest capacity
-                                    # If that agent fills up, continue with next agent
+                                    # Allocate NTBP rows, starting with the agent with highest capacity
+                                    # If that agent fills up or reaches NTBP limit, continue with next agent
+                                    # Limit: No agent can receive more than 15 NTBP rows
                                     remaining_ntbp_rows = all_ntbp_rows.copy()
                                     for agent in available_pb_agents:
                                         if not remaining_ntbp_rows:
@@ -6685,9 +6691,10 @@ def process_allocation_files_with_dates(
                                         available = (
                                             agent["capacity"] - agent["allocated"]
                                         )
-                                        if available > 0:
+                                        ntbp_limit_remaining = 15 - agent.get("ntbp_allocated", 0)
+                                        if available > 0 and ntbp_limit_remaining > 0:
                                             rows_to_assign = min(
-                                                available, len(remaining_ntbp_rows)
+                                                available, len(remaining_ntbp_rows), ntbp_limit_remaining
                                             )
                                             if rows_to_assign > 0:
                                                 assigned = remaining_ntbp_rows[
@@ -6731,6 +6738,7 @@ def process_allocation_files_with_dates(
                                                     agent["allocated"] += len(
                                                         filtered_assigned
                                                     )
+                                                    agent["ntbp_allocated"] = agent.get("ntbp_allocated", 0) + len(filtered_assigned)
                                                     for idx in filtered_assigned:
                                                         processed_df.at[
                                                             idx, "Agent Name"

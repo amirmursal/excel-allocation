@@ -7374,13 +7374,19 @@ def process_allocation_files_with_dates(
                                             carrier,
                                             carrier_rows,
                                         ) in rows_by_carrier.items():
-                                            available_sec_single = [
-                                                a
-                                                for a in sec_single_agents
-                                                if (a["capacity"] - a["allocated"]) > 0
-                                                and a.get("assigned_insurance")
-                                                in (None, carrier)
-                                            ]
+                                            # CRITICAL: Filter agents who can work with this PRIMARY insurance company
+                                            # Secondary insurance rows should only be allocated if agent can work with the PRIMARY insurance
+                                            available_sec_single = []
+                                            for a in sec_single_agents:
+                                                if (a["capacity"] - a["allocated"]) > 0:
+                                                    # Check if agent can work with the PRIMARY insurance company
+                                                    can_work_with_primary = can_agent_work_with_insurance(
+                                                        a, carrier
+                                                    )
+                                                    # Also check if assigned insurance matches (for "Sec + Single" logic)
+                                                    assigned_matches = a.get("assigned_insurance") in (None, carrier)
+                                                    if can_work_with_primary and assigned_matches:
+                                                        available_sec_single.append(a)
 
                                             if available_sec_single:
                                                 available_sec_single.sort(
@@ -7659,9 +7665,7 @@ def process_allocation_files_with_dates(
 
                                         row_pos = 0
                                         for agent in sec_other_agents:
-                                            if row_pos >= len(
-                                                rows_with_secondary_insurance
-                                            ):
+                                            if row_pos >= len(rows_with_secondary_insurance):
                                                 break
                                             # Calculate remaining capacity
                                             remaining_capacity = (
@@ -7678,17 +7682,34 @@ def process_allocation_files_with_dates(
                                             )
                                             if remaining <= 0:
                                                 continue
+                                            
+                                            # CRITICAL: Filter secondary insurance rows where agent can work with PRIMARY insurance
+                                            # Only allocate if agent can work with the PRIMARY insurance company from "Dental Primary Ins Carr"
+                                            valid_secondary_rows = []
+                                            for row_idx in rows_with_secondary_insurance[row_pos:]:
+                                                # Get primary insurance from "Dental Primary Ins Carr"
+                                                if insurance_carrier_col and pd.notna(
+                                                    processed_df.at[row_idx, insurance_carrier_col]
+                                                ):
+                                                    primary_insurance = str(
+                                                        processed_df.at[row_idx, insurance_carrier_col]
+                                                    ).strip()
+                                                    # Check if agent can work with this PRIMARY insurance
+                                                    if can_agent_work_with_insurance(agent, primary_insurance):
+                                                        valid_secondary_rows.append(row_idx)
+                                            
+                                            if not valid_secondary_rows:
+                                                # No rows this agent can work with - move to next agent
+                                                # Update row_pos to skip rows we checked
+                                                row_pos = len(rows_with_secondary_insurance)
+                                                continue
+                                            
                                             take = min(
                                                 remaining,
-                                                len(rows_with_secondary_insurance)
-                                                - row_pos,
+                                                len(valid_secondary_rows),
                                             )
                                             if take > 0:
-                                                slice_rows = (
-                                                    rows_with_secondary_insurance[
-                                                        row_pos : row_pos + take
-                                                    ]
-                                                )
+                                                slice_rows = valid_secondary_rows[:take]
                                                 # Filter out "Not to work" rows and check appointment date limit
                                                 filtered_slice = []
                                                 for idx in slice_rows:

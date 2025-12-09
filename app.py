@@ -4443,16 +4443,36 @@ def format_insurance_company_name(insurance_text):
                 state = clean_insurance_name(dd_match.group(1))
                 # Remove "PLAN OF" if it appears in the state text
                 state = re.sub(r"\bplan\s+of\s+", "", state, flags=re.IGNORECASE)
-                # Remove common suffixes
+                # Remove common suffixes like "(Individual", "Ins", "Indv"
+                # Remove "(Individual" and everything after it
+                state = re.sub(r"\s*\(Individual.*", "", state, flags=re.IGNORECASE)
+                # Remove standalone "Ins" at the end (word boundary to avoid removing "Insurance")
+                state = re.sub(r"\s+Ins\b", "", state, flags=re.IGNORECASE)
+                # Remove standalone "Indv" at the end
+                state = re.sub(r"\s+Indv\b", "", state, flags=re.IGNORECASE)
+                # Remove "-Basic" suffix (e.g., "DD Georgia-Basic" -> "DD Georgia")
+                state = re.sub(r"\s*-\s*Basic\b", "", state, flags=re.IGNORECASE)
+                # Remove standalone "Plan" at the end (e.g., "DD California Federal Plan" -> "DD California Federal")
+                state = re.sub(r"\s+Plan\b", "", state, flags=re.IGNORECASE)
+                # Remove other common suffixes in parentheses
                 state = re.sub(r"\s*\(.*?\)", "", state)
                 # Remove trailing periods, pipes, and other special characters
                 state = re.sub(r"[|.]+\s*$", "", state)
                 state = correct_state_typos(state)
                 state = expand_state_abbreviations(state)
                 state = format_state_name(state)
-                formatted = clean_insurance_name(f"DD {state}")
+
+                # If state is empty or just "plan" after cleaning, return "DD"
+                if not state or state.strip().lower() == "plan":
+                    formatted = clean_insurance_name("DD")
+                else:
+                    formatted = clean_insurance_name(f"DD {state}")
             else:
-                formatted = clean_insurance_name("DD")
+                # Check if it's just "DD plan" or "DD Plan" without state
+                if re.search(r"^DD\s+plan\s*$", company_name, re.IGNORECASE):
+                    formatted = clean_insurance_name("DD")
+                else:
+                    formatted = clean_insurance_name("DD")
         elif re.search(r"delta\s+dental", company_name, re.IGNORECASE):
             # Handle "Delta Dental" variations
             delta_match = re.search(
@@ -4878,7 +4898,7 @@ def expand_insurance_groups(insurance_list_str):
             if has_dd_toolkit
             else ("DD Toolkits" if has_dd_toolkits else "DD")
         )
-    
+
     # Add "DD All" marker if found - this will be handled dynamically in matching
     # "DD All" matches ANY company starting with "DD" prefix, not just predefined groups
     if has_dd_all:
@@ -4996,10 +5016,12 @@ def safe_extend_row_indices(
     remark_col,
     agent_name,
     appointment_date_col=None,
+    insurance_carrier_col=None,
 ):
     """
     Safely extend agent's row_indices, filtering out "Not to work" rows.
     Also enforces limit of 20 rows per appointment date per agent.
+    ✅ FINAL VALIDATION: Checks insurance compatibility before allocation.
     Returns the number of rows actually allocated.
     """
     filtered_indices = [
@@ -5022,13 +5044,26 @@ def safe_extend_row_indices(
                     final_filtered_indices.append(idx)
         filtered_indices = final_filtered_indices
 
-    if filtered_indices:
-        agent["row_indices"].extend(filtered_indices)
-        agent["allocated"] += len(filtered_indices)
+    # ✅ FINAL VALIDATION: Check insurance compatibility before allocation
+    validated_indices = []
+    if insurance_carrier_col and insurance_carrier_col in processed_df.columns:
         for idx in filtered_indices:
+            if idx < len(processed_df):
+                row_insurance = processed_df.at[idx, insurance_carrier_col]
+                # Final insurance validation before allocation
+                if can_agent_work_with_insurance(agent, row_insurance):
+                    validated_indices.append(idx)
+    else:
+        # If no insurance column, use filtered_indices as-is (backward compatibility)
+        validated_indices = filtered_indices
+
+    if validated_indices:
+        agent["row_indices"].extend(validated_indices)
+        agent["allocated"] += len(validated_indices)
+        for idx in validated_indices:
             processed_df.at[idx, "Agent Name"] = agent_name
 
-    return len(filtered_indices)
+    return len(validated_indices)
 
 
 # Insurance companies that "Afreen Ansari" can work with (in addition to her regular list)
@@ -5149,7 +5184,7 @@ def check_insurance_match(
         # or "Dental Claims" matching anything not explicitly in the list
         if formatted_row_lower == comp_lower:
             return True
-        
+
         # NO substring matching to prevent false positives
         # "Medico Insurance Company" will ONLY match if "Medico Insurance Company" is EXACTLY in the list
         # "Dental Claims" will ONLY match if "Dental Claims" is EXACTLY in the list
@@ -5158,7 +5193,7 @@ def check_insurance_match(
         # If agent has "DD All" capability, match any row insurance starting with "DD "
         if comp_lower == "dd all" and formatted_row_lower.startswith("dd "):
             return True
-        
+
         # If row insurance is "DD All", match if agent has any DD company capability
         if formatted_row_lower == "dd all":
             # Check if agent has any DD-related capability
@@ -5229,14 +5264,14 @@ def can_agent_work_with_insurance(agent, row_insurance):
     """
     Centralized function to check if an agent can work with a specific insurance company.
     Uses the agent's insurance_companies array for strict validation.
-    
+
     Args:
         agent: Agent dictionary containing 'insurance_companies' array and 'is_senior' flag
         row_insurance: Insurance company name from data row
-    
+
     Returns:
         True if agent can work with this insurance, False otherwise
-    
+
     Rules:
         - Senior agents with "ALL_COMPANIES" in their list can work with any insurance
         - Senior agents with populated insurance list are restricted to their list
@@ -5247,11 +5282,11 @@ def can_agent_work_with_insurance(agent, row_insurance):
     agent_insurance_list = agent.get("insurance_companies", [])
     is_senior = agent.get("is_senior", False)
     agent_name = agent.get("name")
-    
+
     # Check if agent has "ALL_COMPANIES" marker (truly unrestricted senior)
     if is_senior and agent_insurance_list and "ALL_COMPANIES" in agent_insurance_list:
         return True
-    
+
     # If agent has a populated insurance list, validate against it strictly
     # Even senior agents with specific lists should be restricted
     if agent_insurance_list and "ALL_COMPANIES" not in agent_insurance_list:
@@ -5260,17 +5295,17 @@ def can_agent_work_with_insurance(agent, row_insurance):
             row_insurance,
             agent_insurance_list,
             is_senior=False,  # Don't bypass check - validate against list
-            agent_name=agent_name
+            agent_name=agent_name,
         )
-    
+
     # If no insurance list and not senior, cannot work with any insurance
     if not agent_insurance_list and not is_senior:
         return False
-    
+
     # Fallback: truly senior agent with no restrictions (empty list or None)
     if is_senior and (not agent_insurance_list or len(agent_insurance_list) == 0):
         return True
-    
+
     # Default: cannot work
     return False
 
@@ -6454,19 +6489,27 @@ def process_allocation_files_with_dates(
                                         agent_insurance_lower.add(comp.strip().lower())
 
                         # Identify unmatched insurance companies (not in any non-senior agent's list)
-                        # Compare case-insensitively
+                        # ✅ Use proper insurance matching function instead of simple substring matching
                         unmatched_insurance_companies = set()
                         for data_comp in all_data_insurance_companies:
-                            data_comp_lower = data_comp.lower()
-                            # Check if this insurance company matches any agent's insurance companies
                             is_matched = False
-                            for agent_comp_lower in agent_insurance_lower:
+                            # Check if this insurance matches any non-senior agent's insurance list
+                            for agent in agent_allocations:
                                 if (
-                                    data_comp_lower in agent_comp_lower
-                                    or agent_comp_lower in data_comp_lower
+                                    not agent["is_senior"]
+                                    and agent["name"] != "Afreen Ansari"
+                                    and agent.get("insurance_companies")
                                 ):
-                                    is_matched = True
-                                    break
+                                    agent_insurance_list = agent["insurance_companies"]
+                                    # Use proper matching function
+                                    if check_insurance_match(
+                                        data_comp,
+                                        agent_insurance_list,
+                                        is_senior=False,
+                                        agent_name=agent.get("name"),
+                                    ):
+                                        is_matched = True
+                                        break
                             if not is_matched:
                                 unmatched_insurance_companies.add(data_comp)
 
@@ -6680,7 +6723,8 @@ def process_allocation_files_with_dates(
                                 available_pb_agents = [
                                     a
                                     for a in agents_with_pb_preference
-                                    if a["capacity"] > a["allocated"] and a.get("ntbp_allocated", 0) < 15
+                                    if a["capacity"] > a["allocated"]
+                                    and a.get("ntbp_allocated", 0) < 15
                                 ]
 
                                 if available_pb_agents:
@@ -6700,7 +6744,8 @@ def process_allocation_files_with_dates(
                                             available_pb_agents = [
                                                 a
                                                 for a in agents_with_pb_preference
-                                                if a["capacity"] > a["allocated"] and a.get("ntbp_allocated", 0) < 15
+                                                if a["capacity"] > a["allocated"]
+                                                and a.get("ntbp_allocated", 0) < 15
                                             ]
 
                                             if not available_pb_agents:
@@ -6712,7 +6757,10 @@ def process_allocation_files_with_dates(
                                             ]
 
                                             # Check capacity, NTBP limit, and appointment date limit (max 20 per date)
-                                            if agent["capacity"] > agent["allocated"] and agent.get("ntbp_allocated", 0) < 15:
+                                            if (
+                                                agent["capacity"] > agent["allocated"]
+                                                and agent.get("ntbp_allocated", 0) < 15
+                                            ):
                                                 # Check appointment date limit before allocating
                                                 if can_allocate_row_by_appointment_date(
                                                     agent,
@@ -6724,7 +6772,10 @@ def process_allocation_files_with_dates(
                                                         ntbp_row_idx
                                                     )
                                                     agent["allocated"] += 1
-                                                    agent["ntbp_allocated"] = agent.get("ntbp_allocated", 0) + 1
+                                                    agent["ntbp_allocated"] = (
+                                                        agent.get("ntbp_allocated", 0)
+                                                        + 1
+                                                    )
                                                     processed_df.at[
                                                         ntbp_row_idx, "Agent Name"
                                                     ] = agent["name"]
@@ -6747,7 +6798,8 @@ def process_allocation_files_with_dates(
                                             available_pb_agents = [
                                                 a
                                                 for a in agents_with_pb_preference
-                                                if a["capacity"] > a["allocated"] and a.get("ntbp_allocated", 0) < 15
+                                                if a["capacity"] > a["allocated"]
+                                                and a.get("ntbp_allocated", 0) < 15
                                             ]
                                             if not available_pb_agents:
                                                 # No more capacity or all agents reached NTBP limit - stop allocation
@@ -6758,7 +6810,8 @@ def process_allocation_files_with_dates(
                                 available_pb_agents = [
                                     a
                                     for a in agents_with_pb_preference
-                                    if a["capacity"] > a["allocated"] and a.get("ntbp_allocated", 0) < 15
+                                    if a["capacity"] > a["allocated"]
+                                    and a.get("ntbp_allocated", 0) < 15
                                 ]
                                 if available_pb_agents:
                                     # Sort by remaining capacity (highest first) to pick best agent
@@ -6776,10 +6829,14 @@ def process_allocation_files_with_dates(
                                         available = (
                                             agent["capacity"] - agent["allocated"]
                                         )
-                                        ntbp_limit_remaining = 15 - agent.get("ntbp_allocated", 0)
+                                        ntbp_limit_remaining = 15 - agent.get(
+                                            "ntbp_allocated", 0
+                                        )
                                         if available > 0 and ntbp_limit_remaining > 0:
                                             rows_to_assign = min(
-                                                available, len(remaining_ntbp_rows), ntbp_limit_remaining
+                                                available,
+                                                len(remaining_ntbp_rows),
+                                                ntbp_limit_remaining,
                                             )
                                             if rows_to_assign > 0:
                                                 assigned = remaining_ntbp_rows[
@@ -6823,7 +6880,9 @@ def process_allocation_files_with_dates(
                                                     agent["allocated"] += len(
                                                         filtered_assigned
                                                     )
-                                                    agent["ntbp_allocated"] = agent.get("ntbp_allocated", 0) + len(filtered_assigned)
+                                                    agent["ntbp_allocated"] = agent.get(
+                                                        "ntbp_allocated", 0
+                                                    ) + len(filtered_assigned)
                                                     for idx in filtered_assigned:
                                                         processed_df.at[
                                                             idx, "Agent Name"
@@ -7440,9 +7499,10 @@ def process_allocation_files_with_dates(
 
                                                     # Check if agent can work with this insurance company
                                                     # Use centralized validation function for strict checking
-                                                    agent_can_work = can_agent_work_with_insurance(
-                                                        agent,
-                                                        carrier
+                                                    agent_can_work = (
+                                                        can_agent_work_with_insurance(
+                                                            agent, carrier
+                                                        )
                                                     )
 
                                                     # Only proceed if agent can work with this insurance company
@@ -8349,8 +8409,7 @@ def process_allocation_files_with_dates(
                                             # Second check: row insurance must be in agent's "Insurance List" (capabilities)
                                             # Use centralized validation function for strict checking
                                             can_work = can_agent_work_with_insurance(
-                                                agent,
-                                                row_insurance
+                                                agent, row_insurance
                                             )
 
                                             if can_work:
@@ -8585,8 +8644,7 @@ def process_allocation_files_with_dates(
                                             # Check if row insurance is in agent's "Insurance List" (capabilities)
                                             # Use centralized validation function for strict checking
                                             can_work = can_agent_work_with_insurance(
-                                                agent,
-                                                row_insurance
+                                                agent, row_insurance
                                             )
 
                                             if can_work:
@@ -8659,9 +8717,10 @@ def process_allocation_files_with_dates(
                                             if row_insurance == assigned_ins:
                                                 # Second check: row insurance must be in agent's "Insurance List" (capabilities)
                                                 # Use centralized validation function for strict checking
-                                                can_work = can_agent_work_with_insurance(
-                                                    agent,
-                                                    row_insurance
+                                                can_work = (
+                                                    can_agent_work_with_insurance(
+                                                        agent, row_insurance
+                                                    )
                                                 )
 
                                                 if can_work:
@@ -8843,7 +8902,7 @@ def process_allocation_files_with_dates(
                         # Step 3: REMOVED - First Priority allocation to senior agents
                         # Senior agents will ONLY get unmatched insurance companies (handled in Step 4)
                         # This ensures senior agents are restricted to their insurance list for unmatched insurance
-                        
+
                         # Note: First/Second/Third Priority matched work will be allocated to non-seniors in Step 5
 
                         # Step 4: Allocate unmatched insurance companies to senior agents (after First Priority matched work)
@@ -9118,14 +9177,17 @@ def process_allocation_files_with_dates(
                                                             # Non-NTBP, non-NTC row and non-PB agent
                                                             # IMPORTANT: Validate that this unmatched insurance is in agent's insurance list
                                                             # Even for senior agents, if they have a populated insurance list, validate against it
-                                                            agent_insurance_list = senior_agent.get("insurance_companies", [])
-                                                            
+                                                            agent_insurance_list = senior_agent.get(
+                                                                "insurance_companies",
+                                                                [],
+                                                            )
+
                                                             # Check if agent can work with this insurance
                                                             can_work = can_agent_work_with_insurance(
                                                                 senior_agent,
-                                                                insurance_carrier
+                                                                insurance_carrier,
                                                             )
-                                                            
+
                                                             if can_work:
                                                                 # Insurance is in agent's list - add to matching rows
                                                                 matching_rows.append(
@@ -9190,14 +9252,15 @@ def process_allocation_files_with_dates(
                                                                     ] += 1
 
                                                         # Use safe extend function to filter out "Not to work" rows
-                                                        actual_allocated = (
-                                                            safe_extend_row_indices(
-                                                                senior_agent,
-                                                                matching_rows,
-                                                                processed_df,
-                                                                remark_col,
-                                                                senior_agent["name"],
-                                                            )
+                                                        # ✅ FINAL VALIDATION: Includes insurance validation
+                                                        actual_allocated = safe_extend_row_indices(
+                                                            senior_agent,
+                                                            matching_rows,
+                                                            processed_df,
+                                                            remark_col,
+                                                            senior_agent["name"],
+                                                            appointment_date_col=appointment_date_col,
+                                                            insurance_carrier_col=insurance_carrier_col,
                                                         )
                                                         row_idx += len(matching_rows)
 
@@ -9212,6 +9275,312 @@ def process_allocation_files_with_dates(
                                             # they will be handled later or logged
                                             if row_idx < len(row_indices):
                                                 pass
+
+                        # Step 4.5: Reshuffle logic - Reallocate senior rows to junior/trainee to free up capacity for unmatched insurance
+                        # If there are unmatched insurance rows that couldn't be allocated (seniors at capacity),
+                        # try to reallocate senior-assigned rows to junior/trainee agents who can handle them
+                        if unmatched_insurance_companies:
+                            # Collect remaining unmatched rows that need allocation
+                            remaining_unmatched_rows = []
+                            for (
+                                insurance_carrier,
+                                priority_data,
+                            ) in unmatched_data_by_priority.items():
+                                for priority in [
+                                    "First Priority",
+                                    "Second Priority",
+                                    "Third Priority",
+                                ]:
+                                    if priority in priority_data:
+                                        row_indices = priority_data[priority]
+                                        # Check which rows are still unallocated
+                                        for row_idx in row_indices:
+                                            if row_idx < len(processed_df):
+                                                current_agent = processed_df.at[
+                                                    row_idx, "Agent Name"
+                                                ]
+                                                if (
+                                                    pd.isna(current_agent)
+                                                    or not current_agent
+                                                ):
+                                                    remaining_unmatched_rows.append(
+                                                        (
+                                                            insurance_carrier,
+                                                            row_idx,
+                                                            priority,
+                                                        )
+                                                    )
+
+                            # If there are remaining unmatched rows, try reshuffling
+                            if remaining_unmatched_rows:
+                                # Find senior agents at capacity
+                                seniors_at_capacity = [
+                                    a
+                                    for a in senior_agents
+                                    if (a["capacity"] - a["allocated"]) <= 0
+                                    and len(a.get("row_indices", [])) > 0
+                                ]
+
+                                # Track which unmatched rows have been allocated
+                                allocated_unmatched_rows = set()
+
+                                # For each remaining unmatched row, try to free up senior capacity
+                                # Use a copy of the list to avoid modification during iteration
+                                for (
+                                    unmatched_insurance,
+                                    unmatched_row_idx,
+                                    unmatched_priority,
+                                ) in list(remaining_unmatched_rows):
+                                    # Skip if already allocated
+                                    if (
+                                        unmatched_insurance,
+                                        unmatched_row_idx,
+                                        unmatched_priority,
+                                    ) in allocated_unmatched_rows:
+                                        continue
+
+                                    if unmatched_row_idx >= len(processed_df):
+                                        continue
+
+                                    # Find a senior agent who can handle this unmatched insurance
+                                    target_senior = None
+                                    for senior in senior_agents:
+                                        if (
+                                            senior["capacity"] - senior["allocated"]
+                                        ) > 0:
+                                            # Check if senior can work with unmatched insurance
+                                            if can_agent_work_with_insurance(
+                                                senior, unmatched_insurance
+                                            ):
+                                                target_senior = senior
+                                                break
+
+                                    # If found senior with capacity, allocate directly
+                                    if target_senior:
+                                        if not should_skip_row_for_allocation(
+                                            unmatched_row_idx,
+                                            processed_df,
+                                            remark_col,
+                                        ):
+                                            target_senior["row_indices"].append(
+                                                unmatched_row_idx
+                                            )
+                                            target_senior["allocated"] += 1
+                                            processed_df.at[
+                                                unmatched_row_idx, "Agent Name"
+                                            ] = target_senior["name"]
+                                            allocated_unmatched_rows.add(
+                                                (
+                                                    unmatched_insurance,
+                                                    unmatched_row_idx,
+                                                    unmatched_priority,
+                                                )
+                                            )
+                                        continue
+
+                                    # If no senior with capacity, try reshuffling
+                                    if seniors_at_capacity:
+                                        reshuffle_successful = False
+                                        for senior_at_capacity in seniors_at_capacity:
+                                            # Check if this senior can handle the unmatched insurance
+                                            if not can_agent_work_with_insurance(
+                                                senior_at_capacity, unmatched_insurance
+                                            ):
+                                                continue
+
+                                            # Get rows allocated to this senior
+                                            senior_rows = senior_at_capacity.get(
+                                                "row_indices", []
+                                            )
+                                            if not senior_rows:
+                                                continue
+
+                                            # Try to find junior/trainee agents who can take some of senior's rows
+                                            # Only reallocate enough to free up capacity for unmatched insurance (1 row)
+                                            rows_to_reallocate = []
+                                            rows_needed = 1  # Need to free up 1 slot for unmatched insurance
+
+                                            for senior_row_idx in senior_rows:
+                                                if (
+                                                    len(rows_to_reallocate)
+                                                    >= rows_needed
+                                                ):
+                                                    break  # Already found enough rows to reallocate
+
+                                                if senior_row_idx >= len(processed_df):
+                                                    continue
+
+                                                # Skip special rows that shouldn't be reallocated
+                                                if remark_col and pd.notna(
+                                                    processed_df.at[
+                                                        senior_row_idx, remark_col
+                                                    ]
+                                                ):
+                                                    row_remark = (
+                                                        str(
+                                                            processed_df.at[
+                                                                senior_row_idx,
+                                                                remark_col,
+                                                            ]
+                                                        )
+                                                        .strip()
+                                                        .upper()
+                                                    )
+                                                    # Don't reallocate NTBP rows (should stay with PB agents)
+                                                    # Don't reallocate NTC rows (should stay with NTC agents)
+                                                    if (
+                                                        row_remark == "NTBP"
+                                                        or row_remark == "NTC"
+                                                    ):
+                                                        continue
+
+                                                # Get insurance for this row
+                                                row_insurance = None
+                                                if insurance_carrier_col and pd.notna(
+                                                    processed_df.at[
+                                                        senior_row_idx,
+                                                        insurance_carrier_col,
+                                                    ]
+                                                ):
+                                                    row_insurance = str(
+                                                        processed_df.at[
+                                                            senior_row_idx,
+                                                            insurance_carrier_col,
+                                                        ]
+                                                    ).strip()
+
+                                                if not row_insurance:
+                                                    continue
+
+                                                # Find junior/trainee agents who can work with this insurance
+                                                for agent in agent_allocations:
+                                                    if agent.get("is_senior", False):
+                                                        continue
+                                                    if agent.get(
+                                                        "has_pb_preference", False
+                                                    ):
+                                                        continue
+                                                    if (
+                                                        agent["capacity"]
+                                                        - agent["allocated"]
+                                                    ) <= 0:
+                                                        continue
+
+                                                    # Check if agent can work with this insurance
+                                                    if can_agent_work_with_insurance(
+                                                        agent, row_insurance
+                                                    ):
+                                                        # Found a junior/trainee who can take this row
+                                                        rows_to_reallocate.append(
+                                                            (
+                                                                senior_row_idx,
+                                                                agent,
+                                                                row_insurance,
+                                                            )
+                                                        )
+                                                        break  # One row reallocated, move to next
+
+                                            # Reallocate rows from senior to junior/trainee
+                                            if rows_to_reallocate:
+                                                for (
+                                                    realloc_row_idx,
+                                                    target_agent,
+                                                    realloc_insurance,
+                                                ) in rows_to_reallocate:
+                                                    # Remove from senior
+                                                    if (
+                                                        realloc_row_idx
+                                                        in senior_at_capacity[
+                                                            "row_indices"
+                                                        ]
+                                                    ):
+                                                        senior_at_capacity[
+                                                            "row_indices"
+                                                        ].remove(realloc_row_idx)
+                                                        senior_at_capacity[
+                                                            "allocated"
+                                                        ] = max(
+                                                            0,
+                                                            senior_at_capacity[
+                                                                "allocated"
+                                                            ]
+                                                            - 1,
+                                                        )
+                                                        processed_df.at[
+                                                            realloc_row_idx,
+                                                            "Agent Name",
+                                                        ] = None
+
+                                                    # Add to junior/trainee with insurance validation
+                                                    if not should_skip_row_for_allocation(
+                                                        realloc_row_idx,
+                                                        processed_df,
+                                                        remark_col,
+                                                    ):
+                                                        # ✅ FINAL VALIDATION: Check insurance before reallocation
+                                                        if insurance_carrier_col:
+                                                            realloc_row_insurance = processed_df.at[
+                                                                realloc_row_idx,
+                                                                insurance_carrier_col,
+                                                            ]
+                                                            if can_agent_work_with_insurance(
+                                                                target_agent,
+                                                                realloc_row_insurance,
+                                                            ):
+                                                                target_agent[
+                                                                    "row_indices"
+                                                                ].append(
+                                                                    realloc_row_idx
+                                                                )
+                                                                target_agent[
+                                                                    "allocated"
+                                                                ] += 1
+                                                                processed_df.at[
+                                                                    realloc_row_idx,
+                                                                    "Agent Name",
+                                                                ] = target_agent["name"]
+
+                                                # Now check if senior has capacity for unmatched insurance
+                                                if (
+                                                    senior_at_capacity["capacity"]
+                                                    - senior_at_capacity["allocated"]
+                                                ) > 0:
+                                                    # Allocate unmatched insurance row to freed-up senior
+                                                    if not should_skip_row_for_allocation(
+                                                        unmatched_row_idx,
+                                                        processed_df,
+                                                        remark_col,
+                                                    ):
+                                                        # ✅ FINAL VALIDATION: Check insurance before allocation
+                                                        if can_agent_work_with_insurance(
+                                                            senior_at_capacity,
+                                                            unmatched_insurance,
+                                                        ):
+                                                            senior_at_capacity[
+                                                                "row_indices"
+                                                            ].append(unmatched_row_idx)
+                                                            senior_at_capacity[
+                                                                "allocated"
+                                                            ] += 1
+                                                            processed_df.at[
+                                                                unmatched_row_idx,
+                                                                "Agent Name",
+                                                            ] = senior_at_capacity[
+                                                                "name"
+                                                            ]
+                                                            allocated_unmatched_rows.add(
+                                                                (
+                                                                    unmatched_insurance,
+                                                                    unmatched_row_idx,
+                                                                    unmatched_priority,
+                                                                )
+                                                            )
+                                                            reshuffle_successful = True
+                                                            break  # Successfully allocated, move to next unmatched row
+
+                                        # If reshuffle was successful, continue to next unmatched row
+                                        if reshuffle_successful:
+                                            continue
 
                         # Step 5: Allocate remaining matched insurance companies to capable agents (normal allocation)
 
@@ -9342,10 +9711,9 @@ def process_allocation_files_with_dates(
                                         # ✅ STRICT: Check if agent can work with this insurance company
                                         # Senior agents MUST check their insurance list (unless they have "ALL_COMPANIES")
                                         can_work = can_agent_work_with_insurance(
-                                            agent,
-                                            insurance_carrier
+                                            agent, insurance_carrier
                                         )
-                                        
+
                                         # Legacy code below - replaced by centralized validation above
                                         # Old logic (disabled):
                                         # - Senior agents could work with any insurance (WRONG!)
@@ -9981,15 +10349,21 @@ def process_allocation_files_with_dates(
                                             insurance_carrier
                                         ].append(idx)
 
-                            # Allocate unallocated rows to ALL agents with capacity (not just matching capabilities)
-                            # This ensures maximum utilization of agent capacity
+                            # Allocate unallocated rows prioritizing junior/trainee agents over seniors
+                            # This ensures junior/trainee agents get work they can handle before seniors take it
                             for (
                                 insurance_carrier,
                                 row_indices_list,
                             ) in unallocated_by_insurance.items():
                                 # Find agents with matching insurance capabilities (except PB agents)
                                 # ✅ STRICT: Only agents with matching insurance are considered
-                                capable_agents = []  # Agents with matching insurance capabilities
+                                # ✅ PRIORITY: Separate junior/trainee and senior agents
+                                junior_trainee_agents = (
+                                    []
+                                )  # Junior/Trainee agents with matching insurance
+                                senior_agents = (
+                                    []
+                                )  # Senior agents with matching insurance
 
                                 for agent in agent_allocations:
                                     remaining_capacity = (
@@ -10018,14 +10392,25 @@ def process_allocation_files_with_dates(
                                         agent.get("name"),
                                     )
 
-                                    # Add to capable_agents ONLY if they match capabilities or are Afreen Ansari
+                                    # Add to appropriate list ONLY if they match capabilities or are Afreen Ansari
                                     # ✅ STRICT: Only agents with matching insurance are added
                                     if can_work or is_afreen_ansari:
-                                        capable_agents.append(agent)
+                                        # ✅ PRIORITY: Separate junior/trainee from seniors
+                                        if agent.get("is_senior", False):
+                                            senior_agents.append(agent)
+                                        else:
+                                            junior_trainee_agents.append(agent)
 
-                                # ✅ STRICT: Only use agents with matching insurance capabilities
-                                # NO FALLBACK to all agents - if no matching agents, rows remain unallocated
-                                agents_to_use = capable_agents
+                                # ✅ PRIORITY: Use junior/trainee agents first, then seniors only if needed
+                                # This ensures junior/trainee agents get work they can handle before seniors
+                                if junior_trainee_agents:
+                                    agents_to_use = junior_trainee_agents
+                                elif senior_agents:
+                                    # Only use seniors if no junior/trainee agents available
+                                    agents_to_use = senior_agents
+                                else:
+                                    # No matching agents - rows remain unallocated
+                                    agents_to_use = []
 
                                 # Allocate rows to agents (round-robin)
                                 # Only allocate to agents with matching insurance capabilities
@@ -10078,12 +10463,36 @@ def process_allocation_files_with_dates(
                                             if not should_skip_row_for_allocation(
                                                 row_idx, processed_df, remark_col
                                             ):
-                                                agent["row_indices"].append(row_idx)
-                                                agent["allocated"] += 1
-                                                processed_df.at[
-                                                    row_idx, "Agent Name"
-                                                ] = agent["name"]
-                                                agent_idx += 1
+                                                # ✅ FINAL VALIDATION: Check insurance compatibility before allocation
+                                                row_insurance = None
+                                                if (
+                                                    insurance_carrier_col
+                                                    and insurance_carrier_col
+                                                    in processed_df.columns
+                                                ):
+                                                    row_insurance = processed_df.at[
+                                                        row_idx, insurance_carrier_col
+                                                    ]
+
+                                                # Only allocate if insurance matches (or if no insurance column for backward compatibility)
+                                                can_allocate = True
+                                                if row_insurance is not None:
+                                                    can_allocate = (
+                                                        can_agent_work_with_insurance(
+                                                            agent, row_insurance
+                                                        )
+                                                    )
+
+                                                if can_allocate:
+                                                    agent["row_indices"].append(row_idx)
+                                                    agent["allocated"] += 1
+                                                    processed_df.at[
+                                                        row_idx, "Agent Name"
+                                                    ] = agent["name"]
+                                                    agent_idx += 1
+                                                else:
+                                                    # Insurance doesn't match - skip this row
+                                                    continue
                                             else:
                                                 # Skip this row if it's "Not to work", but continue to next row
                                                 continue

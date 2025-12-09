@@ -5009,6 +5009,58 @@ def can_allocate_row_by_appointment_date(
         return True
 
 
+def can_allocate_row_to_agent(
+    agent, row_idx, processed_df, secondary_insurance_col=None
+):
+    """
+    Check if a row can be allocated to an agent based on their allocation preference.
+    Specifically prevents secondary insurance rows from being allocated to "Single" preference agents.
+
+    Returns True if the row can be allocated, False otherwise.
+    """
+    # For "Single" preference agents (not "Sec + Single"), skip secondary insurance rows
+    # Double-check: also check raw allocation preference to catch any edge cases
+    has_single_pref = agent.get("has_single_preference", False)
+    has_sec_pref = agent.get("has_sec_preference", False)
+
+    # Also check raw allocation preference as backup
+    allocation_pref_raw = agent.get("allocation_preference_raw", "")
+    if allocation_pref_raw:
+        allocation_pref_upper = str(allocation_pref_raw).strip().upper()
+        # Check if it's "Single" but not "Sec + Single"
+        if "SINGLE" in allocation_pref_upper and "SEC" not in allocation_pref_upper:
+            has_single_pref = True
+        if "SEC" in allocation_pref_upper:
+            has_sec_pref = True
+
+    is_single_pref = has_single_pref and not has_sec_pref
+
+    if is_single_pref:
+        # Detect secondary insurance column if not provided
+        if not secondary_insurance_col:
+            possible_col_names = [
+                "Dental Secondary Ins Carr",
+                "Dental Secondary Ins",
+                "Secondary Insurance",
+            ]
+            for col_name in possible_col_names:
+                if col_name in processed_df.columns:
+                    secondary_insurance_col = col_name
+                    break
+
+        if secondary_insurance_col and secondary_insurance_col in processed_df.columns:
+            if row_idx < len(processed_df):
+                if pd.notna(processed_df.at[row_idx, secondary_insurance_col]):
+                    secondary_val = str(
+                        processed_df.at[row_idx, secondary_insurance_col]
+                    ).strip()
+                    if secondary_val and secondary_val.lower() != "nan":
+                        # This is a secondary insurance row - cannot allocate to "Single" preference agent
+                        return False
+
+    return True
+
+
 def safe_extend_row_indices(
     agent,
     row_indices_list,
@@ -5022,11 +5074,31 @@ def safe_extend_row_indices(
     Safely extend agent's row_indices, filtering out "Not to work" rows.
     Also enforces limit of 20 rows per appointment date per agent.
     ✅ FINAL VALIDATION: Checks insurance compatibility before allocation.
+    ✅ CRITICAL: Filters out secondary insurance rows for "Single" preference agents.
     Returns the number of rows actually allocated.
     """
+    # Detect secondary insurance column
+    secondary_insurance_col = None
+    possible_col_names = [
+        "Dental Secondary Ins Carr",
+        "Dental Secondary Ins",
+        "Secondary Insurance",
+    ]
+    for col_name in possible_col_names:
+        if col_name in processed_df.columns:
+            secondary_insurance_col = col_name
+            break
+
+    # First filter: Remove secondary insurance rows for "Single" preference agents
+    pre_filtered_indices = []
+    for idx in row_indices_list:
+        # Use helper function to check if row can be allocated to this agent
+        if can_allocate_row_to_agent(agent, idx, processed_df, secondary_insurance_col):
+            pre_filtered_indices.append(idx)
+
     filtered_indices = [
         idx
-        for idx in row_indices_list
+        for idx in pre_filtered_indices
         if not should_skip_row_for_allocation(idx, processed_df, remark_col)
     ]
 
@@ -7380,12 +7452,19 @@ def process_allocation_files_with_dates(
                                             for a in sec_single_agents:
                                                 if (a["capacity"] - a["allocated"]) > 0:
                                                     # Check if agent can work with the PRIMARY insurance company
-                                                    can_work_with_primary = can_agent_work_with_insurance(
-                                                        a, carrier
+                                                    can_work_with_primary = (
+                                                        can_agent_work_with_insurance(
+                                                            a, carrier
+                                                        )
                                                     )
                                                     # Also check if assigned insurance matches (for "Sec + Single" logic)
-                                                    assigned_matches = a.get("assigned_insurance") in (None, carrier)
-                                                    if can_work_with_primary and assigned_matches:
+                                                    assigned_matches = a.get(
+                                                        "assigned_insurance"
+                                                    ) in (None, carrier)
+                                                    if (
+                                                        can_work_with_primary
+                                                        and assigned_matches
+                                                    ):
                                                         available_sec_single.append(a)
 
                                             if available_sec_single:
@@ -7665,7 +7744,9 @@ def process_allocation_files_with_dates(
 
                                         row_pos = 0
                                         for agent in sec_other_agents:
-                                            if row_pos >= len(rows_with_secondary_insurance):
+                                            if row_pos >= len(
+                                                rows_with_secondary_insurance
+                                            ):
                                                 break
                                             # Calculate remaining capacity
                                             remaining_capacity = (
@@ -7682,28 +7763,43 @@ def process_allocation_files_with_dates(
                                             )
                                             if remaining <= 0:
                                                 continue
-                                            
+
                                             # CRITICAL: Filter secondary insurance rows where agent can work with PRIMARY insurance
                                             # Only allocate if agent can work with the PRIMARY insurance company from "Dental Primary Ins Carr"
                                             valid_secondary_rows = []
-                                            for row_idx in rows_with_secondary_insurance[row_pos:]:
+                                            for (
+                                                row_idx
+                                            ) in rows_with_secondary_insurance[
+                                                row_pos:
+                                            ]:
                                                 # Get primary insurance from "Dental Primary Ins Carr"
                                                 if insurance_carrier_col and pd.notna(
-                                                    processed_df.at[row_idx, insurance_carrier_col]
+                                                    processed_df.at[
+                                                        row_idx, insurance_carrier_col
+                                                    ]
                                                 ):
                                                     primary_insurance = str(
-                                                        processed_df.at[row_idx, insurance_carrier_col]
+                                                        processed_df.at[
+                                                            row_idx,
+                                                            insurance_carrier_col,
+                                                        ]
                                                     ).strip()
                                                     # Check if agent can work with this PRIMARY insurance
-                                                    if can_agent_work_with_insurance(agent, primary_insurance):
-                                                        valid_secondary_rows.append(row_idx)
-                                            
+                                                    if can_agent_work_with_insurance(
+                                                        agent, primary_insurance
+                                                    ):
+                                                        valid_secondary_rows.append(
+                                                            row_idx
+                                                        )
+
                                             if not valid_secondary_rows:
                                                 # No rows this agent can work with - move to next agent
                                                 # Update row_pos to skip rows we checked
-                                                row_pos = len(rows_with_secondary_insurance)
+                                                row_pos = len(
+                                                    rows_with_secondary_insurance
+                                                )
                                                 continue
-                                            
+
                                             take = min(
                                                 remaining,
                                                 len(valid_secondary_rows),
@@ -8751,14 +8847,35 @@ def process_allocation_files_with_dates(
 
                                     # Allocate same insurance rows until capacity is full (for both Abdul Hakim and other agents)
                                     if same_insurance_rows:
-                                        # Final safety check: Filter out any "Not to work" rows
-                                        filtered_same_insurance_rows = [
-                                            idx
-                                            for idx in same_insurance_rows
-                                            if not should_skip_row_for_allocation(
+                                        # Final safety check: Filter out any "Not to work" rows AND secondary insurance rows
+                                        # CRITICAL: "Single" preference agents should NEVER get rows with secondary insurance
+                                        filtered_same_insurance_rows = []
+                                        for idx in same_insurance_rows:
+                                            # Skip "Not to work" rows
+                                            if should_skip_row_for_allocation(
                                                 idx, processed_df, remark_col
-                                            )
-                                        ]
+                                            ):
+                                                continue
+
+                                            # CRITICAL: Skip rows with ANY value in "Dental Secondary Ins Carr" column
+                                            if secondary_insurance_col and pd.notna(
+                                                processed_df.at[
+                                                    idx, secondary_insurance_col
+                                                ]
+                                            ):
+                                                secondary_val = str(
+                                                    processed_df.at[
+                                                        idx, secondary_insurance_col
+                                                    ]
+                                                ).strip()
+                                                # If there's ANY value (not empty, not "nan"), skip this row
+                                                if (
+                                                    secondary_val
+                                                    and secondary_val.lower() != "nan"
+                                                ):
+                                                    continue  # Skip - this row has secondary insurance
+
+                                            filtered_same_insurance_rows.append(idx)
 
                                         allocated_count = 0
                                         while (
@@ -10053,6 +10170,54 @@ def process_allocation_files_with_dates(
 
                                             # Use remaining_rows instead of rows
                                             rows = remaining_rows
+
+                                            # CRITICAL: Filter out secondary insurance rows for "Single" preference agents
+                                            # Check if any Phase 1 agents are "Single" preference (not "Sec + Single")
+                                            single_pref_in_phase1 = [
+                                                a
+                                                for a in phase1_agents
+                                                if a.get("has_single_preference", False)
+                                                and not a.get(
+                                                    "has_sec_preference", False
+                                                )
+                                            ]
+
+                                            if (
+                                                single_pref_in_phase1
+                                                and secondary_insurance_col
+                                            ):
+                                                # Filter rows to exclude secondary insurance for "Single" preference agents
+                                                filtered_rows_for_single = []
+                                                for row_idx in rows:
+                                                    # Check if this row has secondary insurance
+                                                    has_secondary = False
+                                                    if pd.notna(
+                                                        processed_df.at[
+                                                            row_idx,
+                                                            secondary_insurance_col,
+                                                        ]
+                                                    ):
+                                                        secondary_val = str(
+                                                            processed_df.at[
+                                                                row_idx,
+                                                                secondary_insurance_col,
+                                                            ]
+                                                        ).strip()
+                                                        if (
+                                                            secondary_val
+                                                            and secondary_val.lower()
+                                                            != "nan"
+                                                        ):
+                                                            has_secondary = True
+
+                                                    # For "Single" preference agents, skip rows with secondary insurance
+                                                    if not has_secondary:
+                                                        filtered_rows_for_single.append(
+                                                            row_idx
+                                                        )
+
+                                                # Replace rows with filtered version
+                                                rows = filtered_rows_for_single
                                             # Sort by remaining capacity desc to maximize concentration
                                             phase1_agents.sort(
                                                 key=lambda a: a["capacity"]
@@ -10078,6 +10243,30 @@ def process_allocation_files_with_dates(
                                                     slice_rows = rows[
                                                         row_pos : row_pos + take
                                                     ]
+
+                                                    # CRITICAL: Final check for "Single" preference agents - filter out secondary insurance rows
+                                                    is_single_pref_final = agent.get(
+                                                        "has_single_preference", False
+                                                    ) and not agent.get(
+                                                        "has_sec_preference", False
+                                                    )
+                                                    if (
+                                                        is_single_pref_final
+                                                        and secondary_insurance_col
+                                                    ):
+                                                        filtered_slice_rows = []
+                                                        for row_idx in slice_rows:
+                                                            if can_allocate_row_to_agent(
+                                                                agent,
+                                                                row_idx,
+                                                                processed_df,
+                                                                secondary_insurance_col,
+                                                            ):
+                                                                filtered_slice_rows.append(
+                                                                    row_idx
+                                                                )
+                                                        slice_rows = filtered_slice_rows
+
                                                     # Use safe extend function to filter out "Not to work" rows
                                                     actual_allocated = (
                                                         safe_extend_row_indices(
@@ -10555,6 +10744,7 @@ def process_allocation_files_with_dates(
 
                     # CRITICAL: Deduplicate row_indices for each agent and recalculate allocated counts
                     # This prevents counting the same row multiple times
+                    # ALSO: Remove secondary insurance rows from "Single" preference agents as final safeguard
                     for agent in agent_allocations:
                         row_indices = agent.get("row_indices", [])
                         if row_indices:
@@ -10564,6 +10754,44 @@ def process_allocation_files_with_dates(
                                 for idx in set(row_indices)
                                 if idx < len(processed_df)
                             ]
+
+                            # CRITICAL FINAL CHECK: Remove secondary insurance rows from "Single" preference agents
+                            is_single_pref = agent.get(
+                                "has_single_preference", False
+                            ) and not agent.get("has_sec_preference", False)
+
+                            if (
+                                is_single_pref
+                                and secondary_insurance_col
+                                and secondary_insurance_col in processed_df.columns
+                            ):
+                                filtered_indices = []
+                                removed_indices = []
+                                for idx in unique_valid_indices:
+                                    # Check if this row has secondary insurance
+                                    if pd.notna(
+                                        processed_df.at[idx, secondary_insurance_col]
+                                    ):
+                                        secondary_val = str(
+                                            processed_df.at[
+                                                idx, secondary_insurance_col
+                                            ]
+                                        ).strip()
+                                        if (
+                                            secondary_val
+                                            and secondary_val.lower() != "nan"
+                                        ):
+                                            # This row has secondary insurance - remove it from "Single" preference agent
+                                            removed_indices.append(idx)
+                                            # Clear the Agent Name assignment
+                                            processed_df.at[idx, "Agent Name"] = ""
+                                            continue
+                                    filtered_indices.append(idx)
+
+                                if removed_indices:
+                                    # Secondary insurance rows have been removed from "Single" preference agent
+                                    unique_valid_indices = filtered_indices
+
                             agent["row_indices"] = unique_valid_indices
                             agent["allocated"] = len(unique_valid_indices)
 

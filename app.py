@@ -4791,6 +4791,7 @@ def expand_insurance_groups(insurance_list_str):
     Handles:
     - "DD INS" or "INS" -> expands to DD_INS_GROUP companies
     - "DD Toolkit", "DD Toolkits", or "DD" (when used as group) -> expands to DD_TOOLKIT_GROUP companies
+    - "DD All" -> kept as-is, matches ANY company starting with "DD" prefix (handled dynamically in matching)
 
     Args:
         insurance_list_str: String containing insurance companies separated by ; , or |
@@ -4822,12 +4823,17 @@ def expand_insurance_groups(insurance_list_str):
     has_dd_toolkits = False
     has_dd_group = False
 
+    has_dd_all = False
     for comp in companies:
         comp_str = str(comp) if comp is not None else ""
         comp_lower = comp_str.lower().strip()
 
+        # Check for "DD All" (case-insensitive) - covers ALL companies starting with "DD"
+        if comp_lower == "dd all":
+            has_dd_all = True
+            # Don't add "DD All" itself, it will be handled in matching logic
         # Check for "DD INS" or "INS" (case-insensitive)
-        if comp_lower == "dd ins" or comp_lower == "ins":
+        elif comp_lower == "dd ins" or comp_lower == "ins":
             if "dd" in comp_lower:
                 has_dd_ins = True
             else:
@@ -4872,6 +4878,12 @@ def expand_insurance_groups(insurance_list_str):
             if has_dd_toolkit
             else ("DD Toolkits" if has_dd_toolkits else "DD")
         )
+    
+    # Add "DD All" marker if found - this will be handled dynamically in matching
+    # "DD All" matches ANY company starting with "DD" prefix, not just predefined groups
+    if has_dd_all:
+        # Keep "DD All" in the list for matching logic to handle
+        expanded_companies.append("DD All")
 
     # Join back with semicolon - ensure all items are strings
     expanded_companies_str = [
@@ -5141,6 +5153,25 @@ def check_insurance_match(
         # NO substring matching to prevent false positives
         # "Medico Insurance Company" will ONLY match if "Medico Insurance Company" is EXACTLY in the list
         # "Dental Claims" will ONLY match if "Dental Claims" is EXACTLY in the list
+
+        # Handle "DD All" - matches ANY company starting with "DD" prefix
+        # If agent has "DD All" capability, match any row insurance starting with "DD "
+        if comp_lower == "dd all" and formatted_row_lower.startswith("dd "):
+            return True
+        
+        # If row insurance is "DD All", match if agent has any DD company capability
+        if formatted_row_lower == "dd all":
+            # Check if agent has any DD-related capability
+            if (
+                comp_lower.startswith("dd ")
+                or "dd ins" in comp_lower
+                or comp_lower == "ins"
+                or "dd toolkit" in comp_lower
+                or "dd toolkits" in comp_lower
+                or comp_lower == "dd"
+                or comp_lower == "dd all"
+            ):
+                return True
 
         # Handle DD Toolkit/Toolkits variations
         # Check if row insurance is in DD_TOOLKIT_GROUP and agent has DD Toolkit/Toolkits/DD capability

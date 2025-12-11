@@ -4920,9 +4920,25 @@ def expand_insurance_groups(insurance_list_str):
 
 def should_skip_row_for_allocation(idx, processed_df, remark_col):
     """
-    Check if a row should be skipped for allocation (e.g., "Not to work" remark).
+    Check if a row should be skipped for allocation (e.g., "Not to work" remark, "Need to Allocate" in Agent Name).
     Returns True if row should be skipped, False otherwise.
     """
+    # GLOBAL RULE: Skip rows where Agent Name is "Need to Allocate"
+    agent_name_col = None
+    for col in processed_df.columns:
+        if "agent" in col.lower() and "name" in col.lower():
+            agent_name_col = col
+            break
+    
+    if agent_name_col and agent_name_col in processed_df.columns:
+        agent_name_val = processed_df.at[idx, agent_name_col]
+        if pd.notna(agent_name_val):
+            agent_name_str = str(agent_name_val).strip()
+            # Skip rows with "Need to Allocate" in Agent Name column
+            if agent_name_str.upper() == "NEED TO ALLOCATE":
+                return True
+    
+    # Skip rows with "Not to work" remark
     if remark_col and remark_col in processed_df.columns:
         if pd.notna(processed_df.at[idx, remark_col]):
             remark_val = str(processed_df.at[idx, remark_col]).strip().upper()
@@ -10860,14 +10876,7 @@ def process_allocation_files_with_dates(
                                     agent_name
                                 )
 
-                    # Store agent allocations data globally for individual downloads
-                    agent_allocations_data = agent_allocations
-
-                    # Also store for reminder system
-                    global agent_allocations_for_reminders
-                    agent_allocations_for_reminders = agent_allocations
-
-                    # Calculate allocation statistics
+                    # Calculate allocation statistics FIRST
                     # CRITICAL: Calculate total_allocated based on unique row indices to avoid duplicates
                     # Collect all unique row indices across all agents
                     # Also filter out "Not to work" rows from the count
@@ -10887,10 +10896,27 @@ def process_allocation_files_with_dates(
                             ]
                         # Update agent's row_indices to be unique
                         agent["row_indices"] = unique_indices
-                        # Update agent's allocated count to match actual unique indices
-                        agent["allocated"] = len(unique_indices)
+                        
+                        # CRITICAL FIX: Calculate allocated count based on actual rows in DataFrame
+                        # This ensures the count matches what's actually in the processed data
+                        if "Agent Name" in processed_df.columns:
+                            agent_name = agent.get("name", "")
+                            # Count actual rows assigned to this agent in the DataFrame
+                            actual_allocated = len(processed_df[processed_df["Agent Name"] == agent_name])
+                            agent["allocated"] = actual_allocated
+                        else:
+                            # Fallback to counting unique indices if Agent Name column doesn't exist
+                            agent["allocated"] = len(unique_indices)
+                        
                         # Add to global set
                         all_allocated_indices.update(unique_indices)
+
+                    # Store agent allocations data globally AFTER correction
+                    agent_allocations_data = agent_allocations
+
+                    # Also store for reminder system
+                    global agent_allocations_for_reminders
+                    agent_allocations_for_reminders = agent_allocations
 
                     # Total allocated is the count of unique row indices (excluding "Not to work" rows)
                     total_allocated = len(all_allocated_indices)
@@ -10982,22 +11008,8 @@ def process_allocation_files_with_dates(
                         )
                         agent_summary += f"  {i+1}. {agent['name']}: {agent['allocated']}/{agent['capacity']} rows{senior_info}{insurance_info}{primary_info}{secondary_info}\n"
 
-                    # Calculate priority distribution based on actual allocations
-                    # CRITICAL: Calculate total_allocated based on unique row indices to avoid duplicates
-                    all_allocated_indices = set()
-                    for agent in agent_allocations:
-                        row_indices = agent.get("row_indices", [])
-                        # Deduplicate row_indices for this agent
-                        unique_indices = list(set(row_indices))
-                        # Update agent's row_indices to be unique
-                        agent["row_indices"] = unique_indices
-                        # Update agent's allocated count to match actual unique indices
-                        agent["allocated"] = len(unique_indices)
-                        # Add to global set
-                        all_allocated_indices.update(unique_indices)
-
-                    # Total allocated is the count of unique row indices
-                    total_allocated = len(all_allocated_indices)
+                    # Note: Allocation counts are already calculated and corrected above (lines 10863-10906)
+                    # Total allocated was already calculated above
                     if total_allocated > 0:
                         agent_summary += f"""
 📊 Priority Distribution (Based on Actual Allocations):
@@ -13087,6 +13099,65 @@ def download_result():
                             index=False,
                         )
 
+                # Create Zero Allocation Agents sheet
+                if agent_allocations_data:
+                    # Filter agents with zero allocation
+                    zero_allocation_agents = [
+                        agent for agent in agent_allocations_data 
+                        if agent.get("allocated", 0) == 0
+                    ]
+                    
+                    if zero_allocation_agents:
+                        # Create DataFrame with zero allocation agents
+                        zero_allocation_data = []
+                        for agent in zero_allocation_agents:
+                            agent_info = {
+                                "Agent Name": agent.get("name", "N/A"),
+                                "Agent ID": agent.get("id", "N/A"),
+                                "Capacity": agent.get("capacity", 0),
+                                "Allocated": agent.get("allocated", 0),
+                                "Allocation Preference": agent.get("allocation_preference", "N/A"),
+                            }
+                            
+                            # Add insurance companies if available
+                            if agent.get("insurance_companies"):
+                                insurance_list = ", ".join([
+                                    str(ic).strip() 
+                                    for ic in agent.get("insurance_companies", [])[:5]
+                                    if ic is not None and not pd.isna(ic)
+                                ])
+                                agent_info["Insurance Companies"] = insurance_list
+                            else:
+                                agent_info["Insurance Companies"] = "N/A"
+                            
+                            # Add senior status if available
+                            if agent.get("is_senior"):
+                                agent_info["Senior Agent"] = "Yes"
+                            else:
+                                agent_info["Senior Agent"] = "No"
+                            
+                            zero_allocation_data.append(agent_info)
+                        
+                        # Create DataFrame
+                        zero_allocation_df = pd.DataFrame(zero_allocation_data)
+                        
+                        # Write Zero Allocation Agents sheet
+                        zero_allocation_df.to_excel(
+                            writer,
+                            sheet_name="Zero Allocation Agents",
+                            index=False,
+                        )
+                    else:
+                        # Create empty sheet with message if no zero allocation agents
+                        zero_allocation_df = pd.DataFrame({
+                            "Message": ["No agents with zero allocation"]
+                        })
+                        zero_allocation_df.to_excel(
+                            writer,
+                            sheet_name="Zero Allocation Agents",
+                            index=False,
+                        )
+
             # Apply formatting to make certain text bold
             from openpyxl import load_workbook
             from openpyxl.styles import Font
@@ -13255,6 +13326,14 @@ def download_result():
                                 ws.cell(row=row_idx, column=col_idx).font = Font(
                                     bold=True
                                 )
+
+            # Format Zero Allocation Agents sheet
+            if "Zero Allocation Agents" in wb.sheetnames:
+                ws = wb["Zero Allocation Agents"]
+                # Make header row bold
+                if ws.max_row > 0:
+                    for col_idx in range(1, ws.max_column + 1):
+                        ws.cell(row=1, column=col_idx).font = Font(bold=True)
 
             # Format Priority Appointment Pending sheet
             if "Priority Appointment Pending" in wb.sheetnames:
@@ -15838,50 +15917,60 @@ if __name__ == "__main__":
     cleanup_thread.start()
 
     # Set up scheduler for reminder emails and daily cleanup
-    scheduler = BackgroundScheduler()
+    # CRITICAL FIX: Only start scheduler in the main process, not in Flask's reloader parent process
+    # Flask's reloader creates a parent process that monitors files and a child process that runs the app
+    # WERKZEUG_RUN_MAIN is set to 'true' ONLY in the child process (where the app actually runs)
+    # In production (no reloader) or when reloader is disabled, WERKZEUG_RUN_MAIN is not set
+    # So we run scheduler when: WERKZEUG_RUN_MAIN is 'true' (reloader child) OR not set (production/no reloader)
+    if os.environ.get('WERKZEUG_RUN_MAIN') == 'true' or not os.environ.get('WERKZEUG_RUN_MAIN'):
+        scheduler = BackgroundScheduler()
 
-    # Reminder emails - every 2 hours
-    scheduler.add_job(
-        func=lambda: check_and_send_reminders(),
-        trigger=IntervalTrigger(hours=2),
-        id="reminder_check",
-        name="Check and send reminder emails every 2 hours",
-        replace_existing=True,
-    )
+        # Reminder emails - every 2 hours
+        scheduler.add_job(
+            func=lambda: check_and_send_reminders(),
+            trigger=IntervalTrigger(hours=2),
+            id="reminder_check",
+            name="Check and send reminder emails every 2 hours",
+            replace_existing=True,
+        )
 
-    # Cleanup - every day at 7:00 AM (timezone-aware)
-    # Get timezone from environment variable (default: IST for local, UTC for Railway)
-    # Railway servers run in UTC, so we need to convert local time to UTC
-    # IST is UTC+5:30, so 7 AM IST = 1:30 AM UTC
-    cleanup_timezone_str = os.environ.get(
-        "CLEANUP_TIMEZONE", "Asia/Kolkata"
-    )  # Default to IST
-    cleanup_timezone = pytz.timezone(cleanup_timezone_str)
+        # Cleanup - every day at 7:00 AM (timezone-aware)
+        # Get timezone from environment variable (default: IST for local, UTC for Railway)
+        # Railway servers run in UTC, so we need to convert local time to UTC
+        # IST is UTC+5:30, so 7 AM IST = 1:30 AM UTC
+        cleanup_timezone_str = os.environ.get(
+            "CLEANUP_TIMEZONE", "Asia/Kolkata"
+        )  # Default to IST
+        cleanup_timezone = pytz.timezone(cleanup_timezone_str)
 
-    # Schedule time in local timezone (7 AM = 07:00)
-    cleanup_hour = int(os.environ.get("CLEANUP_HOUR", "7"))  # 7 AM
-    cleanup_minute = int(os.environ.get("CLEANUP_MINUTE", "0"))
+        # Schedule time in local timezone (7 AM = 07:00)
+        cleanup_hour = int(os.environ.get("CLEANUP_HOUR", "7"))  # 7 AM
+        cleanup_minute = int(os.environ.get("CLEANUP_MINUTE", "0"))
 
-    scheduler.add_job(
-        func=lambda: daily_consolidate_and_cleanup(),
-        trigger=CronTrigger(
-            hour=cleanup_hour, minute=cleanup_minute, timezone=cleanup_timezone
-        ),
-        id="daily_consolidation_cleanup",
-        name=f"Daily consolidation email + cleanup at {cleanup_hour:02d}:{cleanup_minute:02d} {cleanup_timezone_str}",
-        replace_existing=True,
-    )
+        scheduler.add_job(
+            func=lambda: daily_consolidate_and_cleanup(),
+            trigger=CronTrigger(
+                hour=cleanup_hour, minute=cleanup_minute, timezone=cleanup_timezone
+            ),
+            id="daily_consolidation_cleanup",
+            name=f"Daily consolidation email + cleanup at {cleanup_hour:02d}:{cleanup_minute:02d} {cleanup_timezone_str}",
+            replace_existing=True,
+        )
 
-    scheduler.start()
-    print("✅ Reminder email scheduler started - checking every 2 hours")
-    # Calculate UTC equivalent for display
-    local_time = cleanup_timezone.localize(
-        datetime(2025, 1, 1, cleanup_hour, cleanup_minute)
-    )
-    utc_time = local_time.astimezone(pytz.UTC)
-    print(
-        f"✅ Cleanup scheduler started - runs every day at {cleanup_hour:02d}:{cleanup_minute:02d} {cleanup_timezone_str} (UTC: {utc_time.strftime('%H:%M')})"
-    )
+        scheduler.start()
+        print("✅ Reminder email scheduler started - checking every 2 hours")
+        # Calculate UTC equivalent for display
+        local_time = cleanup_timezone.localize(
+            datetime(2025, 1, 1, cleanup_hour, cleanup_minute)
+        )
+        utc_time = local_time.astimezone(pytz.UTC)
+        print(
+            f"✅ Cleanup scheduler started - runs every day at {cleanup_hour:02d}:{cleanup_minute:02d} {cleanup_timezone_str} (UTC: {utc_time.strftime('%H:%M')})"
+        )
+    else:
+        # In reloader process, don't start scheduler
+        scheduler = None
+        print("⚠️ Skipping scheduler initialization in Flask reloader process")
 
     port = int(os.environ.get("PORT", 5003))
     # Always enable debug + auto-reload for local dev unless explicitly disabled
@@ -15890,6 +15979,6 @@ if __name__ == "__main__":
     try:
         app.run(debug=debug, host="0.0.0.0", port=port, use_reloader=debug)
     finally:
-        # Shutdown scheduler when app stops
-        if scheduler.running:
+        # Shutdown scheduler when app stops (only if scheduler was created)
+        if 'scheduler' in locals() and scheduler is not None and scheduler.running:
             scheduler.shutdown()

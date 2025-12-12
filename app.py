@@ -4920,7 +4920,7 @@ def expand_insurance_groups(insurance_list_str):
 
 def should_skip_row_for_allocation(idx, processed_df, remark_col):
     """
-    Check if a row should be skipped for allocation (e.g., "Not to work" remark, "Need to Allocate" in Agent Name).
+    Check if a row should be skipped for allocation (e.g., "Not to work" remark, "Need to Allocate" in Agent Name, NTC rows).
     Returns True if row should be skipped, False otherwise.
     """
     # GLOBAL RULE: Skip rows where Agent Name is "Need to Allocate"
@@ -4929,7 +4929,7 @@ def should_skip_row_for_allocation(idx, processed_df, remark_col):
         if "agent" in col.lower() and "name" in col.lower():
             agent_name_col = col
             break
-    
+
     if agent_name_col and agent_name_col in processed_df.columns:
         agent_name_val = processed_df.at[idx, agent_name_col]
         if pd.notna(agent_name_val):
@@ -4937,11 +4937,17 @@ def should_skip_row_for_allocation(idx, processed_df, remark_col):
             # Skip rows with "Need to Allocate" in Agent Name column
             if agent_name_str.upper() == "NEED TO ALLOCATE":
                 return True
-    
-    # Skip rows with "Not to work" remark
+
+    # Skip rows with special remarks (NTC, NTBP, "Not to work")
     if remark_col and remark_col in processed_df.columns:
         if pd.notna(processed_df.at[idx, remark_col]):
             remark_val = str(processed_df.at[idx, remark_col]).strip().upper()
+            # Skip NTC rows - they should only go to NTC preference agents (Step 3.5)
+            if remark_val == "NTC":
+                return True
+            # Skip NTBP rows - they should only go to PB preference agents (Step 2.5)
+            if remark_val == "NTBP":
+                return True
             # Skip rows with "Not to work" remark (check multiple variations)
             remark_val_clean = remark_val.replace("-", " ").replace("_", " ").strip()
             if (
@@ -5862,6 +5868,20 @@ def process_allocation_files_with_dates(
             set(appointment_dates_second) if appointment_dates_second else set()
         )
 
+        # Filter out rows with "Need to allocate" in Agent Name column for better performance
+        agent_name_col = None
+        for col in processed_df.columns:
+            if "agent" in col.lower() and "name" in col.lower():
+                agent_name_col = col
+                break
+
+        if agent_name_col and agent_name_col in processed_df.columns:
+            # Create a mask to exclude rows where Agent Name is "Need to allocate" (case-insensitive)
+            mask = processed_df[agent_name_col].apply(
+                lambda x: pd.isna(x) or str(x).strip().upper() != "NEED TO ALLOCATE"
+            )
+            processed_df = processed_df[mask].copy()
+
         # Count statistics
         total_rows = len(processed_df)
         first_priority_count = 0
@@ -5869,104 +5889,160 @@ def process_allocation_files_with_dates(
         third_priority_count = 0
         invalid_dates = 0
 
+        # Convert calendar dates (YYYY-MM-DD) to YYYY-MM-DD format for comparison
+        # DO THIS ONCE BEFORE THE LOOP for performance
+        def convert_calendar_to_original_format(calendar_date):
+            try:
+                from datetime import datetime
+
+                # Parse YYYY-MM-DD format
+                dt = datetime.strptime(calendar_date, "%Y-%m-%d")
+                # Return in YYYY-MM-DD format for comparison
+                return dt.strftime("%Y-%m-%d")
+            except:
+                return calendar_date
+
+        # Convert priority dates to YYYY-MM-DD format for comparison (ONCE BEFORE LOOP)
+        first_priority_dates_yyyy_mm_dd = set()
+        for calendar_date in first_priority_dates:
+            converted_date = convert_calendar_to_original_format(calendar_date)
+            first_priority_dates_yyyy_mm_dd.add(converted_date)
+
+        second_priority_dates_yyyy_mm_dd = set()
+        for calendar_date in second_priority_dates:
+            converted_date = convert_calendar_to_original_format(calendar_date)
+            second_priority_dates_yyyy_mm_dd.add(converted_date)
+
+        # Convert receive dates to YYYY-MM-DD format for comparison (ONCE BEFORE LOOP)
+        receive_dates_yyyy_mm_dd = set()
+        if (
+            receive_dates
+            and receive_date_col
+            and receive_date_col in processed_df.columns
+        ):
+            for calendar_date in receive_dates:
+                converted_date = convert_calendar_to_original_format(calendar_date)
+                receive_dates_yyyy_mm_dd.add(converted_date)
+
         # Collect Third Priority dates
         third_priority_dates_set = set()
 
-        # Process each row
-        for idx, row in processed_df.iterrows():
-            appointment_date = row[appointment_date_col]
+        # Initialize Priority Status column with empty strings
+        processed_df["Priority Status"] = ""
 
-            # Skip rows with invalid dates
-            if pd.isna(appointment_date):
-                processed_df.at[idx, "Priority Status"] = "Invalid Date"
-                invalid_dates += 1
-                continue
-
-            # Convert appointment date to string and handle different formats
-            appointment_date_str = str(appointment_date)
-
-            # If it's a datetime string like '2025-11-03 00:00:00', extract just the date part
-            if " " in appointment_date_str:
-                appointment_date_str = appointment_date_str.split(" ")[0]
-
-            # Convert calendar dates (YYYY-MM-DD) to YYYY-MM-DD format for comparison
-            def convert_calendar_to_original_format(calendar_date):
-                try:
-                    from datetime import datetime
-
-                    # Parse YYYY-MM-DD format
-                    dt = datetime.strptime(calendar_date, "%Y-%m-%d")
-                    # Return in YYYY-MM-DD format for comparison
-                    return dt.strftime("%Y-%m-%d")
-                except:
-                    return calendar_date
-
-            # Convert priority dates to YYYY-MM-DD format for comparison
-            first_priority_dates_yyyy_mm_dd = set()
-            for calendar_date in first_priority_dates:
-                converted_date = convert_calendar_to_original_format(calendar_date)
-                first_priority_dates_yyyy_mm_dd.add(converted_date)
-
-            second_priority_dates_yyyy_mm_dd = set()
-            for calendar_date in second_priority_dates:
-                converted_date = convert_calendar_to_original_format(calendar_date)
-                second_priority_dates_yyyy_mm_dd.add(converted_date)
-
-            # Check if appointment date is in First Priority dates
-            if appointment_date_str in first_priority_dates_yyyy_mm_dd:
-                # Additional filtering: check receive dates if provided
-                should_include = True
-                if (
-                    receive_dates
-                    and receive_date_col
-                    and receive_date_col in processed_df.columns
-                ):
-                    receive_date = row[receive_date_col]
-                    if not pd.isna(receive_date) and receive_date is not None:
-                        # Convert receive date to string format for comparison
-                        receive_date_str = (
-                            receive_date.strftime("%Y-%m-%d")
-                            if hasattr(receive_date, "strftime")
-                            else str(receive_date)
-                        )
-
-                        # Convert receive dates to YYYY-MM-DD format for comparison
-                        receive_dates_yyyy_mm_dd = set()
-                        for calendar_date in receive_dates:
-                            converted_date = convert_calendar_to_original_format(
-                                calendar_date
-                            )
-                            receive_dates_yyyy_mm_dd.add(converted_date)
-
-                        # Only include if receive date is in selected receive dates
-                        if receive_date_str not in receive_dates_yyyy_mm_dd:
-                            should_include = False
-
-                if should_include:
-                    processed_df.at[idx, "Priority Status"] = "First Priority"
-                    first_priority_count += 1
+        # Convert appointment dates to YYYY-MM-DD format using vectorized operations
+        def format_date_for_comparison(date_val):
+            """Convert date to YYYY-MM-DD string format"""
+            if pd.isna(date_val):
+                return None
+            try:
+                if hasattr(date_val, "strftime"):
+                    return date_val.strftime("%Y-%m-%d")
+                elif hasattr(date_val, "date"):
+                    return date_val.date().strftime("%Y-%m-%d")
                 else:
-                    # If receive date is not selected, assign to Second Priority
-                    processed_df.at[idx, "Priority Status"] = "Second Priority"
-                    second_priority_count += 1
-            # Check if appointment date is in Second Priority dates
-            elif appointment_date_str in second_priority_dates_yyyy_mm_dd:
-                processed_df.at[idx, "Priority Status"] = "Second Priority"
-                second_priority_count += 1
-            else:
-                # All remaining dates get Third Priority
-                processed_df.at[idx, "Priority Status"] = "Third Priority"
-                third_priority_count += 1
-                # Add to Third Priority dates set (convert back to calendar format for display)
-                try:
-                    from datetime import datetime
+                    date_str = str(date_val)
+                    if " " in date_str:
+                        date_str = date_str.split(" ")[0]
+                    return date_str
+            except:
+                return None
 
-                    dt = datetime.strptime(appointment_date_str, "%Y-%m-%d")
-                    calendar_date = dt.strftime("%Y-%m-%d")
-                    third_priority_dates_set.add(calendar_date)
-                except:
-                    # If conversion fails, use the original string
-                    third_priority_dates_set.add(appointment_date_str)
+        # Vectorized date formatting
+        appointment_dates_formatted = processed_df[appointment_date_col].apply(
+            format_date_for_comparison
+        )
+
+        # Handle invalid dates
+        invalid_mask = appointment_dates_formatted.isna()
+        invalid_dates = invalid_mask.sum()
+        processed_df.loc[invalid_mask, "Priority Status"] = "Invalid Date"
+
+        # Process valid dates only
+        valid_mask = ~invalid_mask
+        valid_appointment_dates = appointment_dates_formatted[valid_mask]
+
+        # Vectorized priority assignment for First Priority
+        first_priority_mask = valid_appointment_dates.isin(
+            first_priority_dates_yyyy_mm_dd
+        )
+
+        if first_priority_mask.any():
+            # Get indices of valid rows that match first priority dates
+            valid_indices = processed_df.index[valid_mask]
+            first_priority_indices_valid = valid_indices[first_priority_mask]
+
+            # Check receive dates for first priority rows if needed
+            if (
+                receive_dates
+                and receive_date_col
+                and receive_date_col in processed_df.columns
+            ):
+                # Format receive dates for comparison (only for first priority rows)
+                receive_dates_formatted = processed_df.loc[
+                    first_priority_indices_valid, receive_date_col
+                ].apply(format_date_for_comparison)
+
+                # First priority rows that match receive dates
+                receive_match_mask = receive_dates_formatted.isin(
+                    receive_dates_yyyy_mm_dd
+                )
+                first_priority_with_receive_indices = first_priority_indices_valid[
+                    receive_match_mask
+                ]
+                first_priority_without_receive_indices = first_priority_indices_valid[
+                    ~receive_match_mask
+                ]
+
+                # Assign First Priority to rows matching both appointment and receive dates
+                processed_df.loc[
+                    first_priority_with_receive_indices, "Priority Status"
+                ] = "First Priority"
+                first_priority_count = len(first_priority_with_receive_indices)
+
+                # Assign Second Priority to rows matching appointment date but not receive date
+                processed_df.loc[
+                    first_priority_without_receive_indices, "Priority Status"
+                ] = "Second Priority"
+                second_priority_count = len(first_priority_without_receive_indices)
+            else:
+                # No receive date filtering, assign First Priority
+                processed_df.loc[first_priority_indices_valid, "Priority Status"] = (
+                    "First Priority"
+                )
+                first_priority_count = len(first_priority_indices_valid)
+                second_priority_count = 0
+
+        # Vectorized priority assignment for Second Priority (excluding rows already assigned)
+        remaining_mask = valid_mask & (processed_df["Priority Status"] == "")
+        if remaining_mask.any():
+            remaining_indices = processed_df.index[remaining_mask]
+            remaining_appointment_dates = appointment_dates_formatted[remaining_mask]
+            second_priority_mask = remaining_appointment_dates.isin(
+                second_priority_dates_yyyy_mm_dd
+            )
+
+            if second_priority_mask.any():
+                second_priority_indices = remaining_indices[second_priority_mask]
+                processed_df.loc[second_priority_indices, "Priority Status"] = (
+                    "Second Priority"
+                )
+                second_priority_count += len(second_priority_indices)
+
+        # Vectorized priority assignment for Third Priority (all remaining rows)
+        third_priority_mask = valid_mask & (processed_df["Priority Status"] == "")
+        if third_priority_mask.any():
+            third_priority_indices = processed_df.index[third_priority_mask]
+            processed_df.loc[third_priority_indices, "Priority Status"] = (
+                "Third Priority"
+            )
+            third_priority_count = len(third_priority_indices)
+
+            # Collect Third Priority dates
+            third_priority_dates = appointment_dates_formatted[
+                third_priority_mask
+            ].unique()
+            third_priority_dates_set = set(third_priority_dates)
 
         # Generate agent allocation summary if allocation_df is provided
         agent_summary = ""
@@ -8529,6 +8605,18 @@ def process_allocation_files_with_dates(
                                         ):
                                             continue
 
+                                    # Skip NTC rows - they should only go to NTC preference agents (Step 3.5)
+                                    if remark_col and pd.notna(
+                                        processed_df.at[idx, remark_col]
+                                    ):
+                                        remark_val = (
+                                            str(processed_df.at[idx, remark_col])
+                                            .strip()
+                                            .upper()
+                                        )
+                                        if remark_val == "NTC":
+                                            continue
+
                                     # Get insurance company from "Dental Primary Ins Carr" column
                                     if insurance_carrier_col and pd.notna(
                                         processed_df.at[idx, insurance_carrier_col]
@@ -8651,7 +8739,7 @@ def process_allocation_files_with_dates(
                                             ):
                                                 continue
 
-                                        # Skip rows with "Not to work" remark
+                                        # Skip rows with "Not to work" remark and NTC rows
                                         if remark_col and pd.notna(
                                             processed_df.at[idx, remark_col]
                                         ):
@@ -8660,6 +8748,9 @@ def process_allocation_files_with_dates(
                                                 .strip()
                                                 .upper()
                                             )
+                                            # Skip NTC rows - they should only go to NTC preference agents (Step 3.5)
+                                            if remark_val == "NTC":
+                                                continue
                                             if (
                                                 "NOT TO WORK" in remark_val
                                                 or remark_val == "NOT TO WORK"
@@ -8821,7 +8912,7 @@ def process_allocation_files_with_dates(
                                             ):
                                                 continue
 
-                                        # Skip rows with "Not to work" remark
+                                        # Skip rows with "Not to work" remark and NTC rows
                                         if remark_col and pd.notna(
                                             processed_df.at[idx, remark_col]
                                         ):
@@ -8830,6 +8921,9 @@ def process_allocation_files_with_dates(
                                                 .strip()
                                                 .upper()
                                             )
+                                            # Skip NTC rows - they should only go to NTC preference agents (Step 3.5)
+                                            if remark_val == "NTC":
+                                                continue
                                             if (
                                                 "NOT TO WORK" in remark_val
                                                 or remark_val == "NOT TO WORK"
@@ -9109,7 +9203,7 @@ def process_allocation_files_with_dates(
                                                         )
                                                         break
 
-                                        # Filter row indices based on Domain/Remark rule: NTBP rows only go to PB agents
+                                        # Filter row indices based on Domain/Remark rule: NTBP rows only go to PB agents, NTC rows only go to NTC preference agents
                                         filtered_row_indices = []
                                         if (
                                             remark_col
@@ -9131,6 +9225,9 @@ def process_allocation_files_with_dates(
                                                     )
 
                                                 row_is_ntbp = row_remark == "NTBP"
+                                                # Skip NTC rows - they should only go to NTC preference agents (Step 3.5)
+                                                if row_remark == "NTC":
+                                                    continue
 
                                                 # For unmatched insurance, we'll filter agents later, but keep all rows for now
                                                 # The actual filtering will happen when assigning to specific agents
@@ -10896,18 +10993,20 @@ def process_allocation_files_with_dates(
                             ]
                         # Update agent's row_indices to be unique
                         agent["row_indices"] = unique_indices
-                        
+
                         # CRITICAL FIX: Calculate allocated count based on actual rows in DataFrame
                         # This ensures the count matches what's actually in the processed data
                         if "Agent Name" in processed_df.columns:
                             agent_name = agent.get("name", "")
                             # Count actual rows assigned to this agent in the DataFrame
-                            actual_allocated = len(processed_df[processed_df["Agent Name"] == agent_name])
+                            actual_allocated = len(
+                                processed_df[processed_df["Agent Name"] == agent_name]
+                            )
                             agent["allocated"] = actual_allocated
                         else:
                             # Fallback to counting unique indices if Agent Name column doesn't exist
                             agent["allocated"] = len(unique_indices)
-                        
+
                         # Add to global set
                         all_allocated_indices.update(unique_indices)
 
@@ -13103,10 +13202,11 @@ def download_result():
                 if agent_allocations_data:
                     # Filter agents with zero allocation
                     zero_allocation_agents = [
-                        agent for agent in agent_allocations_data 
+                        agent
+                        for agent in agent_allocations_data
                         if agent.get("allocated", 0) == 0
                     ]
-                    
+
                     if zero_allocation_agents:
                         # Create DataFrame with zero allocation agents
                         zero_allocation_data = []
@@ -13116,31 +13216,37 @@ def download_result():
                                 "Agent ID": agent.get("id", "N/A"),
                                 "Capacity": agent.get("capacity", 0),
                                 "Allocated": agent.get("allocated", 0),
-                                "Allocation Preference": agent.get("allocation_preference", "N/A"),
+                                "Allocation Preference": agent.get(
+                                    "allocation_preference", "N/A"
+                                ),
                             }
-                            
+
                             # Add insurance companies if available
                             if agent.get("insurance_companies"):
-                                insurance_list = ", ".join([
-                                    str(ic).strip() 
-                                    for ic in agent.get("insurance_companies", [])[:5]
-                                    if ic is not None and not pd.isna(ic)
-                                ])
+                                insurance_list = ", ".join(
+                                    [
+                                        str(ic).strip()
+                                        for ic in agent.get("insurance_companies", [])[
+                                            :5
+                                        ]
+                                        if ic is not None and not pd.isna(ic)
+                                    ]
+                                )
                                 agent_info["Insurance Companies"] = insurance_list
                             else:
                                 agent_info["Insurance Companies"] = "N/A"
-                            
+
                             # Add senior status if available
                             if agent.get("is_senior"):
                                 agent_info["Senior Agent"] = "Yes"
                             else:
                                 agent_info["Senior Agent"] = "No"
-                            
+
                             zero_allocation_data.append(agent_info)
-                        
+
                         # Create DataFrame
                         zero_allocation_df = pd.DataFrame(zero_allocation_data)
-                        
+
                         # Write Zero Allocation Agents sheet
                         zero_allocation_df.to_excel(
                             writer,
@@ -13149,9 +13255,9 @@ def download_result():
                         )
                     else:
                         # Create empty sheet with message if no zero allocation agents
-                        zero_allocation_df = pd.DataFrame({
-                            "Message": ["No agents with zero allocation"]
-                        })
+                        zero_allocation_df = pd.DataFrame(
+                            {"Message": ["No agents with zero allocation"]}
+                        )
                         zero_allocation_df.to_excel(
                             writer,
                             sheet_name="Zero Allocation Agents",
@@ -13999,8 +14105,24 @@ def get_appointment_dates():
         if appointment_date_col is None:
             return jsonify({"error": "Appointment Date column not found"}), 400
 
+        # Find the Agent Name column (case-insensitive)
+        agent_name_col = None
+        for col in data_df.columns:
+            if "agent" in col.lower() and "name" in col.lower():
+                agent_name_col = col
+                break
+
+        # Filter out rows with "Need to allocate" in Agent Name column for better performance
+        filtered_df = data_df.copy()
+        if agent_name_col and agent_name_col in filtered_df.columns:
+            # Create a mask to exclude rows where Agent Name is "Need to allocate" (case-insensitive)
+            mask = filtered_df[agent_name_col].apply(
+                lambda x: pd.isna(x) or str(x).strip().upper() != "NEED TO ALLOCATE"
+            )
+            filtered_df = filtered_df[mask]
+
         # Parse dates using robust date parsing that works consistently across Windows and Mac
-        parsed_dates = data_df[appointment_date_col].apply(parse_excel_date)
+        parsed_dates = filtered_df[appointment_date_col].apply(parse_excel_date)
 
         # Get unique valid appointment dates (filter out None/invalid dates)
         valid_dates = parsed_dates.dropna().unique()
@@ -14012,8 +14134,8 @@ def get_appointment_dates():
                 continue
             date_str = date_obj.strftime("%Y-%m-%d")
 
-            # Count rows for this specific date
-            row_count = len(data_df[parsed_dates == date_obj])
+            # Count rows for this specific date (only from filtered dataframe)
+            row_count = len(filtered_df[parsed_dates == date_obj])
 
             date_data.append({"date": date_str, "row_count": row_count})
 
@@ -15922,7 +16044,9 @@ if __name__ == "__main__":
     # WERKZEUG_RUN_MAIN is set to 'true' ONLY in the child process (where the app actually runs)
     # In production (no reloader) or when reloader is disabled, WERKZEUG_RUN_MAIN is not set
     # So we run scheduler when: WERKZEUG_RUN_MAIN is 'true' (reloader child) OR not set (production/no reloader)
-    if os.environ.get('WERKZEUG_RUN_MAIN') == 'true' or not os.environ.get('WERKZEUG_RUN_MAIN'):
+    if os.environ.get("WERKZEUG_RUN_MAIN") == "true" or not os.environ.get(
+        "WERKZEUG_RUN_MAIN"
+    ):
         scheduler = BackgroundScheduler()
 
         # Reminder emails - every 2 hours
@@ -15980,5 +16104,5 @@ if __name__ == "__main__":
         app.run(debug=debug, host="0.0.0.0", port=port, use_reloader=debug)
     finally:
         # Shutdown scheduler when app stops (only if scheduler was created)
-        if 'scheduler' in locals() and scheduler is not None and scheduler.running:
+        if "scheduler" in locals() and scheduler is not None and scheduler.running:
             scheduler.shutdown()

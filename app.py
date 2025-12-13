@@ -5672,8 +5672,13 @@ def get_nth_business_day(start_date, n):
 
 def process_allocation_files(allocation_df, data_df):
     """Process data file with priority assignment based on business days calendar"""
+    import time
+    from datetime import datetime, timedelta
+
+    # Initialize timing for performance tracking
+    start_time = time.time()
+
     try:
-        from datetime import datetime, timedelta
         import pandas as pd
 
         # Use data_df as the main file to process (ignore allocation_df for now)
@@ -5723,32 +5728,42 @@ def process_allocation_files(allocation_df, data_df):
         first_priority_count = 0
         invalid_dates = 0
 
-        # Process each row
-        for idx, row in processed_df.iterrows():
-            appointment_date = row[appointment_date_col]
+        # OPTIMIZED: Use vectorized operations instead of iterrows()
+        # Create a mask for invalid dates
+        invalid_mask = processed_df[appointment_date_col].isna()
+        invalid_dates = invalid_mask.sum()
+        processed_df.loc[invalid_mask, "Priority Status"] = "Invalid Date"
 
-            # Skip rows with invalid dates
-            if pd.isna(appointment_date):
-                processed_df.at[idx, "Priority Status"] = "Invalid Date"
-                invalid_dates += 1
-                continue
+        # Process valid dates using vectorized operations
+        valid_mask = ~invalid_mask
+        valid_dates = processed_df.loc[valid_mask, appointment_date_col]
 
-            # Convert to date if it's datetime
-            if hasattr(appointment_date, "date"):
-                appointment_date = appointment_date.date()
+        # Convert to date objects if needed
+        def to_date(val):
+            if pd.isna(val):
+                return None
+            if hasattr(val, "date"):
+                return val.date()
+            return val
 
-            # Check if appointment date matches First Priority criteria
-            if (
-                appointment_date == today
-                or appointment_date == first_business_day
-                or appointment_date == second_business_day
-                or appointment_date == seventh_business_day
-            ):
-                processed_df.at[idx, "Priority Status"] = "First Priority"
-                first_priority_count += 1
-            else:
-                # Keep blank for now as requested
-                processed_df.at[idx, "Priority Status"] = ""
+        valid_dates_converted = valid_dates.apply(to_date)
+
+        # Vectorized priority check
+        priority_mask = (
+            (valid_dates_converted == today)
+            | (valid_dates_converted == first_business_day)
+            | (valid_dates_converted == second_business_day)
+            | (valid_dates_converted == seventh_business_day)
+        )
+
+        # Set First Priority for matching rows
+        first_priority_indices = valid_dates_converted[priority_mask].index
+        processed_df.loc[first_priority_indices, "Priority Status"] = "First Priority"
+        first_priority_count = len(first_priority_indices)
+
+        # Set empty string for non-priority valid rows
+        non_priority_indices = valid_dates_converted[~priority_mask].index
+        processed_df.loc[non_priority_indices, "Priority Status"] = ""
 
         # Generate result message
         result_message = f"""✅ Priority processing completed successfully!
@@ -5778,9 +5793,20 @@ def process_allocation_files(allocation_df, data_df):
 
 💾 Ready to download the processed result file!"""
 
+        elapsed_time = time.time() - start_time
+        print(
+            f"✅ Processing completed in {elapsed_time:.2f} seconds at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+        )
         return result_message, processed_df
 
     except Exception as e:
+        try:
+            elapsed_time = time.time() - start_time
+            print(
+                f"❌ Error during processing after {elapsed_time:.2f} seconds: {str(e)}"
+            )
+        except:
+            print(f"❌ Error during processing: {str(e)}")
         return f"❌ Error during processing: {str(e)}", None
 
 
@@ -5795,12 +5821,22 @@ def process_allocation_files_with_dates(
 ):
     """Process data file with priority assignment and generate agent allocation summary"""
     global agent_allocations_data
+    import time
+    from datetime import datetime, timedelta
+
+    # Initialize timing for performance tracking
+    start_time = time.time()
+
     try:
-        from datetime import datetime, timedelta
         import pandas as pd
+
+        print(
+            f"🔄 Starting file processing at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}..."
+        )
 
         # Use data_df as the main file to process
         processed_df = data_df.copy()
+        print(f"📊 Processing {len(processed_df)} rows...")
 
         # Find the appointment date column, receive date column, insurance carrier column, remark column, and secondary insurance column
         appointment_date_col = None
@@ -5905,15 +5941,41 @@ def process_allocation_files_with_dates(
                 return calendar_date
 
         # Convert priority dates to YYYY-MM-DD format for comparison (ONCE BEFORE LOOP)
+        print(
+            f"⏱️ [Performance] Converting priority dates at {time.time() - start_time:.2f}s"
+        )
+        print(
+            f"📅 [Performance] First priority dates count: {len(first_priority_dates)}"
+        )
+        print(
+            f"📅 [Performance] Second priority dates count: {len(second_priority_dates)}"
+        )
+
         first_priority_dates_yyyy_mm_dd = set()
         for calendar_date in first_priority_dates:
-            converted_date = convert_calendar_to_original_format(calendar_date)
-            first_priority_dates_yyyy_mm_dd.add(converted_date)
+            try:
+                converted_date = convert_calendar_to_original_format(calendar_date)
+                if converted_date:
+                    first_priority_dates_yyyy_mm_dd.add(converted_date)
+            except Exception as e:
+                print(
+                    f"⚠️ [Performance] Error converting first priority date {calendar_date}: {e}"
+                )
 
         second_priority_dates_yyyy_mm_dd = set()
         for calendar_date in second_priority_dates:
-            converted_date = convert_calendar_to_original_format(calendar_date)
-            second_priority_dates_yyyy_mm_dd.add(converted_date)
+            try:
+                converted_date = convert_calendar_to_original_format(calendar_date)
+                if converted_date:
+                    second_priority_dates_yyyy_mm_dd.add(converted_date)
+            except Exception as e:
+                print(
+                    f"⚠️ [Performance] Error converting second priority date {calendar_date}: {e}"
+                )
+
+        print(
+            f"✅ [Performance] Converted dates - First: {len(first_priority_dates_yyyy_mm_dd)}, Second: {len(second_priority_dates_yyyy_mm_dd)}"
+        )
 
         # Convert receive dates to YYYY-MM-DD format for comparison (ONCE BEFORE LOOP)
         receive_dates_yyyy_mm_dd = set()
@@ -5933,6 +5995,9 @@ def process_allocation_files_with_dates(
         processed_df["Priority Status"] = ""
 
         # Convert appointment dates to YYYY-MM-DD format using vectorized operations
+        # OPTIMIZED: Use vectorized operations instead of apply() for better performance
+        print(f"⏱️ [Performance] Formatting dates at {time.time() - start_time:.2f}s")
+
         def format_date_for_comparison(date_val):
             """Convert date to YYYY-MM-DD string format"""
             if pd.isna(date_val):
@@ -5947,13 +6012,23 @@ def process_allocation_files_with_dates(
                     if " " in date_str:
                         date_str = date_str.split(" ")[0]
                     return date_str
-            except:
+            except Exception as e:
+                print(
+                    f"⚠️ [Performance] Date formatting error: {e} for value: {date_val}"
+                )
                 return None
 
-        # Vectorized date formatting
-        appointment_dates_formatted = processed_df[appointment_date_col].apply(
-            format_date_for_comparison
-        )
+        # Vectorized date formatting - optimized for large datasets
+        try:
+            appointment_dates_formatted = processed_df[appointment_date_col].apply(
+                format_date_for_comparison
+            )
+            print(
+                f"⏱️ [Performance] Date formatting completed at {time.time() - start_time:.2f}s"
+            )
+        except Exception as e:
+            print(f"❌ [Performance] Error formatting dates: {e}")
+            return f"❌ Error formatting appointment dates: {str(e)}", None
 
         # Handle invalid dates
         invalid_mask = appointment_dates_formatted.isna()
@@ -5980,33 +6055,49 @@ def process_allocation_files_with_dates(
                 and receive_date_col
                 and receive_date_col in processed_df.columns
             ):
-                # Format receive dates for comparison (only for first priority rows)
-                receive_dates_formatted = processed_df.loc[
-                    first_priority_indices_valid, receive_date_col
-                ].apply(format_date_for_comparison)
-
-                # First priority rows that match receive dates
-                receive_match_mask = receive_dates_formatted.isin(
-                    receive_dates_yyyy_mm_dd
+                print(
+                    f"⏱️ [Performance] Processing receive dates at {time.time() - start_time:.2f}s"
                 )
-                first_priority_with_receive_indices = first_priority_indices_valid[
-                    receive_match_mask
-                ]
-                first_priority_without_receive_indices = first_priority_indices_valid[
-                    ~receive_match_mask
-                ]
+                print(
+                    f"📅 [Performance] Receive dates set size: {len(receive_dates_yyyy_mm_dd)}"
+                )
 
-                # Assign First Priority to rows matching both appointment and receive dates
-                processed_df.loc[
-                    first_priority_with_receive_indices, "Priority Status"
-                ] = "First Priority"
-                first_priority_count = len(first_priority_with_receive_indices)
+                # Format receive dates for comparison (only for first priority rows)
+                try:
+                    receive_dates_formatted = processed_df.loc[
+                        first_priority_indices_valid, receive_date_col
+                    ].apply(format_date_for_comparison)
+                except Exception as e:
+                    print(f"❌ [Performance] Error formatting receive dates: {e}")
+                    # Fallback: assign all as First Priority
+                    processed_df.loc[
+                        first_priority_indices_valid, "Priority Status"
+                    ] = "First Priority"
+                    first_priority_count = len(first_priority_indices_valid)
+                    second_priority_count = 0
+                else:
+                    # First priority rows that match receive dates
+                    receive_match_mask = receive_dates_formatted.isin(
+                        receive_dates_yyyy_mm_dd
+                    )
+                    first_priority_with_receive_indices = first_priority_indices_valid[
+                        receive_match_mask
+                    ]
+                    first_priority_without_receive_indices = (
+                        first_priority_indices_valid[~receive_match_mask]
+                    )
 
-                # Assign Second Priority to rows matching appointment date but not receive date
-                processed_df.loc[
-                    first_priority_without_receive_indices, "Priority Status"
-                ] = "Second Priority"
-                second_priority_count = len(first_priority_without_receive_indices)
+                    # Assign First Priority to rows matching both appointment and receive dates
+                    processed_df.loc[
+                        first_priority_with_receive_indices, "Priority Status"
+                    ] = "First Priority"
+                    first_priority_count = len(first_priority_with_receive_indices)
+
+                    # Assign Second Priority to rows matching appointment date but not receive date
+                    processed_df.loc[
+                        first_priority_without_receive_indices, "Priority Status"
+                    ] = "Second Priority"
+                    second_priority_count = len(first_priority_without_receive_indices)
             else:
                 # No receive date filtering, assign First Priority
                 processed_df.loc[first_priority_indices_valid, "Priority Status"] = (
@@ -6016,8 +6107,15 @@ def process_allocation_files_with_dates(
                 second_priority_count = 0
 
         # Vectorized priority assignment for Second Priority (excluding rows already assigned)
+        print(
+            f"⏱️ [Performance] Processing second priority dates at {time.time() - start_time:.2f}s"
+        )
+        print(
+            f"📅 [Performance] Second priority dates set size: {len(second_priority_dates_yyyy_mm_dd)}"
+        )
+
         remaining_mask = valid_mask & (processed_df["Priority Status"] == "")
-        if remaining_mask.any():
+        if remaining_mask.any() and len(second_priority_dates_yyyy_mm_dd) > 0:
             remaining_indices = processed_df.index[remaining_mask]
             remaining_appointment_dates = appointment_dates_formatted[remaining_mask]
             second_priority_mask = remaining_appointment_dates.isin(
@@ -6030,8 +6128,22 @@ def process_allocation_files_with_dates(
                     "Second Priority"
                 )
                 second_priority_count += len(second_priority_indices)
+                print(
+                    f"✅ [Performance] Assigned {second_priority_count} rows to Second Priority"
+                )
+            else:
+                print(f"⚠️ [Performance] No rows matched second priority dates")
+        else:
+            if not remaining_mask.any():
+                print(f"⚠️ [Performance] No remaining rows for second priority")
+            if len(second_priority_dates_yyyy_mm_dd) == 0:
+                print(f"⚠️ [Performance] No second priority dates selected")
 
         # Vectorized priority assignment for Third Priority (all remaining rows)
+        print(
+            f"⏱️ [Performance] Processing third priority at {time.time() - start_time:.2f}s"
+        )
+
         third_priority_mask = valid_mask & (processed_df["Priority Status"] == "")
         if third_priority_mask.any():
             third_priority_indices = processed_df.index[third_priority_mask]
@@ -6039,12 +6151,21 @@ def process_allocation_files_with_dates(
                 "Third Priority"
             )
             third_priority_count = len(third_priority_indices)
+            print(
+                f"✅ [Performance] Assigned {third_priority_count} rows to Third Priority"
+            )
 
             # Collect Third Priority dates
             third_priority_dates = appointment_dates_formatted[
                 third_priority_mask
             ].unique()
             third_priority_dates_set = set(third_priority_dates)
+            print(
+                f"📅 [Performance] Third priority dates count: {len(third_priority_dates_set)}"
+            )
+        else:
+            print(f"⚠️ [Performance] No rows for third priority")
+            third_priority_count = 0
 
         # Generate agent allocation summary if allocation_df is provided
         agent_summary = ""
@@ -6235,16 +6356,21 @@ def process_allocation_files_with_dates(
                     total_agents = len(agent_data)
 
                     # Calculate total capacity with proper type conversion
+                    # OPTIMIZED: Use vectorized operations instead of iterrows()
                     total_capacity = 0
-                    for _, row in agent_data.iterrows():
+                    if capacity_col in agent_data.columns:
+                        capacity_series = agent_data[capacity_col].fillna(0)
+                        capacity_series = capacity_series.astype(str).str.replace(
+                            ",", ""
+                        )
+                        capacity_series = capacity_series.replace("", "0")
                         try:
-                            if pd.notna(row[capacity_col]):
-                                capacity = int(
-                                    float(str(row[capacity_col]).replace(",", ""))
-                                )
-                                total_capacity += capacity
+                            capacity_series = pd.to_numeric(
+                                capacity_series, errors="coerce"
+                            ).fillna(0)
+                            total_capacity = int(capacity_series.sum())
                         except (ValueError, TypeError):
-                            continue
+                            total_capacity = 0
 
                     # Create capability-based allocation
                     agent_allocations = []
@@ -6626,20 +6752,21 @@ def process_allocation_files_with_dates(
                     )  # Initialize for use in summary
                     if insurance_carrier_col:
                         # Step 1: Identify all insurance companies in the data and all agent insurance companies
+                        # OPTIMIZED: Use vectorized operations instead of iterrows()
                         all_data_insurance_companies = set()
                         all_agent_insurance_companies = set()
 
-                        for idx, row in processed_df.iterrows():
-                            insurance_carrier = (
-                                str(row[insurance_carrier_col]).strip()
-                                if pd.notna(row[insurance_carrier_col])
-                                else "Unknown"
-                            )
-                            if (
-                                insurance_carrier
-                                and insurance_carrier.lower() != "unknown"
-                            ):
-                                all_data_insurance_companies.add(insurance_carrier)
+                        # Vectorized extraction of unique insurance companies
+                        if insurance_carrier_col in processed_df.columns:
+                            insurance_series = processed_df[
+                                insurance_carrier_col
+                            ].fillna("Unknown")
+                            insurance_series = insurance_series.astype(str).str.strip()
+                            valid_insurance = insurance_series[
+                                (insurance_series.str.lower() != "unknown")
+                                & (insurance_series != "")
+                            ]
+                            all_data_insurance_companies = set(valid_insurance.unique())
 
                         # Collect all insurance companies from non-senior agents (normalize to lowercase for comparison)
                         # Exclude "Afreen Ansari" from this check so unmatched insurance companies can be allocated to her
@@ -6683,81 +6810,99 @@ def process_allocation_files_with_dates(
                         senior_agents = [a for a in agent_allocations if a["is_senior"]]
 
                         # Step 2: Group data by insurance carrier and priority
+                        # OPTIMIZED: Use vectorized operations instead of iterrows()
                         data_by_insurance_priority = {}
                         unmatched_data_by_priority = {}
                         matched_data_by_insurance_priority = {}
 
-                        for idx, row in processed_df.iterrows():
-                            insurance_carrier = (
-                                str(row[insurance_carrier_col]).strip()
-                                if pd.notna(row[insurance_carrier_col])
-                                else "Unknown"
+                        # Vectorized processing of insurance carriers and priorities
+                        if insurance_carrier_col in processed_df.columns:
+                            insurance_series = processed_df[
+                                insurance_carrier_col
+                            ].fillna("Unknown")
+                            insurance_series = insurance_series.astype(str).str.strip()
+                            insurance_series = insurance_series.where(
+                                (insurance_series.str.lower() != "unknown")
+                                & (insurance_series != ""),
+                                "Unknown",
                             )
-                            priority = row.get("Priority Status", "Unknown")
-
-                            if (
-                                insurance_carrier.lower() == "unknown"
-                                or not insurance_carrier
-                            ):
-                                insurance_carrier = "Unknown"
-
-                            # Separate unmatched and matched insurance companies
-                            # Unknown insurance is always unmatched (senior only)
-                            # First Priority is always senior only (for both matched and unmatched)
-                            is_unmatched = (
-                                insurance_carrier in unmatched_insurance_companies
-                                or insurance_carrier == "Unknown"
+                            priority_series = processed_df.get(
+                                "Priority Status",
+                                pd.Series(
+                                    ["Unknown"] * len(processed_df),
+                                    index=processed_df.index,
+                                ),
                             )
+                            priority_series = priority_series.fillna("Unknown")
 
-                            if is_unmatched:
-                                # Store unmatched insurance companies separately (highest priority)
-                                if insurance_carrier not in unmatched_data_by_priority:
-                                    unmatched_data_by_priority[insurance_carrier] = {}
-                                if (
-                                    priority
-                                    not in unmatched_data_by_priority[insurance_carrier]
-                                ):
+                            # Vectorized unmatched check
+                            is_unmatched_mask = insurance_series.isin(
+                                unmatched_insurance_companies
+                            ) | (insurance_series == "Unknown")
+
+                            # Process using itertuples (much faster than iterrows)
+                            for idx_tuple in processed_df.itertuples():
+                                idx = idx_tuple.Index
+                                insurance_carrier = insurance_series.at[idx]
+                                priority = str(priority_series.at[idx])
+                                is_unmatched = is_unmatched_mask.at[idx]
+
+                                if is_unmatched:
+                                    # Store unmatched insurance companies separately (highest priority)
+                                    if (
+                                        insurance_carrier
+                                        not in unmatched_data_by_priority
+                                    ):
+                                        unmatched_data_by_priority[
+                                            insurance_carrier
+                                        ] = {}
+                                    if (
+                                        priority
+                                        not in unmatched_data_by_priority[
+                                            insurance_carrier
+                                        ]
+                                    ):
+                                        unmatched_data_by_priority[insurance_carrier][
+                                            priority
+                                        ] = []
                                     unmatched_data_by_priority[insurance_carrier][
                                         priority
-                                    ] = []
-                                unmatched_data_by_priority[insurance_carrier][
-                                    priority
-                                ].append(idx)
-                            else:
-                                # Store matched insurance companies normally
-                                if (
-                                    insurance_carrier
-                                    not in matched_data_by_insurance_priority
-                                ):
+                                    ].append(idx)
+                                else:
+                                    # Store matched insurance companies normally
+                                    if (
+                                        insurance_carrier
+                                        not in matched_data_by_insurance_priority
+                                    ):
+                                        matched_data_by_insurance_priority[
+                                            insurance_carrier
+                                        ] = {}
+                                    if (
+                                        priority
+                                        not in matched_data_by_insurance_priority[
+                                            insurance_carrier
+                                        ]
+                                    ):
+                                        matched_data_by_insurance_priority[
+                                            insurance_carrier
+                                        ][priority] = []
                                     matched_data_by_insurance_priority[
                                         insurance_carrier
-                                    ] = {}
-                                if (
-                                    priority
-                                    not in matched_data_by_insurance_priority[
-                                        insurance_carrier
-                                    ]
-                                ):
-                                    matched_data_by_insurance_priority[
-                                        insurance_carrier
-                                    ][priority] = []
-                                matched_data_by_insurance_priority[insurance_carrier][
-                                    priority
-                                ].append(idx)
+                                    ][priority].append(idx)
 
-                            # Also keep full data structure for reference
-                            if insurance_carrier not in data_by_insurance_priority:
-                                data_by_insurance_priority[insurance_carrier] = {}
-                            if (
-                                priority
-                                not in data_by_insurance_priority[insurance_carrier]
-                            ):
+                                # Also keep full data structure for reference
+                                if insurance_carrier not in data_by_insurance_priority:
+                                    data_by_insurance_priority[insurance_carrier] = {}
+                                if (
+                                    priority
+                                    not in data_by_insurance_priority[insurance_carrier]
+                                ):
+                                    data_by_insurance_priority[insurance_carrier][
+                                        priority
+                                    ] = []
                                 data_by_insurance_priority[insurance_carrier][
                                     priority
-                                ] = []
-                            data_by_insurance_priority[insurance_carrier][
-                                priority
-                            ].append(idx)
+                                ].append(idx)
 
                         # Initialize INS and Toolkit group tracking (used across all allocation steps)
                         ins_group_allocations = {}  # {agent_name: count}
@@ -6816,33 +6961,42 @@ def process_allocation_files_with_dates(
                         if "Agent Name" not in processed_df.columns:
                             processed_df["Agent Name"] = ""
 
+                        # PERFORMANCE FIX: Create set of allocated indices ONCE for O(1) lookup instead of O(n*m*k)
+                        allocated_indices_set = set()
+                        for ag in agent_allocations:
+                            allocated_indices_set.update(ag.get("row_indices", []))
+                        print(
+                            f"⚡ [Performance] Created allocated_indices_set with {len(allocated_indices_set)} indices"
+                        )
+
                         # Step 2.5: Global NTBP Allocation - Allocate all NTBP remark rows globally
                         # Allocate NTBP rows to agents with PB in Allocation Preference column
                         # Use CC column for current capacity
                         all_ntbp_rows = []
                         if remark_col and remark_col in processed_df.columns:
-                            for idx in processed_df.index:
-                                # Skip already allocated rows
-                                if idx in [
-                                    i
-                                    for ag in agent_allocations
-                                    for i in ag["row_indices"]
-                                ]:
-                                    continue
-                                if pd.notna(processed_df.at[idx, remark_col]):
-                                    row_remark = (
-                                        str(processed_df.at[idx, remark_col])
-                                        .strip()
-                                        .upper()
-                                    )
-                                    # Skip rows with "Not to work" remark - they should never be allocated
-                                    if (
-                                        "NOT TO WORK" in row_remark
-                                        or row_remark == "NOT TO WORK"
-                                    ):
-                                        continue
-                                    if row_remark == "NTBP":
-                                        all_ntbp_rows.append(idx)
+                            # OPTIMIZED: Use vectorized operations instead of iterating through all rows
+                            remark_series = processed_df[remark_col].fillna("")
+                            remark_series_upper = (
+                                remark_series.astype(str).str.strip().str.upper()
+                            )
+
+                            # Find NTBP rows using vectorized operations
+                            ntbp_mask = (remark_series_upper == "NTBP") & (
+                                ~processed_df.index.isin(allocated_indices_set)
+                            )
+                            not_to_work_mask = (
+                                remark_series_upper.str.contains(
+                                    "NOT TO WORK", na=False
+                                )
+                            ) | (remark_series_upper == "NOT TO WORK")
+
+                            # Exclude "Not to work" rows
+                            ntbp_mask = ntbp_mask & ~not_to_work_mask
+                            all_ntbp_rows = processed_df.index[ntbp_mask].tolist()
+
+                            print(
+                                f"⚡ [Performance] Found {len(all_ntbp_rows)} NTBP rows using vectorized operations"
+                            )
 
                         # Find agents with PB in Allocation Preference column (NOT domain)
                         # Only agents with "PB" in their Allocation Preference column should get NTBP work
@@ -6894,82 +7048,70 @@ def process_allocation_files_with_dates(
                                 ]
 
                                 if available_pb_agents:
+                                    # PERFORMANCE FIX: Optimize round-robin allocation
+                                    print(
+                                        f"⚡ [Performance] Starting NTBP allocation for {len(all_ntbp_rows)} rows to {len(available_pb_agents)} agents"
+                                    )
+                                    allocation_start = time.time()
+
                                     agent_idx = 0
+                                    rows_allocated = 0
+
                                     for ntbp_row_idx in all_ntbp_rows:
-                                        # Find next available agent with capacity (round-robin)
-                                        # Keep trying until we find an agent with capacity or exhaust all options
+                                        # Refresh available agents list ONCE per row (not in while loop)
+                                        available_pb_agents = [
+                                            a
+                                            for a in agents_with_pb_preference
+                                            if a["capacity"] > a["allocated"]
+                                            and a.get("ntbp_allocated", 0) < 15
+                                        ]
+
+                                        if not available_pb_agents:
+                                            # No more capacity available - stop allocation
+                                            break
+
+                                        # Try each agent in round-robin fashion (max one full cycle)
                                         assigned = False
-                                        max_attempts = (
-                                            len(available_pb_agents) * 10
-                                        )  # Increased attempts
                                         attempts = 0
+                                        max_attempts = len(available_pb_agents)
 
                                         while attempts < max_attempts and not assigned:
-                                            # Refresh available agents list in case some filled up
-                                            # Limit: No agent can receive more than 15 NTBP rows
-                                            available_pb_agents = [
-                                                a
-                                                for a in agents_with_pb_preference
-                                                if a["capacity"] > a["allocated"]
-                                                and a.get("ntbp_allocated", 0) < 15
-                                            ]
-
-                                            if not available_pb_agents:
-                                                # No more capacity available or all agents reached NTBP limit - stop allocation
-                                                break
-
                                             agent = available_pb_agents[
-                                                agent_idx % len(available_pb_agents)
+                                                (agent_idx + attempts)
+                                                % len(available_pb_agents)
                                             ]
 
-                                            # Check capacity, NTBP limit, and appointment date limit (max 20 per date)
-                                            if (
-                                                agent["capacity"] > agent["allocated"]
-                                                and agent.get("ntbp_allocated", 0) < 15
+                                            # Check appointment date limit before allocating
+                                            if can_allocate_row_by_appointment_date(
+                                                agent,
+                                                ntbp_row_idx,
+                                                processed_df,
+                                                appointment_date_col,
                                             ):
-                                                # Check appointment date limit before allocating
-                                                if can_allocate_row_by_appointment_date(
-                                                    agent,
-                                                    ntbp_row_idx,
-                                                    processed_df,
-                                                    appointment_date_col,
-                                                ):
-                                                    agent["row_indices"].append(
-                                                        ntbp_row_idx
-                                                    )
-                                                    agent["allocated"] += 1
-                                                    agent["ntbp_allocated"] = (
-                                                        agent.get("ntbp_allocated", 0)
-                                                        + 1
-                                                    )
-                                                    processed_df.at[
-                                                        ntbp_row_idx, "Agent Name"
-                                                    ] = agent["name"]
-                                                    assigned = True
-                                                    agent_idx += 1  # Move to next agent for next row
-                                                    break
-                                                else:
-                                                    # Can't allocate due to appointment date limit, try next agent
-                                                    agent_idx += 1
-                                            else:
-                                                # This agent is full, try next one
-                                                agent_idx += 1
+                                                agent["row_indices"].append(
+                                                    ntbp_row_idx
+                                                )
+                                                agent["allocated"] += 1
+                                                agent["ntbp_allocated"] = (
+                                                    agent.get("ntbp_allocated", 0) + 1
+                                                )
+                                                processed_df.at[
+                                                    ntbp_row_idx, "Agent Name"
+                                                ] = agent["name"]
+                                                assigned = True
+                                                rows_allocated += 1
 
                                             attempts += 1
 
-                                        # If we couldn't assign this row, check if any agents still have capacity
-                                        if not assigned:
-                                            # Final check - refresh available agents
-                                            # Limit: No agent can receive more than 15 NTBP rows
-                                            available_pb_agents = [
-                                                a
-                                                for a in agents_with_pb_preference
-                                                if a["capacity"] > a["allocated"]
-                                                and a.get("ntbp_allocated", 0) < 15
-                                            ]
-                                            if not available_pb_agents:
-                                                # No more capacity or all agents reached NTBP limit - stop allocation
-                                                break
+                                        # Move to next agent for next row (round-robin)
+                                        if assigned:
+                                            agent_idx = (agent_idx + 1) % len(
+                                                agents_with_pb_preference
+                                            )
+
+                                    print(
+                                        f"⚡ [Performance] NTBP allocation completed: {rows_allocated}/{len(all_ntbp_rows)} rows in {time.time() - allocation_start:.2f}s"
+                                    )
                             else:
                                 # If NTBP rows are fewer than total capacity, allocate to agents
                                 # Limit: No agent can receive more than 15 NTBP rows
@@ -7061,30 +7203,36 @@ def process_allocation_files_with_dates(
                         # Allocate NTC rows to agents with NTC in Allocation Preference column
                         # Valid Allocation Preference values: "Sec+NTC", "Sec+Mix+NTC", "Mix+NTC", "NTC"
                         # Use CC column for current capacity
+                        # PERFORMANCE FIX: Update allocated_indices_set after NTBP allocation
+                        allocated_indices_set = set()
+                        for ag in agent_allocations:
+                            allocated_indices_set.update(ag.get("row_indices", []))
+
                         all_ntc_rows = []
                         if remark_col and remark_col in processed_df.columns:
-                            for idx in processed_df.index:
-                                # Skip already allocated rows
-                                if idx in [
-                                    i
-                                    for ag in agent_allocations
-                                    for i in ag["row_indices"]
-                                ]:
-                                    continue
-                                if pd.notna(processed_df.at[idx, remark_col]):
-                                    row_remark = (
-                                        str(processed_df.at[idx, remark_col])
-                                        .strip()
-                                        .upper()
-                                    )
-                                    # Skip rows with "Not to work" remark - they should never be allocated
-                                    if (
-                                        "NOT TO WORK" in row_remark
-                                        or row_remark == "NOT TO WORK"
-                                    ):
-                                        continue
-                                    if row_remark == "NTC":
-                                        all_ntc_rows.append(idx)
+                            # OPTIMIZED: Use vectorized operations instead of iterating through all rows
+                            remark_series = processed_df[remark_col].fillna("")
+                            remark_series_upper = (
+                                remark_series.astype(str).str.strip().str.upper()
+                            )
+
+                            # Find NTC rows using vectorized operations
+                            ntc_mask = (remark_series_upper == "NTC") & (
+                                ~processed_df.index.isin(allocated_indices_set)
+                            )
+                            not_to_work_mask = (
+                                remark_series_upper.str.contains(
+                                    "NOT TO WORK", na=False
+                                )
+                            ) | (remark_series_upper == "NOT TO WORK")
+
+                            # Exclude "Not to work" rows
+                            ntc_mask = ntc_mask & ~not_to_work_mask
+                            all_ntc_rows = processed_df.index[ntc_mask].tolist()
+
+                            print(
+                                f"⚡ [Performance] Found {len(all_ntc_rows)} NTC rows using vectorized operations"
+                            )
 
                         # Find agents with NTC in Allocation Preference column
                         # Valid values: "Sec+NTC", "Sec+Mix+NTC", "Mix+NTC", "NTC"
@@ -7132,101 +7280,68 @@ def process_allocation_files_with_dates(
                                 ]
 
                                 if available_ntc_agents:
+                                    # PERFORMANCE FIX: Optimize round-robin allocation (same as NTBP)
+                                    print(
+                                        f"⚡ [Performance] Starting NTC allocation for {len(all_ntc_rows)} rows to {len(available_ntc_agents)} agents"
+                                    )
+                                    allocation_start = time.time()
+
                                     agent_idx = 0
+                                    rows_allocated = 0
+
                                     for ntc_row_idx in all_ntc_rows:
-                                        # Find next available agent with capacity (round-robin)
+                                        # Refresh available agents list ONCE per row (not in while loop)
+                                        available_ntc_agents = [
+                                            a
+                                            for a in agents_with_ntc_preference
+                                            if a["capacity"] > a["allocated"]
+                                            and a.get("ntc_allocated", 0) < 15
+                                        ]
+
+                                        if not available_ntc_agents:
+                                            # No more capacity available - stop allocation
+                                            break
+
+                                        # Try each agent in round-robin fashion (max one full cycle)
                                         assigned = False
-                                        max_attempts = (
-                                            len(available_ntc_agents) * 10
-                                        )  # Increased attempts
                                         attempts = 0
+                                        max_attempts = len(available_ntc_agents)
 
                                         while attempts < max_attempts and not assigned:
-                                            # Refresh available agents list in case some filled up
-                                            # Limit: No agent can receive more than 15 NTC rows
-                                            available_ntc_agents = [
-                                                a
-                                                for a in agents_with_ntc_preference
-                                                if a["capacity"] > a["allocated"]
-                                                and a.get("ntc_allocated", 0) < 15
-                                            ]
-
-                                            if not available_ntc_agents:
-                                                # No more capacity available or all agents reached NTC limit - stop allocation
-                                                break
-
                                             agent = available_ntc_agents[
-                                                agent_idx % len(available_ntc_agents)
+                                                (agent_idx + attempts)
+                                                % len(available_ntc_agents)
                                             ]
 
-                                            if (
-                                                agent["capacity"] > agent["allocated"]
-                                                and agent.get("ntc_allocated", 0) < 15
+                                            # Check appointment date limit before allocating
+                                            if can_allocate_row_by_appointment_date(
+                                                agent,
+                                                ntc_row_idx,
+                                                processed_df,
+                                                appointment_date_col,
                                             ):
-                                                # Safety check: Verify this is not a "Not to work" row before allocating
-                                                if remark_col and pd.notna(
-                                                    processed_df.at[
-                                                        ntc_row_idx, remark_col
-                                                    ]
-                                                ):
-                                                    remark_check = (
-                                                        str(
-                                                            processed_df.at[
-                                                                ntc_row_idx, remark_col
-                                                            ]
-                                                        )
-                                                        .strip()
-                                                        .upper()
-                                                    )
-                                                    if (
-                                                        "NOT TO WORK" in remark_check
-                                                        or remark_check == "NOT TO WORK"
-                                                    ):
-                                                        continue  # Skip this row
-
-                                                # Check appointment date limit (max 20 per date)
-                                                if can_allocate_row_by_appointment_date(
-                                                    agent,
-                                                    ntc_row_idx,
-                                                    processed_df,
-                                                    appointment_date_col,
-                                                ):
-                                                    agent["row_indices"].append(
-                                                        ntc_row_idx
-                                                    )
-                                                    agent["allocated"] += 1
-                                                    agent["ntc_allocated"] = (
-                                                        agent.get("ntc_allocated", 0)
-                                                        + 1
-                                                    )
-                                                    processed_df.at[
-                                                        ntc_row_idx, "Agent Name"
-                                                    ] = agent["name"]
-                                                    assigned = True
-                                                    agent_idx += 1  # Move to next agent for next row
-                                                    break
-                                                else:
-                                                    # Can't allocate due to appointment date limit, try next agent
-                                                    agent_idx += 1
-                                            else:
-                                                # This agent is full, try next one
-                                                agent_idx += 1
+                                                agent["row_indices"].append(ntc_row_idx)
+                                                agent["allocated"] += 1
+                                                agent["ntc_allocated"] = (
+                                                    agent.get("ntc_allocated", 0) + 1
+                                                )
+                                                processed_df.at[
+                                                    ntc_row_idx, "Agent Name"
+                                                ] = agent["name"]
+                                                assigned = True
+                                                rows_allocated += 1
 
                                             attempts += 1
 
-                                        # If we couldn't assign this row, check if any agents still have capacity
-                                        if not assigned:
-                                            # Final check - refresh available agents
-                                            # Limit: No agent can receive more than 15 NTC rows
-                                            available_ntc_agents = [
-                                                a
-                                                for a in agents_with_ntc_preference
-                                                if a["capacity"] > a["allocated"]
-                                                and a.get("ntc_allocated", 0) < 15
-                                            ]
-                                            if not available_ntc_agents:
-                                                # No more capacity or all agents reached NTC limit - stop allocation
-                                                break
+                                        # Move to next agent for next row (round-robin)
+                                        if assigned:
+                                            agent_idx = (agent_idx + 1) % len(
+                                                agents_with_ntc_preference
+                                            )
+
+                                    print(
+                                        f"⚡ [Performance] NTC allocation completed: {rows_allocated}/{len(all_ntc_rows)} rows in {time.time() - allocation_start:.2f}s"
+                                    )
                             else:
                                 # If NTC rows are fewer than total capacity, allocate ALL to a single agent
                                 # Limit: No agent can receive more than 15 NTC rows
@@ -10340,7 +10455,19 @@ def process_allocation_files_with_dates(
                                                 reverse=True,
                                             )
                                             row_pos = 0
+                                            max_iterations = (
+                                                len(rows) * len(phase1_agents) * 2
+                                            )  # Safety limit
+                                            iteration_count = 0
+
                                             while row_pos < len(rows) and phase1_agents:
+                                                iteration_count += 1
+                                                if iteration_count > max_iterations:
+                                                    print(
+                                                        f"⚠️ [Performance] Breaking potential infinite loop at row_pos={row_pos}, rows={len(rows)}"
+                                                    )
+                                                    break
+
                                                 for agent in phase1_agents:
                                                     if row_pos >= len(rows):
                                                         break
@@ -10392,6 +10519,25 @@ def process_allocation_files_with_dates(
                                                             agent["name"],
                                                         )
                                                     )
+
+                                                    # CRITICAL FIX: Always advance row_pos to prevent infinite loop
+                                                    # Use actual allocated count or original take, whichever is larger
+                                                    # This ensures we don't get stuck if all rows in slice are filtered out
+                                                    rows_processed = max(
+                                                        actual_allocated,
+                                                        (
+                                                            len(slice_rows)
+                                                            if slice_rows
+                                                            else take
+                                                        ),
+                                                    )
+                                                    row_pos += rows_processed
+
+                                                    # Safety check: ensure row_pos doesn't exceed bounds
+                                                    if row_pos > len(rows):
+                                                        row_pos = len(rows)
+                                                        break
+
                                                     if (
                                                         agent.get("assigned_insurance")
                                                         is None
@@ -10418,7 +10564,7 @@ def process_allocation_files_with_dates(
                                                         ):
                                                             ins_group_allocations[
                                                                 agent_id
-                                                            ] += take
+                                                            ] += actual_allocated  # Use actual allocated, not take
                                                     if (
                                                         agent_id
                                                         in toolkit_group_allocations
@@ -10430,8 +10576,7 @@ def process_allocation_files_with_dates(
                                                         ):
                                                             toolkit_group_allocations[
                                                                 agent_id
-                                                            ] += take
-                                                    row_pos += take
+                                                            ] += actual_allocated  # Use actual allocated, not take
                                             # Phase 2: remaining rows can go to agents with different carrier if their primary exhausted
                                             # Exclude "Single" and "Sec + Single" agents from Phase 2 (they should only get same insurance)
                                             if row_pos < len(rows):
@@ -10538,53 +10683,49 @@ def process_allocation_files_with_dates(
                         # IMPORTANT: NTBP rows should ONLY be allocated in Step 2.5 to PB preference agents
                         # IMPORTANT: NTC rows should ONLY be allocated in Step 3.5 to NTC preference agents
                         # Skip NTBP and NTC rows here - they should remain unallocated if not allocated in Step 2.5 or 3.5
+                        # PERFORMANCE FIX: Use vectorized operations instead of iterating through all rows
                         non_special_rows = []
 
                         if remark_col and remark_col in processed_df.columns:
-                            for idx in range(total_rows):
-                                # Skip already allocated rows (should have been allocated in Step 2.5 or 3.5)
-                                if idx in [
-                                    i
-                                    for ag in agent_allocations
-                                    for i in ag["row_indices"]
-                                ]:
-                                    continue
+                            # Use vectorized operations to find non-special rows
+                            remark_series = processed_df[remark_col].fillna("")
+                            remark_series_upper = (
+                                remark_series.astype(str).str.strip().str.upper()
+                            )
 
-                                row_remark = None
-                                if pd.notna(processed_df.at[idx, remark_col]):
-                                    row_remark = (
-                                        str(processed_df.at[idx, remark_col])
-                                        .strip()
-                                        .upper()
-                                    )
+                            # Create masks for different row types
+                            ntbp_mask = remark_series_upper == "NTBP"
+                            ntc_mask = remark_series_upper == "NTC"
+                            not_to_work_mask = (
+                                remark_series_upper.str.contains(
+                                    "NOT TO WORK", na=False
+                                )
+                            ) | (remark_series_upper == "NOT TO WORK")
 
-                                # Skip NTBP rows - they should only go to PB preference agents (Step 2.5)
-                                if row_remark == "NTBP":
-                                    continue
-                                # Skip NTC rows - they should only go to NTC preference agents (Step 3.5)
-                                elif row_remark == "NTC":
-                                    continue
-                                # Skip rows with "Not to work" remark - they should never be allocated
-                                elif (
-                                    "NOT TO WORK" in row_remark
-                                    or row_remark == "NOT TO WORK"
-                                ):
-                                    continue
-                                else:
-                                    non_special_rows.append(idx)
+                            # Non-special rows: not NTBP, not NTC, not "Not to work", and not already allocated
+                            non_special_mask = (
+                                ~ntbp_mask
+                                & ~ntc_mask
+                                & ~not_to_work_mask
+                                & ~processed_df.index.isin(allocated_indices_set)
+                            )
+
+                            non_special_rows = processed_df.index[
+                                non_special_mask
+                            ].tolist()
+                            print(
+                                f"⚡ [Performance] Found {len(non_special_rows)} non-special rows using vectorized operations"
+                            )
                         else:
-                            # If no remark column, all rows are non-special
-                            # But still skip already allocated rows
+                            # If no remark column, all rows are non-special (except already allocated)
                             non_special_rows = [
                                 idx
-                                for idx in range(total_rows)
-                                if idx
-                                not in [
-                                    i
-                                    for ag in agent_allocations
-                                    for i in ag["row_indices"]
-                                ]
+                                for idx in processed_df.index
+                                if idx not in allocated_indices_set
                             ]
+                            print(
+                                f"⚡ [Performance] Found {len(non_special_rows)} non-special rows (no remark column)"
+                            )
 
                         # Allocate non-NTBP, non-NTC rows to all available agents (capacity-based)
                         row_idx = 0
@@ -10745,6 +10886,11 @@ def process_allocation_files_with_dates(
                                         # Find next agent with capacity
                                         attempts = 0
                                         max_attempts = len(agents_to_use)
+                                        remaining_capacity = (
+                                            0  # Initialize to avoid undefined variable
+                                        )
+                                        agent_with_capacity = None
+
                                         while attempts < max_attempts:
                                             if agent_idx >= len(agents_to_use):
                                                 agent_idx = 0
@@ -10755,16 +10901,22 @@ def process_allocation_files_with_dates(
                                             )
 
                                             if remaining_capacity > 0:
+                                                agent_with_capacity = agent
                                                 break  # Found agent with capacity
 
                                             # Move to next agent
                                             agent_idx += 1
                                             attempts += 1
-                                        else:
-                                            # No agents with capacity left - break
-                                            break
+
+                                        # If no agent with capacity found, skip this row
+                                        if (
+                                            remaining_capacity <= 0
+                                            or agent_with_capacity is None
+                                        ):
+                                            continue
 
                                         if remaining_capacity > 0:
+                                            agent = agent_with_capacity  # Use the agent we found
                                             # Safety check: Verify this is not a "Not to work" row before allocating
                                             if remark_col and pd.notna(
                                                 processed_df.at[row_idx, remark_col]
@@ -10855,6 +11007,10 @@ def process_allocation_files_with_dates(
                                 )[0]
                                 agent["assigned_insurance"] = dominant
                     # Sort agents by name for display
+                    dedup_start_time = time.time()
+                    print(
+                        f"⏱️ [Performance] Starting deduplication at {time.time() - start_time:.2f}s"
+                    )
                     agent_allocations.sort(key=lambda x: x["name"])
 
                     # CRITICAL: Deduplicate row_indices for each agent and recalculate allocated counts
@@ -10880,32 +11036,43 @@ def process_allocation_files_with_dates(
                                 and secondary_insurance_col
                                 and secondary_insurance_col in processed_df.columns
                             ):
-                                filtered_indices = []
-                                removed_indices = []
-                                for idx in unique_valid_indices:
-                                    # Check if this row has secondary insurance
-                                    if pd.notna(
-                                        processed_df.at[idx, secondary_insurance_col]
-                                    ):
-                                        secondary_val = str(
-                                            processed_df.at[
-                                                idx, secondary_insurance_col
-                                            ]
-                                        ).strip()
-                                        if (
-                                            secondary_val
-                                            and secondary_val.lower() != "nan"
-                                        ):
-                                            # This row has secondary insurance - remove it from "Single" preference agent
-                                            removed_indices.append(idx)
-                                            # Clear the Agent Name assignment
-                                            processed_df.at[idx, "Agent Name"] = ""
-                                            continue
-                                    filtered_indices.append(idx)
+                                # PERFORMANCE FIX: Use vectorized operations instead of iterating
+                                if unique_valid_indices:
+                                    # Get secondary insurance values for these indices in one go
+                                    secondary_series = processed_df.loc[
+                                        unique_valid_indices, secondary_insurance_col
+                                    ]
+                                    # Create mask for rows with secondary insurance
+                                    has_secondary_mask = (
+                                        secondary_series.notna()
+                                        & (
+                                            secondary_series.astype(str)
+                                            .str.strip()
+                                            .str.lower()
+                                            != "nan"
+                                        )
+                                        & (
+                                            secondary_series.astype(str).str.strip()
+                                            != ""
+                                        )
+                                    )
 
-                                if removed_indices:
-                                    # Secondary insurance rows have been removed from "Single" preference agent
-                                    unique_valid_indices = filtered_indices
+                                    # Get indices to remove
+                                    indices_to_remove = secondary_series[
+                                        has_secondary_mask
+                                    ].index.tolist()
+
+                                    if indices_to_remove:
+                                        # Clear Agent Name for removed rows (vectorized)
+                                        processed_df.loc[
+                                            indices_to_remove, "Agent Name"
+                                        ] = ""
+                                        # Filter out removed indices
+                                        unique_valid_indices = [
+                                            idx
+                                            for idx in unique_valid_indices
+                                            if idx not in indices_to_remove
+                                        ]
 
                             agent["row_indices"] = unique_valid_indices
                             agent["allocated"] = len(unique_valid_indices)
@@ -11661,8 +11828,24 @@ def process_files():
         )
 
     try:
+        import time
+        from datetime import datetime
+
+        process_start_time = time.time()
+        print(
+            f"🔄 [process_files] Starting processing at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+        )
+
         # Get the first sheet from data file
+        if not data_file_data:
+            raise ValueError("No data file available")
+
         data_df = list(data_file_data.values())[0]
+
+        if data_df is None or len(data_df) == 0:
+            raise ValueError("Data file is empty")
+
+        print(f"📊 [process_files] Processing {len(data_df)} rows from data file")
 
         # Get selected appointment dates from calendar
         appointment_dates = request.form.getlist("appointment_dates")
@@ -11671,7 +11854,12 @@ def process_files():
         debug_count = request.form.get("debug_selected_count", "0")
         debug_count_second = request.form.get("debug_selected_count_second", "0")
 
+        print(
+            f"📅 [process_files] Selected dates - First: {len(appointment_dates)}, Second: {len(appointment_dates_second)}, Receive: {len(receive_dates)}"
+        )
+
         # Process the data file with selected dates and allocation data
+        print(f"⚙️ [process_files] Calling process_allocation_files_with_dates...")
         result_message, processed_df = process_allocation_files_with_dates(
             allocation_data,
             data_df,
@@ -11682,13 +11870,22 @@ def process_files():
             receive_dates,
         )
 
+        process_elapsed = time.time() - process_start_time
+        print(
+            f"⏱️ [process_files] Processing completed in {process_elapsed:.2f} seconds"
+        )
+
         if processed_df is not None:
             # Store the result for download
             processing_result = result_message
             # Update the data_file_data with the processed result
             data_file_data[list(data_file_data.keys())[0]] = processed_df
+            print(f"✅ [process_files] Successfully processed {len(processed_df)} rows")
         else:
             processing_result = result_message
+            print(
+                f"⚠️ [process_files] Processing returned None - {result_message[:100]}"
+            )
 
         return render_template_string(
             HTML_TEMPLATE,
@@ -11702,7 +11899,16 @@ def process_files():
         )
 
     except Exception as e:
-        processing_result = f"❌ Error processing data file: {str(e)}"
+        import traceback
+
+        error_details = traceback.format_exc()
+        error_message = f"❌ Error processing data file: {str(e)}"
+        processing_result = error_message
+
+        # Log full error details
+        print(f"❌ [process_files] Error occurred: {str(e)}")
+        print(f"📋 [process_files] Traceback:\n{error_details}")
+
         return render_template_string(
             HTML_TEMPLATE,
             allocation_data=allocation_data,

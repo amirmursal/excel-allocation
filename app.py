@@ -816,7 +816,7 @@ def send_email_with_resend(
     try:
         email_data = {
             "from": os.environ.get(
-                "RESEND_FROM_EMAIL", "onboarding@medinetcorp-dashboard.com"
+                "RESEND_FROM_EMAIL", "allocation@medinetcorp-dashboard.com"
             ),
             "to": to_email,
             "subject": subject,

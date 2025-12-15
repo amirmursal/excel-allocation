@@ -5923,7 +5923,7 @@ def process_allocation_files_with_dates(
             )
             if need_to_allocate_mask.any():
                 need_to_allocate_rows = processed_df[need_to_allocate_mask].copy()
-            
+
             # Create a mask to exclude rows where Agent Name is "Need to allocate" for allocation processing
             mask = processed_df[agent_name_col].apply(
                 lambda x: pd.isna(x) or str(x).strip().upper() != "NEED TO ALLOCATE"
@@ -11364,11 +11364,18 @@ def process_allocation_files_with_dates(
         # These rows were excluded from allocation but should be present in the final file
         if need_to_allocate_rows is not None and len(need_to_allocate_rows) > 0:
             # Ensure Priority Status column exists in need_to_allocate_rows if it was added to processed_df
-            if "Priority Status" in processed_df.columns and "Priority Status" not in need_to_allocate_rows.columns:
+            if (
+                "Priority Status" in processed_df.columns
+                and "Priority Status" not in need_to_allocate_rows.columns
+            ):
                 need_to_allocate_rows["Priority Status"] = ""
             # Append the "Need to allocate" rows back to the processed dataframe
-            processed_df = pd.concat([processed_df, need_to_allocate_rows], ignore_index=True)
-            print(f"📋 Added {len(need_to_allocate_rows)} 'Need to allocate' rows back to final file")
+            processed_df = pd.concat(
+                [processed_df, need_to_allocate_rows], ignore_index=True
+            )
+            print(
+                f"📋 Added {len(need_to_allocate_rows)} 'Need to allocate' rows back to final file"
+            )
 
         result_message = f"""✅ Priority processing completed successfully!
 
@@ -15902,6 +15909,19 @@ def cleanup_all_agent_files():
 
 def daily_consolidate_and_cleanup():
     """Consolidate all agent files, email the consolidated workbook, then cleanup."""
+    # Safeguard: Track last execution date to prevent duplicate emails on the same day
+    if not hasattr(app, "_last_consolidation_date"):
+        app._last_consolidation_date = None
+
+    today = datetime.now().date()
+
+    # If we already ran today, skip to prevent duplicate emails
+    if app._last_consolidation_date == today:
+        print(
+            f"⚠️ Daily consolidation already executed today ({today}). Skipping to prevent duplicate email."
+        )
+        return False, "Already executed today"
+
     try:
         with app.app_context():
             excel_buffer, filename_or_message = create_consolidated_data()
@@ -15919,6 +15939,8 @@ def daily_consolidate_and_cleanup():
                     attachment_filename=filename_or_message,
                 )
                 if success:
+                    # Mark as executed today
+                    app._last_consolidation_date = today
                     print(
                         f"✅ Daily consolidation email sent to {to_email}: {filename_or_message}"
                     )
@@ -16271,10 +16293,15 @@ if __name__ == "__main__":
     # Flask's reloader creates a parent process that monitors files and a child process that runs the app
     # WERKZEUG_RUN_MAIN is set to 'true' ONLY in the child process (where the app actually runs)
     # In production (no reloader) or when reloader is disabled, WERKZEUG_RUN_MAIN is not set
-    # So we run scheduler when: WERKZEUG_RUN_MAIN is 'true' (reloader child) OR not set (production/no reloader)
-    if os.environ.get("WERKZEUG_RUN_MAIN") == "true" or not os.environ.get(
-        "WERKZEUG_RUN_MAIN"
-    ):
+    # So we run scheduler ONLY when: WERKZEUG_RUN_MAIN is 'true' (reloader child) OR when reloader is disabled
+    # Check if reloader is enabled by checking debug mode
+    debug_mode = True if os.environ.get("DISABLE_DEBUG") != "1" else False
+    werkzeug_main = os.environ.get("WERKZEUG_RUN_MAIN")
+
+    # Only start scheduler if:
+    # 1. We're in the child process (WERKZEUG_RUN_MAIN == "true"), OR
+    # 2. Reloader is disabled (debug_mode is False, meaning no reloader parent process exists)
+    if werkzeug_main == "true" or (werkzeug_main is None and not debug_mode):
         scheduler = BackgroundScheduler()
 
         # Reminder emails - every 2 hours

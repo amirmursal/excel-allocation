@@ -5906,15 +5906,25 @@ def process_allocation_files_with_dates(
             set(appointment_dates_second) if appointment_dates_second else set()
         )
 
-        # Filter out rows with "Need to allocate" in Agent Name column for better performance
+        # Filter out rows with "Need to allocate" in Agent Name column for allocation processing
+        # But preserve them to include in the final file
         agent_name_col = None
         for col in processed_df.columns:
             if "agent" in col.lower() and "name" in col.lower():
                 agent_name_col = col
                 break
 
+        # Save "Need to allocate" rows before filtering (to include in final file)
+        need_to_allocate_rows = None
         if agent_name_col and agent_name_col in processed_df.columns:
-            # Create a mask to exclude rows where Agent Name is "Need to allocate" (case-insensitive)
+            # Create a mask to identify rows where Agent Name is "Need to allocate" (case-insensitive)
+            need_to_allocate_mask = processed_df[agent_name_col].apply(
+                lambda x: pd.notna(x) and str(x).strip().upper() == "NEED TO ALLOCATE"
+            )
+            if need_to_allocate_mask.any():
+                need_to_allocate_rows = processed_df[need_to_allocate_mask].copy()
+            
+            # Create a mask to exclude rows where Agent Name is "Need to allocate" for allocation processing
             mask = processed_df[agent_name_col].apply(
                 lambda x: pd.isna(x) or str(x).strip().upper() != "NEED TO ALLOCATE"
             )
@@ -11349,6 +11359,16 @@ def process_allocation_files_with_dates(
             if third_priority_dates_list
             else "None"
         )
+
+        # Append "Need to allocate" rows back to processed_df for final file
+        # These rows were excluded from allocation but should be present in the final file
+        if need_to_allocate_rows is not None and len(need_to_allocate_rows) > 0:
+            # Ensure Priority Status column exists in need_to_allocate_rows if it was added to processed_df
+            if "Priority Status" in processed_df.columns and "Priority Status" not in need_to_allocate_rows.columns:
+                need_to_allocate_rows["Priority Status"] = ""
+            # Append the "Need to allocate" rows back to the processed dataframe
+            processed_df = pd.concat([processed_df, need_to_allocate_rows], ignore_index=True)
+            print(f"📋 Added {len(need_to_allocate_rows)} 'Need to allocate' rows back to final file")
 
         result_message = f"""✅ Priority processing completed successfully!
 

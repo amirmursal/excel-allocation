@@ -5033,12 +5033,71 @@ def can_allocate_row_by_appointment_date(
         return True
 
 
+def check_single_agent_assigned_insurance_match(
+    agent, row_insurance, insurance_carrier_col=None
+):
+    """
+    Check if a row's insurance company matches the assigned insurance company for "Single" preference agents.
+    Returns True if matches or if agent is not "Single" preference, False otherwise.
+    """
+    # Only apply to "Single" preference agents (not "Sec + Single")
+    has_single_pref = agent.get("has_single_preference", False)
+    has_sec_pref = agent.get("has_sec_preference", False)
+    
+    # Also check raw allocation preference as backup
+    allocation_pref_raw = agent.get("allocation_preference_raw", "")
+    if allocation_pref_raw:
+        allocation_pref_upper = str(allocation_pref_raw).strip().upper()
+        if "SINGLE" in allocation_pref_upper and "SEC" not in allocation_pref_upper:
+            has_single_pref = True
+        if "SEC" in allocation_pref_upper:
+            has_sec_pref = True
+    
+    is_single_pref = has_single_pref and not has_sec_pref
+    
+    # If not "Single" preference, allow allocation
+    if not is_single_pref:
+        return True
+    
+    # For "Single" preference agents, check if they have an assigned insurance company
+    assigned_insurance = agent.get("assigned_insurance")
+    
+    # If no assigned insurance yet, allow allocation (will be assigned later)
+    if not assigned_insurance:
+        return True
+    
+    # Check if row insurance matches assigned insurance using insurance matching logic
+    if row_insurance and assigned_insurance:
+        # Format both for comparison
+        row_insurance_formatted = format_insurance_company_name(str(row_insurance).strip())
+        assigned_insurance_formatted = format_insurance_company_name(str(assigned_insurance).strip())
+        
+        # Check if they match (case-insensitive, handles variations)
+        if row_insurance_formatted and assigned_insurance_formatted:
+            if row_insurance_formatted.lower() == assigned_insurance_formatted.lower():
+                return True
+        
+        # Also check using the insurance matching function
+        agent_insurance_list = agent.get("insurance_companies", [])
+        if check_insurance_match(
+            row_insurance,
+            [assigned_insurance],
+            agent.get("is_senior", False),
+            agent.get("name"),
+        ):
+            return True
+    
+    # If assigned insurance exists but doesn't match, reject
+    return False
+
+
 def can_allocate_row_to_agent(
-    agent, row_idx, processed_df, secondary_insurance_col=None
+    agent, row_idx, processed_df, secondary_insurance_col=None, insurance_carrier_col=None
 ):
     """
     Check if a row can be allocated to an agent based on their allocation preference.
     Specifically prevents secondary insurance rows from being allocated to "Single" preference agents.
+    Also checks if "Single" preference agents can only get rows from their assigned insurance company.
 
     Returns True if the row can be allocated, False otherwise.
     """
@@ -5081,6 +5140,19 @@ def can_allocate_row_to_agent(
                     if secondary_val and secondary_val.lower() != "nan":
                         # This is a secondary insurance row - cannot allocate to "Single" preference agent
                         return False
+        
+        # NEW: Check if "Single" preference agent already has assigned insurance company
+        # If yes, only allow rows matching that insurance company
+        if insurance_carrier_col and insurance_carrier_col in processed_df.columns:
+            if row_idx < len(processed_df):
+                assigned_insurance = agent.get("assigned_insurance")
+                if assigned_insurance:
+                    row_insurance = processed_df.at[row_idx, insurance_carrier_col]
+                    if pd.notna(row_insurance):
+                        if not check_single_agent_assigned_insurance_match(
+                            agent, str(row_insurance).strip(), insurance_carrier_col
+                        ):
+                            return False
 
     return True
 
@@ -5114,10 +5186,12 @@ def safe_extend_row_indices(
             break
 
     # First filter: Remove secondary insurance rows for "Single" preference agents
+    # Also check assigned insurance company for "Single" preference agents
     pre_filtered_indices = []
     for idx in row_indices_list:
         # Use helper function to check if row can be allocated to this agent
-        if can_allocate_row_to_agent(agent, idx, processed_df, secondary_insurance_col):
+        # Pass insurance_carrier_col to check assigned insurance for "Single" agents
+        if can_allocate_row_to_agent(agent, idx, processed_df, secondary_insurance_col, insurance_carrier_col):
             pre_filtered_indices.append(idx)
 
     filtered_indices = [
@@ -5141,6 +5215,7 @@ def safe_extend_row_indices(
         filtered_indices = final_filtered_indices
 
     # ✅ FINAL VALIDATION: Check insurance compatibility before allocation
+    # Also check assigned insurance company for "Single" preference agents
     validated_indices = []
     if insurance_carrier_col and insurance_carrier_col in processed_df.columns:
         for idx in filtered_indices:
@@ -5148,7 +5223,11 @@ def safe_extend_row_indices(
                 row_insurance = processed_df.at[idx, insurance_carrier_col]
                 # Final insurance validation before allocation
                 if can_agent_work_with_insurance(agent, row_insurance):
-                    validated_indices.append(idx)
+                    # Additional check for "Single" preference agents: must match assigned insurance
+                    if check_single_agent_assigned_insurance_match(
+                        agent, row_insurance, insurance_carrier_col
+                    ):
+                        validated_indices.append(idx)
     else:
         # If no insurance column, use filtered_indices as-is (backward compatibility)
         validated_indices = filtered_indices
@@ -6755,6 +6834,40 @@ def process_allocation_files_with_dates(
                                 "assigned_insurance": None,
                             }
                         )
+
+                    # Retroactive check: Determine assigned insurance company for "Single" preference agents
+                    # based on their existing allocations (if any)
+                    if insurance_carrier_col and insurance_carrier_col in processed_df.columns:
+                        for agent in agent_allocations:
+                            # Only check "Single" preference agents (not "Sec + Single")
+                            has_single_pref = agent.get("has_single_preference", False)
+                            has_sec_pref = agent.get("has_sec_preference", False)
+                            
+                            # Also check raw allocation preference as backup
+                            allocation_pref_raw = agent.get("allocation_preference_raw", "")
+                            if allocation_pref_raw:
+                                allocation_pref_upper = str(allocation_pref_raw).strip().upper()
+                                if "SINGLE" in allocation_pref_upper and "SEC" not in allocation_pref_upper:
+                                    has_single_pref = True
+                                if "SEC" in allocation_pref_upper:
+                                    has_sec_pref = True
+                            
+                            is_single_pref = has_single_pref and not has_sec_pref
+                            
+                            if is_single_pref:
+                                # Check if agent already has allocations
+                                agent_name = agent.get("name", "")
+                                if agent_name and "Agent Name" in processed_df.columns:
+                                    agent_rows = processed_df[processed_df["Agent Name"] == agent_name]
+                                    if len(agent_rows) > 0:
+                                        # Get unique insurance companies from existing allocations
+                                        insurance_companies = agent_rows[insurance_carrier_col].dropna().unique()
+                                        if len(insurance_companies) > 0:
+                                            # Use the first insurance company found as assigned insurance
+                                            # Format it for consistency
+                                            first_insurance = str(insurance_companies[0]).strip()
+                                            agent["assigned_insurance"] = format_insurance_company_name(first_insurance) or first_insurance
+                                            print(f"📋 Retroactively assigned insurance '{agent['assigned_insurance']}' to Single preference agent '{agent_name}' based on existing allocations")
 
                     # Now allocate rows based on insurance company matching and priority
                     unmatched_insurance_companies = (
@@ -9007,80 +9120,86 @@ def process_allocation_files_with_dates(
                                                 break
 
                                     # For agents without special grouping logic, find unallocated rows with the same insurance company
-                                    if assigned_ins and not needs_special_grouping:
+                                    if not assigned_ins:
+                                        # No assigned insurance and no matching companies found - skip this agent
                                         same_insurance_rows = []
-                                    agent_insurance_list = agent.get(
-                                        "insurance_companies", []
-                                    )
+                                    elif not needs_special_grouping:
+                                        # Standard Single allocation: find rows matching assigned insurance
+                                        same_insurance_rows = []
+                                        agent_insurance_list = agent.get(
+                                            "insurance_companies", []
+                                        )
 
-                                    for idx in processed_df.index:
-                                        # Skip already allocated rows
-                                        if idx in [
-                                            i
-                                            for ag in agent_allocations
-                                            for i in ag["row_indices"]
-                                        ]:
-                                            continue
+                                        for idx in processed_df.index:
+                                            # Skip already allocated rows
+                                            if idx in [
+                                                i
+                                                for ag in agent_allocations
+                                                for i in ag["row_indices"]
+                                            ]:
+                                                continue
 
-                                        # Skip rows with secondary insurance (those go to "Sec + X" agents)
-                                        if secondary_insurance_col and pd.notna(
-                                            processed_df.at[
-                                                idx, secondary_insurance_col
-                                            ]
-                                        ):
-                                            secondary_val = str(
+                                            # Skip rows with secondary insurance (those go to "Sec + X" agents)
+                                            if secondary_insurance_col and pd.notna(
                                                 processed_df.at[
                                                     idx, secondary_insurance_col
                                                 ]
-                                            ).strip()
-                                            if (
-                                                secondary_val
-                                                and secondary_val.lower() != "nan"
                                             ):
-                                                continue
+                                                secondary_val = str(
+                                                    processed_df.at[
+                                                        idx, secondary_insurance_col
+                                                    ]
+                                                ).strip()
+                                                if (
+                                                    secondary_val
+                                                    and secondary_val.lower() != "nan"
+                                                ):
+                                                    continue
 
-                                        # Skip rows with "Not to work" remark and NTC rows
-                                        if remark_col and pd.notna(
-                                            processed_df.at[idx, remark_col]
-                                        ):
-                                            remark_val = (
-                                                str(processed_df.at[idx, remark_col])
-                                                .strip()
-                                                .upper()
-                                            )
-                                            # Skip NTC rows - they should only go to NTC preference agents (Step 3.5)
-                                            if remark_val == "NTC":
-                                                continue
-                                            if (
-                                                "NOT TO WORK" in remark_val
-                                                or remark_val == "NOT TO WORK"
+                                            # Skip rows with "Not to work" remark and NTC rows
+                                            if remark_col and pd.notna(
+                                                processed_df.at[idx, remark_col]
                                             ):
-                                                continue
-
-                                        # Get insurance company from "Dental Primary Ins Carr" column
-                                        if insurance_carrier_col and pd.notna(
-                                            processed_df.at[idx, insurance_carrier_col]
-                                        ):
-                                            row_insurance = str(
-                                                processed_df.at[
-                                                    idx, insurance_carrier_col
-                                                ]
-                                            ).strip()
-
-                                            # First check: row insurance must match assigned insurance
-                                            if row_insurance == assigned_ins:
-                                                # Second check: row insurance must be in agent's "Insurance List" (capabilities)
-                                                # Use centralized validation function for strict checking
-                                                can_work = (
-                                                    can_agent_work_with_insurance(
-                                                        agent, row_insurance
-                                                    )
+                                                remark_val = (
+                                                    str(processed_df.at[idx, remark_col])
+                                                    .strip()
+                                                    .upper()
                                                 )
+                                                # Skip NTC rows - they should only go to NTC preference agents (Step 3.5)
+                                                if remark_val == "NTC":
+                                                    continue
+                                                if (
+                                                    "NOT TO WORK" in remark_val
+                                                    or remark_val == "NOT TO WORK"
+                                                ):
+                                                    continue
 
-                                                if can_work:
-                                                    same_insurance_rows.append(idx)
-                                    else:
-                                        same_insurance_rows = []
+                                            # Get insurance company from "Dental Primary Ins Carr" column
+                                            if insurance_carrier_col and pd.notna(
+                                                processed_df.at[idx, insurance_carrier_col]
+                                            ):
+                                                row_insurance = str(
+                                                    processed_df.at[
+                                                        idx, insurance_carrier_col
+                                                    ]
+                                                ).strip()
+
+                                                # CRITICAL: Check if row insurance matches assigned insurance using helper function
+                                                # This ensures proper matching with formatting variations
+                                                if check_single_agent_assigned_insurance_match(
+                                                    agent, row_insurance, insurance_carrier_col
+                                                ):
+                                                    # Second check: row insurance must be in agent's "Insurance List" (capabilities)
+                                                    # Use centralized validation function for strict checking
+                                                    can_work = (
+                                                        can_agent_work_with_insurance(
+                                                            agent, row_insurance
+                                                        )
+                                                    )
+
+                                                    if can_work:
+                                                        same_insurance_rows.append(idx)
+                                    # If needs_special_grouping, same_insurance_rows was already set above
 
                                     # Allocate same insurance rows until capacity is full (for both Abdul Hakim and other agents)
                                     if same_insurance_rows:

@@ -4998,27 +4998,51 @@ def can_allocate_row_by_appointment_date(
 
     # Get appointment date for this row
     appointment_date = None
+    date_key = None
     if pd.notna(processed_df.at[row_idx, appointment_date_col]):
         appointment_date_val = processed_df.at[row_idx, appointment_date_col]
         # Convert to date if it's datetime
         if hasattr(appointment_date_val, "date"):
             appointment_date = appointment_date_val.date()
+            date_key = (
+                appointment_date.isoformat()
+            )  # Use ISO format for consistency: YYYY-MM-DD
         elif isinstance(appointment_date_val, str):
             try:
-                # Try to parse date string
+                # Try to parse date string - handle multiple formats
                 from datetime import datetime
 
-                appointment_date = datetime.strptime(
-                    appointment_date_val.split()[0], "%Y-%m-%d"
-                ).date()
+                date_str = appointment_date_val.split()[0].strip()
+                # Try different date formats
+                for fmt in ["%Y-%m-%d", "%m/%d/%Y", "%d/%m/%Y", "%Y/%m/%d"]:
+                    try:
+                        appointment_date = datetime.strptime(date_str, fmt).date()
+                        date_key = (
+                            appointment_date.isoformat()
+                        )  # Use ISO format for consistency
+                        break
+                    except:
+                        continue
+                if date_key is None:
+                    # If parsing failed, use the string as-is but normalize it
+                    date_key = date_str
             except:
-                appointment_date = str(appointment_date_val).strip()
+                date_key = str(appointment_date_val).strip()
         else:
-            appointment_date = str(appointment_date_val).strip()
+            # Try to convert to date if possible
+            try:
+                if hasattr(appointment_date_val, "date"):
+                    appointment_date = appointment_date_val.date()
+                    date_key = appointment_date.isoformat()
+                else:
+                    date_key = str(appointment_date_val).strip()
+            except:
+                date_key = str(appointment_date_val).strip()
 
-    if appointment_date:
-        # Convert to string key for dictionary
-        date_key = str(appointment_date)
+    if date_key:
+        # Normalize date key to ensure consistent matching
+        # Remove any time components and normalize format
+        date_key = str(date_key).strip()
         # Check if agent already has 20 rows for this appointment date
         current_count = agent["appointment_date_counts"].get(date_key, 0)
         if current_count < MAX_ROWS_PER_APPOINTMENT_DATE:
@@ -5033,6 +5057,77 @@ def can_allocate_row_by_appointment_date(
         return True
 
 
+def verify_appointment_date_limit(agent, processed_df, appointment_date_col):
+    """
+    Verify that an agent hasn't exceeded the 20-row limit per appointment date.
+    This is a safety check that counts actual allocated rows.
+    Returns a dictionary with date keys and counts, and a list of any violations.
+    """
+    if not appointment_date_col or appointment_date_col not in processed_df.columns:
+        return {}, []
+
+    violations = []
+    actual_counts = {}
+    agent_name = agent.get("name", "")
+
+    if "Agent Name" not in processed_df.columns:
+        return {}, []
+
+    # Get all rows allocated to this agent
+    agent_rows = processed_df[processed_df["Agent Name"] == agent_name]
+
+    # Count rows by appointment date
+    for idx, row in agent_rows.iterrows():
+        if pd.notna(row[appointment_date_col]):
+            appointment_date_val = row[appointment_date_col]
+            date_key = None
+
+            # Parse date using same logic as can_allocate_row_by_appointment_date
+            if hasattr(appointment_date_val, "date"):
+                date_key = appointment_date_val.date().isoformat()
+            elif isinstance(appointment_date_val, str):
+                try:
+                    from datetime import datetime
+
+                    date_str = appointment_date_val.split()[0].strip()
+                    for fmt in ["%Y-%m-%d", "%m/%d/%Y", "%d/%m/%Y", "%Y/%m/%d"]:
+                        try:
+                            date_key = (
+                                datetime.strptime(date_str, fmt).date().isoformat()
+                            )
+                            break
+                        except:
+                            continue
+                    if date_key is None:
+                        date_key = date_str
+                except:
+                    date_key = str(appointment_date_val).strip()
+            else:
+                try:
+                    if hasattr(appointment_date_val, "date"):
+                        date_key = appointment_date_val.date().isoformat()
+                    else:
+                        date_key = str(appointment_date_val).strip()
+                except:
+                    date_key = str(appointment_date_val).strip()
+
+            if date_key:
+                date_key = str(date_key).strip()
+                actual_counts[date_key] = actual_counts.get(date_key, 0) + 1
+
+                # Check for violations
+                if actual_counts[date_key] > MAX_ROWS_PER_APPOINTMENT_DATE:
+                    violations.append(
+                        {
+                            "date": date_key,
+                            "count": actual_counts[date_key],
+                            "limit": MAX_ROWS_PER_APPOINTMENT_DATE,
+                        }
+                    )
+
+    return actual_counts, violations
+
+
 def check_single_agent_assigned_insurance_match(
     agent, row_insurance, insurance_carrier_col=None
 ):
@@ -5043,7 +5138,7 @@ def check_single_agent_assigned_insurance_match(
     # Only apply to "Single" preference agents (not "Sec + Single")
     has_single_pref = agent.get("has_single_preference", False)
     has_sec_pref = agent.get("has_sec_preference", False)
-    
+
     # Also check raw allocation preference as backup
     allocation_pref_raw = agent.get("allocation_preference_raw", "")
     if allocation_pref_raw:
@@ -5052,31 +5147,35 @@ def check_single_agent_assigned_insurance_match(
             has_single_pref = True
         if "SEC" in allocation_pref_upper:
             has_sec_pref = True
-    
+
     is_single_pref = has_single_pref and not has_sec_pref
-    
+
     # If not "Single" preference, allow allocation
     if not is_single_pref:
         return True
-    
+
     # For "Single" preference agents, check if they have an assigned insurance company
     assigned_insurance = agent.get("assigned_insurance")
-    
+
     # If no assigned insurance yet, allow allocation (will be assigned later)
     if not assigned_insurance:
         return True
-    
+
     # Check if row insurance matches assigned insurance using insurance matching logic
     if row_insurance and assigned_insurance:
         # Format both for comparison
-        row_insurance_formatted = format_insurance_company_name(str(row_insurance).strip())
-        assigned_insurance_formatted = format_insurance_company_name(str(assigned_insurance).strip())
-        
+        row_insurance_formatted = format_insurance_company_name(
+            str(row_insurance).strip()
+        )
+        assigned_insurance_formatted = format_insurance_company_name(
+            str(assigned_insurance).strip()
+        )
+
         # Check if they match (case-insensitive, handles variations)
         if row_insurance_formatted and assigned_insurance_formatted:
             if row_insurance_formatted.lower() == assigned_insurance_formatted.lower():
                 return True
-        
+
         # Also check using the insurance matching function
         agent_insurance_list = agent.get("insurance_companies", [])
         if check_insurance_match(
@@ -5086,13 +5185,17 @@ def check_single_agent_assigned_insurance_match(
             agent.get("name"),
         ):
             return True
-    
+
     # If assigned insurance exists but doesn't match, reject
     return False
 
 
 def can_allocate_row_to_agent(
-    agent, row_idx, processed_df, secondary_insurance_col=None, insurance_carrier_col=None
+    agent,
+    row_idx,
+    processed_df,
+    secondary_insurance_col=None,
+    insurance_carrier_col=None,
 ):
     """
     Check if a row can be allocated to an agent based on their allocation preference.
@@ -5140,7 +5243,7 @@ def can_allocate_row_to_agent(
                     if secondary_val and secondary_val.lower() != "nan":
                         # This is a secondary insurance row - cannot allocate to "Single" preference agent
                         return False
-        
+
         # NEW: Check if "Single" preference agent already has assigned insurance company
         # If yes, only allow rows matching that insurance company
         if insurance_carrier_col and insurance_carrier_col in processed_df.columns:
@@ -5191,7 +5294,9 @@ def safe_extend_row_indices(
     for idx in row_indices_list:
         # Use helper function to check if row can be allocated to this agent
         # Pass insurance_carrier_col to check assigned insurance for "Single" agents
-        if can_allocate_row_to_agent(agent, idx, processed_df, secondary_insurance_col, insurance_carrier_col):
+        if can_allocate_row_to_agent(
+            agent, idx, processed_df, secondary_insurance_col, insurance_carrier_col
+        ):
             pre_filtered_indices.append(idx)
 
     filtered_indices = [
@@ -6837,37 +6942,62 @@ def process_allocation_files_with_dates(
 
                     # Retroactive check: Determine assigned insurance company for "Single" preference agents
                     # based on their existing allocations (if any)
-                    if insurance_carrier_col and insurance_carrier_col in processed_df.columns:
+                    if (
+                        insurance_carrier_col
+                        and insurance_carrier_col in processed_df.columns
+                    ):
                         for agent in agent_allocations:
                             # Only check "Single" preference agents (not "Sec + Single")
                             has_single_pref = agent.get("has_single_preference", False)
                             has_sec_pref = agent.get("has_sec_preference", False)
-                            
+
                             # Also check raw allocation preference as backup
-                            allocation_pref_raw = agent.get("allocation_preference_raw", "")
+                            allocation_pref_raw = agent.get(
+                                "allocation_preference_raw", ""
+                            )
                             if allocation_pref_raw:
-                                allocation_pref_upper = str(allocation_pref_raw).strip().upper()
-                                if "SINGLE" in allocation_pref_upper and "SEC" not in allocation_pref_upper:
+                                allocation_pref_upper = (
+                                    str(allocation_pref_raw).strip().upper()
+                                )
+                                if (
+                                    "SINGLE" in allocation_pref_upper
+                                    and "SEC" not in allocation_pref_upper
+                                ):
                                     has_single_pref = True
                                 if "SEC" in allocation_pref_upper:
                                     has_sec_pref = True
-                            
+
                             is_single_pref = has_single_pref and not has_sec_pref
-                            
+
                             if is_single_pref:
                                 # Check if agent already has allocations
                                 agent_name = agent.get("name", "")
                                 if agent_name and "Agent Name" in processed_df.columns:
-                                    agent_rows = processed_df[processed_df["Agent Name"] == agent_name]
+                                    agent_rows = processed_df[
+                                        processed_df["Agent Name"] == agent_name
+                                    ]
                                     if len(agent_rows) > 0:
                                         # Get unique insurance companies from existing allocations
-                                        insurance_companies = agent_rows[insurance_carrier_col].dropna().unique()
+                                        insurance_companies = (
+                                            agent_rows[insurance_carrier_col]
+                                            .dropna()
+                                            .unique()
+                                        )
                                         if len(insurance_companies) > 0:
                                             # Use the first insurance company found as assigned insurance
                                             # Format it for consistency
-                                            first_insurance = str(insurance_companies[0]).strip()
-                                            agent["assigned_insurance"] = format_insurance_company_name(first_insurance) or first_insurance
-                                            print(f"📋 Retroactively assigned insurance '{agent['assigned_insurance']}' to Single preference agent '{agent_name}' based on existing allocations")
+                                            first_insurance = str(
+                                                insurance_companies[0]
+                                            ).strip()
+                                            agent["assigned_insurance"] = (
+                                                format_insurance_company_name(
+                                                    first_insurance
+                                                )
+                                                or first_insurance
+                                            )
+                                            print(
+                                                f"📋 Retroactively assigned insurance '{agent['assigned_insurance']}' to Single preference agent '{agent_name}' based on existing allocations"
+                                            )
 
                     # Now allocate rows based on insurance company matching and priority
                     unmatched_insurance_companies = (
@@ -8301,14 +8431,51 @@ def process_allocation_files_with_dates(
                                                                     :take
                                                                 ]
                                                             )
-                                                            agent["row_indices"].extend(
-                                                                slice_rows
-                                                            )
-                                                            agent["allocated"] += take
-                                                            for idx in slice_rows:
-                                                                processed_df.at[
-                                                                    idx, "Agent Name"
-                                                                ] = agent["name"]
+                                                            # Filter by appointment date limit (max 20 rows per appointment date per agent)
+                                                            filtered_slice_rows = []
+                                                            if (
+                                                                appointment_date_col
+                                                                and appointment_date_col
+                                                                in processed_df.columns
+                                                            ):
+                                                                for idx in slice_rows:
+                                                                    if idx < len(
+                                                                        processed_df
+                                                                    ):
+                                                                        if can_allocate_row_by_appointment_date(
+                                                                            agent,
+                                                                            idx,
+                                                                            processed_df,
+                                                                            appointment_date_col,
+                                                                        ):
+                                                                            filtered_slice_rows.append(
+                                                                                idx
+                                                                            )
+                                                            else:
+                                                                filtered_slice_rows = (
+                                                                    slice_rows
+                                                                )
+
+                                                            if filtered_slice_rows:
+                                                                agent[
+                                                                    "row_indices"
+                                                                ].extend(
+                                                                    filtered_slice_rows
+                                                                )
+                                                                agent[
+                                                                    "allocated"
+                                                                ] += len(
+                                                                    filtered_slice_rows
+                                                                )
+                                                                for (
+                                                                    idx
+                                                                ) in (
+                                                                    filtered_slice_rows
+                                                                ):
+                                                                    processed_df.at[
+                                                                        idx,
+                                                                        "Agent Name",
+                                                                    ] = agent["name"]
 
                                             # For "Sec + NTC", allocate NTC rows
                                             elif (
@@ -8384,20 +8551,52 @@ def process_allocation_files_with_dates(
                                                     )
                                                     if take > 0:
                                                         slice_rows = ntc_rows[:take]
-                                                        agent["row_indices"].extend(
-                                                            slice_rows
-                                                        )
-                                                        agent["allocated"] += take
-                                                        agent["ntc_allocated"] = (
-                                                            agent.get(
-                                                                "ntc_allocated", 0
+                                                        # Filter by appointment date limit (max 20 rows per appointment date per agent)
+                                                        filtered_slice_rows = []
+                                                        if (
+                                                            appointment_date_col
+                                                            and appointment_date_col
+                                                            in processed_df.columns
+                                                        ):
+                                                            for idx in slice_rows:
+                                                                if idx < len(
+                                                                    processed_df
+                                                                ):
+                                                                    if can_allocate_row_by_appointment_date(
+                                                                        agent,
+                                                                        idx,
+                                                                        processed_df,
+                                                                        appointment_date_col,
+                                                                    ):
+                                                                        filtered_slice_rows.append(
+                                                                            idx
+                                                                        )
+                                                        else:
+                                                            filtered_slice_rows = (
+                                                                slice_rows
                                                             )
-                                                            + take
-                                                        )
-                                                        for idx in slice_rows:
-                                                            processed_df.at[
-                                                                idx, "Agent Name"
-                                                            ] = agent["name"]
+
+                                                        if filtered_slice_rows:
+                                                            agent["row_indices"].extend(
+                                                                filtered_slice_rows
+                                                            )
+                                                            agent["allocated"] += len(
+                                                                filtered_slice_rows
+                                                            )
+                                                            agent["ntc_allocated"] = (
+                                                                agent.get(
+                                                                    "ntc_allocated", 0
+                                                                )
+                                                                + len(
+                                                                    filtered_slice_rows
+                                                                )
+                                                            )
+                                                            for (
+                                                                idx
+                                                            ) in filtered_slice_rows:
+                                                                processed_df.at[
+                                                                    idx, "Agent Name"
+                                                                ] = agent["name"]
 
                                             # For "Sec + Mix", allocate Mix rows (multiple insurance company rows)
                                             elif (
@@ -8521,15 +8720,57 @@ def process_allocation_files_with_dates(
                                                                 allocated_count : allocated_count
                                                                 + take
                                                             ]
-                                                            agent["row_indices"].extend(
-                                                                slice_rows
-                                                            )
-                                                            agent["allocated"] += take
-                                                            for idx in slice_rows:
-                                                                processed_df.at[
-                                                                    idx, "Agent Name"
-                                                                ] = agent["name"]
-                                                            allocated_count += take
+                                                            # Filter by appointment date limit (max 20 rows per appointment date per agent)
+                                                            filtered_slice_rows = []
+                                                            if (
+                                                                appointment_date_col
+                                                                and appointment_date_col
+                                                                in processed_df.columns
+                                                            ):
+                                                                for idx in slice_rows:
+                                                                    if idx < len(
+                                                                        processed_df
+                                                                    ):
+                                                                        if can_allocate_row_by_appointment_date(
+                                                                            agent,
+                                                                            idx,
+                                                                            processed_df,
+                                                                            appointment_date_col,
+                                                                        ):
+                                                                            filtered_slice_rows.append(
+                                                                                idx
+                                                                            )
+                                                            else:
+                                                                filtered_slice_rows = (
+                                                                    slice_rows
+                                                                )
+
+                                                            if filtered_slice_rows:
+                                                                agent[
+                                                                    "row_indices"
+                                                                ].extend(
+                                                                    filtered_slice_rows
+                                                                )
+                                                                agent[
+                                                                    "allocated"
+                                                                ] += len(
+                                                                    filtered_slice_rows
+                                                                )
+                                                                for (
+                                                                    idx
+                                                                ) in (
+                                                                    filtered_slice_rows
+                                                                ):
+                                                                    processed_df.at[
+                                                                        idx,
+                                                                        "Agent Name",
+                                                                    ] = agent["name"]
+                                                                allocated_count += len(
+                                                                    filtered_slice_rows
+                                                                )
+                                                            else:
+                                                                # No more rows can be allocated due to appointment date limit, move to next row
+                                                                allocated_count += take
                                                             remaining_capacity = (
                                                                 agent["capacity"]
                                                                 - agent["allocated"]
@@ -8660,15 +8901,57 @@ def process_allocation_files_with_dates(
                                                                 allocated_count : allocated_count
                                                                 + take
                                                             ]
-                                                            agent["row_indices"].extend(
-                                                                slice_rows
-                                                            )
-                                                            agent["allocated"] += take
-                                                            for idx in slice_rows:
-                                                                processed_df.at[
-                                                                    idx, "Agent Name"
-                                                                ] = agent["name"]
-                                                            allocated_count += take
+                                                            # Filter by appointment date limit (max 20 rows per appointment date per agent)
+                                                            filtered_slice_rows = []
+                                                            if (
+                                                                appointment_date_col
+                                                                and appointment_date_col
+                                                                in processed_df.columns
+                                                            ):
+                                                                for idx in slice_rows:
+                                                                    if idx < len(
+                                                                        processed_df
+                                                                    ):
+                                                                        if can_allocate_row_by_appointment_date(
+                                                                            agent,
+                                                                            idx,
+                                                                            processed_df,
+                                                                            appointment_date_col,
+                                                                        ):
+                                                                            filtered_slice_rows.append(
+                                                                                idx
+                                                                            )
+                                                            else:
+                                                                filtered_slice_rows = (
+                                                                    slice_rows
+                                                                )
+
+                                                            if filtered_slice_rows:
+                                                                agent[
+                                                                    "row_indices"
+                                                                ].extend(
+                                                                    filtered_slice_rows
+                                                                )
+                                                                agent[
+                                                                    "allocated"
+                                                                ] += len(
+                                                                    filtered_slice_rows
+                                                                )
+                                                                for (
+                                                                    idx
+                                                                ) in (
+                                                                    filtered_slice_rows
+                                                                ):
+                                                                    processed_df.at[
+                                                                        idx,
+                                                                        "Agent Name",
+                                                                    ] = agent["name"]
+                                                                allocated_count += len(
+                                                                    filtered_slice_rows
+                                                                )
+                                                            else:
+                                                                # No more rows can be allocated due to appointment date limit, move to next row
+                                                                allocated_count += take
                                                             remaining_capacity = (
                                                                 agent["capacity"]
                                                                 - agent["allocated"]
@@ -9161,7 +9444,9 @@ def process_allocation_files_with_dates(
                                                 processed_df.at[idx, remark_col]
                                             ):
                                                 remark_val = (
-                                                    str(processed_df.at[idx, remark_col])
+                                                    str(
+                                                        processed_df.at[idx, remark_col]
+                                                    )
                                                     .strip()
                                                     .upper()
                                                 )
@@ -9176,7 +9461,9 @@ def process_allocation_files_with_dates(
 
                                             # Get insurance company from "Dental Primary Ins Carr" column
                                             if insurance_carrier_col and pd.notna(
-                                                processed_df.at[idx, insurance_carrier_col]
+                                                processed_df.at[
+                                                    idx, insurance_carrier_col
+                                                ]
                                             ):
                                                 row_insurance = str(
                                                     processed_df.at[
@@ -9187,7 +9474,9 @@ def process_allocation_files_with_dates(
                                                 # CRITICAL: Check if row insurance matches assigned insurance using helper function
                                                 # This ensures proper matching with formatting variations
                                                 if check_single_agent_assigned_insurance_match(
-                                                    agent, row_insurance, insurance_carrier_col
+                                                    agent,
+                                                    row_insurance,
+                                                    insurance_carrier_col,
                                                 ):
                                                     # Second check: row insurance must be in agent's "Insurance List" (capabilities)
                                                     # Use centralized validation function for strict checking
@@ -9859,20 +10148,35 @@ def process_allocation_files_with_dates(
                                             processed_df,
                                             remark_col,
                                         ):
-                                            target_senior["row_indices"].append(
-                                                unmatched_row_idx
-                                            )
-                                            target_senior["allocated"] += 1
-                                            processed_df.at[
-                                                unmatched_row_idx, "Agent Name"
-                                            ] = target_senior["name"]
-                                            allocated_unmatched_rows.add(
-                                                (
-                                                    unmatched_insurance,
+                                            # Check appointment date limit (max 20 rows per appointment date per agent)
+                                            can_allocate = True
+                                            if (
+                                                appointment_date_col
+                                                and appointment_date_col
+                                                in processed_df.columns
+                                            ):
+                                                can_allocate = can_allocate_row_by_appointment_date(
+                                                    target_senior,
                                                     unmatched_row_idx,
-                                                    unmatched_priority,
+                                                    processed_df,
+                                                    appointment_date_col,
                                                 )
-                                            )
+
+                                            if can_allocate:
+                                                target_senior["row_indices"].append(
+                                                    unmatched_row_idx
+                                                )
+                                                target_senior["allocated"] += 1
+                                                processed_df.at[
+                                                    unmatched_row_idx, "Agent Name"
+                                                ] = target_senior["name"]
+                                                allocated_unmatched_rows.add(
+                                                    (
+                                                        unmatched_insurance,
+                                                        unmatched_row_idx,
+                                                        unmatched_priority,
+                                                    )
+                                                )
                                         continue
 
                                     # If no senior with capacity, try reshuffling
@@ -11089,6 +11393,20 @@ def process_allocation_files_with_dates(
                                                         )
                                                     )
 
+                                                # Also check appointment date limit (max 20 rows per appointment date per agent)
+                                                if can_allocate:
+                                                    if (
+                                                        appointment_date_col
+                                                        and appointment_date_col
+                                                        in processed_df.columns
+                                                    ):
+                                                        can_allocate = can_allocate_row_by_appointment_date(
+                                                            agent,
+                                                            row_idx,
+                                                            processed_df,
+                                                            appointment_date_col,
+                                                        )
+
                                                 if can_allocate:
                                                     agent["row_indices"].append(row_idx)
                                                     agent["allocated"] += 1
@@ -11097,7 +11415,7 @@ def process_allocation_files_with_dates(
                                                     ] = agent["name"]
                                                     agent_idx += 1
                                                 else:
-                                                    # Insurance doesn't match - skip this row
+                                                    # Insurance doesn't match or appointment date limit reached - skip this row
                                                     continue
                                             else:
                                                 # Skip this row if it's "Not to work", but continue to next row
@@ -11307,6 +11625,125 @@ def process_allocation_files_with_dates(
 
                         # Add to global set
                         all_allocated_indices.update(unique_indices)
+
+                        # CRITICAL: Verify appointment date limits are not exceeded and fix violations
+                        if (
+                            appointment_date_col
+                            and appointment_date_col in processed_df.columns
+                        ):
+                            actual_counts, violations = verify_appointment_date_limit(
+                                agent, processed_df, appointment_date_col
+                            )
+                            if violations:
+                                print(
+                                    f"⚠️ WARNING: Agent '{agent.get('name', 'Unknown')}' has exceeded appointment date limits:"
+                                )
+                                for violation in violations:
+                                    print(
+                                        f"   Date {violation['date']}: {violation['count']} rows (limit: {violation['limit']})"
+                                    )
+                                # Fix violations by removing excess rows
+                                agent_name = agent.get("name", "")
+                                if agent_name and "Agent Name" in processed_df.columns:
+                                    agent_rows = processed_df[
+                                        processed_df["Agent Name"] == agent_name
+                                    ]
+                                    rows_to_remove = []
+                                    date_row_counts = {}
+                                    for idx, row in agent_rows.iterrows():
+                                        if pd.notna(row[appointment_date_col]):
+                                            appointment_date_val = row[
+                                                appointment_date_col
+                                            ]
+                                            date_key = None
+                                            # Parse date using same logic as can_allocate_row_by_appointment_date
+                                            if hasattr(appointment_date_val, "date"):
+                                                date_key = (
+                                                    appointment_date_val.date().isoformat()
+                                                )
+                                            elif isinstance(appointment_date_val, str):
+                                                try:
+                                                    from datetime import datetime
+
+                                                    date_str = (
+                                                        appointment_date_val.split()[
+                                                            0
+                                                        ].strip()
+                                                    )
+                                                    for fmt in [
+                                                        "%Y-%m-%d",
+                                                        "%m/%d/%Y",
+                                                        "%d/%m/%Y",
+                                                        "%Y/%m/%d",
+                                                    ]:
+                                                        try:
+                                                            date_key = (
+                                                                datetime.strptime(
+                                                                    date_str, fmt
+                                                                )
+                                                                .date()
+                                                                .isoformat()
+                                                            )
+                                                            break
+                                                        except:
+                                                            continue
+                                                    if date_key is None:
+                                                        date_key = date_str
+                                                except:
+                                                    date_key = str(
+                                                        appointment_date_val
+                                                    ).strip()
+                                            else:
+                                                try:
+                                                    if hasattr(
+                                                        appointment_date_val, "date"
+                                                    ):
+                                                        date_key = (
+                                                            appointment_date_val.date().isoformat()
+                                                        )
+                                                    else:
+                                                        date_key = str(
+                                                            appointment_date_val
+                                                        ).strip()
+                                                except:
+                                                    date_key = str(
+                                                        appointment_date_val
+                                                    ).strip()
+
+                                            if date_key:
+                                                date_key = str(date_key).strip()
+                                                if date_key not in date_row_counts:
+                                                    date_row_counts[date_key] = []
+                                                date_row_counts[date_key].append(idx)
+
+                                    # Remove excess rows for dates that exceed limit
+                                    for (
+                                        date_key,
+                                        row_indices,
+                                    ) in date_row_counts.items():
+                                        if (
+                                            len(row_indices)
+                                            > MAX_ROWS_PER_APPOINTMENT_DATE
+                                        ):
+                                            # Keep only first MAX_ROWS_PER_APPOINTMENT_DATE rows (remove the rest)
+                                            excess_rows = row_indices[
+                                                MAX_ROWS_PER_APPOINTMENT_DATE:
+                                            ]
+                                            rows_to_remove.extend(excess_rows)
+
+                                    # Remove excess rows
+                                    if rows_to_remove:
+                                        for idx in rows_to_remove:
+                                            processed_df.at[idx, "Agent Name"] = None
+                                            if idx in agent.get("row_indices", []):
+                                                agent["row_indices"].remove(idx)
+                                        # Recalculate allocated count
+                                        agent["allocated"] = len(
+                                            agent.get("row_indices", [])
+                                        )
+                                        print(
+                                            f"   ✅ Removed {len(rows_to_remove)} excess rows from agent '{agent_name}'"
+                                        )
 
                     # Store agent allocations data globally AFTER correction
                     agent_allocations_data = agent_allocations

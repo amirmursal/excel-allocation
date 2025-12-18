@@ -461,6 +461,12 @@ data_file_data = None
 allocation_filename = None
 data_filename = None
 processing_result = None
+email_staff_details = None
+email_staff_filename = None
+email_allocation_data = None
+email_allocation_filename = None
+email_allocation_agents_list = None
+email_sent_agents = set()  # Track which agents have been sent emails
 
 # Agent processing result
 agent_processing_result = None
@@ -1771,6 +1777,9 @@ HTML_TEMPLATE = """
                         <button class="admin-tab-btn active" onclick="switchAdminTab('file-management')" style="padding: 12px 24px; border: none; background: #f8f9fa; color: #666; cursor: pointer; border-bottom: 3px solid transparent; transition: all 0.3s;">
                             <i class="fas fa-upload"></i> File Management
                         </button>
+                        <button class="admin-tab-btn" onclick="switchAdminTab('email-allocation')" style="padding: 12px 24px; border: none; background: #f8f9fa; color: #666; cursor: pointer; border-bottom: 3px solid transparent; transition: all 0.3s;">
+                            <i class="fas fa-envelope"></i> Email Allocation
+                        </button>
                         <button class="admin-tab-btn" onclick="switchAdminTab('agent-allocation')" style="padding: 12px 24px; border: none; background: #f8f9fa; color: #666; cursor: pointer; border-bottom: 3px solid transparent; transition: all 0.3s;">
                             <i class="fas fa-users"></i> Agent Allocation
                         </button>
@@ -1949,6 +1958,146 @@ HTML_TEMPLATE = """
                 </div>
                 {% endif %}
 
+                </div>
+                
+                <!-- Email Allocation Tab -->
+                <div id="email-allocation-tab" class="admin-tab-content">
+                    <!-- File Upload Status Messages -->
+                    <div id="email-upload-status" style="margin-bottom: 20px;">
+                        {% with messages = get_flashed_messages(with_categories=true) %}
+                            {% if messages %}
+                                {% for category, message in messages %}
+                                    {% if 'email' in message.lower() or 'staff' in message.lower() or 'allocation' in message.lower() %}
+                                    <div class="alert alert-{{ category }}" style="padding: 12px 15px; border-radius: 6px; margin-bottom: 10px; {% if category == 'success' %}background: #d4edda; color: #155724; border: 1px solid #c3e6cb;{% elif category == 'error' %}background: #f8d7da; color: #721c24; border: 1px solid #f5c6cb;{% else %}background: #d1ecf1; color: #0c5460; border: 1px solid #bee5eb;{% endif %}">
+                                        <i class="fas fa-{% if category == 'success' %}check-circle{% elif category == 'error' %}exclamation-circle{% else %}info-circle{% endif %}"></i> {{ message }}
+                                    </div>
+                                    {% endif %}
+                                {% endfor %}
+                            {% endif %}
+                        {% endwith %}
+                    </div>
+                    
+                    <div class="upload-grid">
+                        <div class="upload-card">
+                            <form action="/upload_email_staff_details" method="post" enctype="multipart/form-data" id="email-staff-form">
+                                <div class="form-group">
+                                    <input type="file" id="email_staff_file" name="file" accept=".xlsx,.xls" required>
+                                </div>
+                                <button type="submit" id="email-staff-btn">📤 Upload Staff Details</button>
+                            </form>
+                            {% if email_staff_filename %}
+                            <div style="margin-top: 10px; padding: 8px; background: #e7f3ff; border-radius: 5px; font-size: 12px; color: #004085;">
+                                <i class="fas fa-check-circle"></i> Uploaded: {{ email_staff_filename }}
+                            </div>
+                            {% endif %}
+                        </div>
+
+                        <div class="upload-card">
+                            <form action="/upload_email_allocation" method="post" enctype="multipart/form-data" id="email-allocation-form">
+                                <div class="form-group">
+                                    <input type="file" id="email_allocation_file" name="file" accept=".xlsx,.xls" required>
+                                </div>
+                                <button type="submit" id="email-allocation-btn">📤 Upload Allocation File</button>
+                            </form>
+                            {% if email_allocation_filename %}
+                            <div style="margin-top: 10px; padding: 8px; background: #e7f3ff; border-radius: 5px; font-size: 12px; color: #004085;">
+                                <i class="fas fa-check-circle"></i> Uploaded: {{ email_allocation_filename }}
+                            </div>
+                            {% endif %}
+                        </div>
+                    </div>
+                    
+                    <!-- Agents Table -->
+                    {% if email_allocation_agents_list %}
+                    <div class="section" style="margin-top: 30px;">
+                        <h3>📋 Agents from Allocation File</h3>
+                        {% if email_allocation_filename %}
+                        <p style="color: #666; margin-bottom: 15px;">Allocation File: {{ email_allocation_filename }}</p>
+                        {% endif %}
+                        {% if email_staff_filename %}
+                        <p style="color: #666; margin-bottom: 15px;">Staff Details File: {{ email_staff_filename }}</p>
+                        {% endif %}
+                        <div style="overflow-x: auto;">
+                            <table style="width: 100%; border-collapse: collapse; background: white; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
+                                <thead>
+                                    <tr style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white;">
+                                        <th style="padding: 12px 15px; text-align: left; font-weight: 600;">Agent Name</th>
+                                        <th style="padding: 12px 15px; text-align: left; font-weight: 600;">Email ID</th>
+                                        <th style="padding: 12px 15px; text-align: center; font-weight: 600;">Action</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {% for agent in email_allocation_agents_list %}
+                                    <tr style="border-bottom: 1px solid #e9ecef;">
+                                        <td style="padding: 12px 15px;">{{ agent.agent_name }}</td>
+                                        <td style="padding: 12px 15px;">
+                                            {% if agent.email_id %}
+                                                {{ agent.email_id }}
+                                            {% else %}
+                                                <span style="color: #999; font-style: italic;">No email found</span>
+                                            {% endif %}
+                                        </td>
+                                        <td style="padding: 12px 15px; text-align: center;">
+                                            <div style="display: flex; gap: 8px; justify-content: center; align-items: center;">
+                                                <button type="button" onclick="viewEmailAgentAllocation('{{ agent.agent_name }}')" style="background: linear-gradient(135deg, #3498db, #2980b9); color: white; border: none; padding: 8px 16px; border-radius: 5px; cursor: pointer; font-size: 13px; font-weight: 600; transition: transform 0.2s;">
+                                                    <i class="fas fa-eye"></i> View
+                                                </button>
+                                                {% if agent.email_id %}
+                                                {% set agent_id = agent.agent_name|replace(' ', '_')|replace("'", '') %}
+                                                <button type="button" id="send-btn-{{ agent_id }}" onclick="sendEmailToAgent('{{ agent.agent_name }}', '{{ agent.email_id }}', this)" {% if agent.agent_name in email_sent_agents %}disabled style="background: #95a5a6; color: white; border: none; padding: 8px 16px; border-radius: 5px; cursor: not-allowed; font-size: 13px; font-weight: 600;"{% else %}style="background: linear-gradient(135deg, #27ae60, #2ecc71); color: white; border: none; padding: 8px 16px; border-radius: 5px; cursor: pointer; font-size: 13px; font-weight: 600; transition: transform 0.2s;"{% endif %}>
+                                                    {% if agent.agent_name in email_sent_agents %}
+                                                    <i class="fas fa-check"></i> Already sent
+                                                    {% else %}
+                                                    <i class="fas fa-paper-plane"></i> <span class="send-btn-text">Send</span>
+                                                    {% endif %}
+                                                </button>
+                                                {% else %}
+                                                <span style="color: #999; font-size: 12px;">Upload staff details</span>
+                                                {% endif %}
+                                            </div>
+                                        </td>
+                                    </tr>
+                                    {% endfor %}
+                                </tbody>
+                            </table>
+                        </div>
+                        <div id="email-send-status" style="margin-top: 15px;"></div>
+                    </div>
+                    {% endif %}
+                    
+                    <!-- Snackbar Notification -->
+                    <div id="snackbar" style="visibility: hidden; min-width: 250px; margin-left: -125px; background-color: #333; color: #fff; text-align: center; border-radius: 4px; padding: 16px; position: fixed; z-index: 10001; left: 50%; bottom: 30px; font-size: 14px; box-shadow: 0 4px 6px rgba(0,0,0,0.3); transition: visibility 0s, opacity 0.3s linear;">
+                        <i class="fas fa-check-circle" style="margin-right: 8px;"></i>
+                        <span id="snackbar-text">Email sent successfully!</span>
+                    </div>
+                    
+                    <!-- Agent Allocation View Modal -->
+                    <div id="agent-allocation-modal" style="display: none; position: fixed; z-index: 10000; left: 0; top: 0; width: 100%; height: 100%; overflow: auto; background-color: rgba(0,0,0,0.5);">
+                        <div style="background-color: #fefefe; margin: 2% auto; padding: 0; border: none; border-radius: 10px; width: 90%; max-width: 1400px; max-height: 90vh; overflow: hidden; box-shadow: 0 10px 30px rgba(0,0,0,0.3);">
+                            <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 20px; display: flex; justify-content: space-between; align-items: center;">
+                                <h2 style="margin: 0; font-size: 20px;"><i class="fas fa-user"></i> <span id="modal-agent-name"></span> - Allocation Details</h2>
+                                <button onclick="closeAgentModal()" style="background: transparent; border: none; color: white; font-size: 28px; font-weight: bold; cursor: pointer; padding: 0; width: 30px; height: 30px; display: flex; align-items: center; justify-content: center;">&times;</button>
+                            </div>
+                            <div style="padding: 20px; max-height: calc(90vh - 120px); overflow-y: auto;">
+                                <div style="margin-bottom: 15px; display: flex; justify-content: space-between; align-items: center;">
+                                    <div>
+                                        <p style="margin: 5px 0; color: #666;"><strong>Total Rows:</strong> <span id="modal-row-count">0</span></p>
+                                    </div>
+                                    <button onclick="downloadAgentExcel()" id="download-agent-excel-btn" style="background: linear-gradient(135deg, #27ae60, #2ecc71); color: white; border: none; padding: 10px 20px; border-radius: 6px; cursor: pointer; font-size: 14px; font-weight: 600;">
+                                        <i class="fas fa-download"></i> Download Excel
+                                    </button>
+                                </div>
+                                <div id="modal-table-container" style="overflow-x: auto;">
+                                    <table id="modal-allocation-table" style="width: 100%; border-collapse: collapse; background: white; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
+                                        <thead id="modal-table-head">
+                                        </thead>
+                                        <tbody id="modal-table-body">
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
                 </div>
                 
                 <!-- Agent Allocation Tab -->
@@ -2194,6 +2343,272 @@ HTML_TEMPLATE = """
             // Show/hide tab content
             document.querySelectorAll('.admin-tab-content').forEach(tab => tab.classList.remove('active'));
             document.getElementById(tabName + '-tab').classList.add('active');
+            
+            // Update URL without reloading page
+            const url = new URL(window.location);
+            url.searchParams.set('tab', tabName);
+            window.history.pushState({}, '', url);
+        }
+        
+        // Check for tab parameter in URL on page load
+        window.addEventListener('DOMContentLoaded', function() {
+            const urlParams = new URLSearchParams(window.location.search);
+            const tabParam = urlParams.get('tab');
+            if (tabParam) {
+                // Find the button for this tab and activate it
+                const tabButtons = document.querySelectorAll('.admin-tab-btn');
+                tabButtons.forEach(btn => {
+                    const onclickAttr = btn.getAttribute('onclick');
+                    if (onclickAttr && onclickAttr.includes("'" + tabParam + "'")) {
+                        // Remove active from all tabs
+                        document.querySelectorAll('.admin-tab-btn').forEach(b => b.classList.remove('active'));
+                        document.querySelectorAll('.admin-tab-content').forEach(t => t.classList.remove('active'));
+                        // Add active to selected tab
+                        btn.classList.add('active');
+                        const tabContent = document.getElementById(tabParam + '-tab');
+                        if (tabContent) {
+                            tabContent.classList.add('active');
+                        }
+                    }
+                });
+            }
+        });
+        
+        // Handle file upload forms with status messages
+        document.addEventListener('DOMContentLoaded', function() {
+            const staffForm = document.getElementById('email-staff-form');
+            const allocationForm = document.getElementById('email-allocation-form');
+            const statusDiv = document.getElementById('email-upload-status');
+            
+            if (staffForm) {
+                staffForm.addEventListener('submit', function(e) {
+                    const btn = document.getElementById('email-staff-btn');
+                    const originalText = btn.innerHTML;
+                    btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Uploading...';
+                    btn.disabled = true;
+                    
+                    // Show loading message
+                    if (statusDiv) {
+                        statusDiv.innerHTML = '<div style="padding: 12px 15px; border-radius: 6px; margin-bottom: 10px; background: #d1ecf1; color: #0c5460; border: 1px solid #bee5eb;"><i class="fas fa-spinner fa-spin"></i> Uploading staff details file... Please wait.</div>';
+                    }
+                });
+            }
+            
+            if (allocationForm) {
+                allocationForm.addEventListener('submit', function(e) {
+                    const btn = document.getElementById('email-allocation-btn');
+                    const originalText = btn.innerHTML;
+                    btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Uploading...';
+                    btn.disabled = true;
+                    
+                    // Show loading message
+                    if (statusDiv) {
+                        statusDiv.innerHTML = '<div style="padding: 12px 15px; border-radius: 6px; margin-bottom: 10px; background: #d1ecf1; color: #0c5460; border: 1px solid #bee5eb;"><i class="fas fa-spinner fa-spin"></i> Uploading allocation file... Please wait.</div>';
+                    }
+                });
+            }
+        });
+        
+        // View agent allocation in modal (for Email Allocation tab)
+        let currentViewingAgent = null;
+        
+        function viewEmailAgentAllocation(agentName) {
+            currentViewingAgent = agentName;
+            const modal = document.getElementById('agent-allocation-modal');
+            const modalAgentName = document.getElementById('modal-agent-name');
+            const modalRowCount = document.getElementById('modal-row-count');
+            const modalTableHead = document.getElementById('modal-table-head');
+            const modalTableBody = document.getElementById('modal-table-body');
+            
+            modalAgentName.textContent = agentName;
+            modal.style.display = 'block';
+            
+            // Show loading
+            modalTableHead.innerHTML = '<tr><th colspan="100" style="padding: 20px; text-align: center;"><i class="fas fa-spinner fa-spin"></i> Loading...</th></tr>';
+            modalTableBody.innerHTML = '';
+            modalRowCount.textContent = '0';
+            
+            // Fetch agent's allocation data
+            fetch('/get_agent_allocation_data', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ agent_name: agentName })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success && data.rows && data.columns) {
+                    // Update row count
+                    modalRowCount.textContent = data.rows.length;
+                    
+                    // Build table header
+                    let headerHtml = '<tr style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white;">';
+                    data.columns.forEach(col => {
+                        headerHtml += `<th style="padding: 12px 15px; text-align: left; font-weight: 600;">${col}</th>`;
+                    });
+                    headerHtml += '</tr>';
+                    modalTableHead.innerHTML = headerHtml;
+                    
+                    // Build table body
+                    let bodyHtml = '';
+                    data.rows.forEach((row, idx) => {
+                        bodyHtml += '<tr style="border-bottom: 1px solid #e9ecef;">';
+                        data.columns.forEach(col => {
+                            const value = row[col] !== null && row[col] !== undefined ? String(row[col]) : '';
+                            bodyHtml += `<td style="padding: 12px 15px;">${value}</td>`;
+                        });
+                        bodyHtml += '</tr>';
+                    });
+                    modalTableBody.innerHTML = bodyHtml;
+                } else {
+                    modalTableHead.innerHTML = '<tr><th colspan="100" style="padding: 20px; text-align: center; color: #dc3545;">Error: ' + (data.error || 'Failed to load data') + '</th></tr>';
+                    modalTableBody.innerHTML = '';
+                }
+            })
+            .catch(error => {
+                modalTableHead.innerHTML = '<tr><th colspan="100" style="padding: 20px; text-align: center; color: #dc3545;">Error: ' + error.message + '</th></tr>';
+                modalTableBody.innerHTML = '';
+            });
+        }
+        
+        function closeAgentModal() {
+            const modal = document.getElementById('agent-allocation-modal');
+            modal.style.display = 'none';
+            currentViewingAgent = null;
+        }
+        
+        function downloadAgentExcel() {
+            if (!currentViewingAgent) {
+                alert('No agent selected');
+                return;
+            }
+            
+            const btn = document.getElementById('download-agent-excel-btn');
+            const originalText = btn.innerHTML;
+            btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Downloading...';
+            btn.disabled = true;
+            
+            fetch('/download_agent_allocation_excel', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ agent_name: currentViewingAgent })
+            })
+            .then(response => {
+                if (response.ok) {
+                    return response.blob();
+                }
+                throw new Error('Download failed');
+            })
+            .then(blob => {
+                const url = window.URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = currentViewingAgent + '_allocation_' + new Date().toISOString().split('T')[0] + '.xlsx';
+                document.body.appendChild(a);
+                a.click();
+                window.URL.revokeObjectURL(url);
+                document.body.removeChild(a);
+                btn.innerHTML = originalText;
+                btn.disabled = false;
+            })
+            .catch(error => {
+                alert('Error downloading file: ' + error.message);
+                btn.innerHTML = originalText;
+                btn.disabled = false;
+            });
+        }
+        
+        // Close modal when clicking outside (for email allocation modal)
+        const emailAllocationModal = document.getElementById('agent-allocation-modal');
+        if (emailAllocationModal) {
+            window.addEventListener('click', function(event) {
+                if (event.target == emailAllocationModal) {
+                    closeAgentModal();
+                }
+            });
+        }
+        
+        // Show snackbar notification
+        function showSnackbar(message) {
+            const snackbar = document.getElementById('snackbar');
+            const snackbarText = document.getElementById('snackbar-text');
+            snackbarText.textContent = message;
+            snackbar.style.visibility = 'visible';
+            snackbar.style.opacity = '1';
+            
+            setTimeout(function() {
+                snackbar.style.opacity = '0';
+                setTimeout(function() {
+                    snackbar.style.visibility = 'hidden';
+                }, 300);
+            }, 3000);
+        }
+        
+        // Send email to individual agent
+        function sendEmailToAgent(agentName, emailId, buttonElement) {
+            const statusDiv = document.getElementById('email-send-status');
+            statusDiv.innerHTML = '<div style="color: #007bff; padding: 10px; background: #e7f3ff; border-radius: 5px;"><i class="fas fa-spinner fa-spin"></i> Sending email to ' + agentName + '... Please wait.</div>';
+            
+            // Disable button while sending
+            if (buttonElement) {
+                buttonElement.disabled = true;
+                buttonElement.style.cursor = 'not-allowed';
+                buttonElement.style.opacity = '0.6';
+            }
+            
+            fetch('/send_email_to_agent', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ 
+                    agent_name: agentName,
+                    email_id: emailId
+                })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    // Show snackbar notification
+                    showSnackbar('Email sent successfully to ' + agentName);
+                    
+                    // Update button to "Already sent"
+                    if (buttonElement) {
+                        buttonElement.disabled = true;
+                        buttonElement.style.background = '#95a5a6';
+                        buttonElement.style.cursor = 'not-allowed';
+                        buttonElement.style.opacity = '1';
+                        const sendBtnText = buttonElement.querySelector('.send-btn-text');
+                        if (sendBtnText) {
+                            sendBtnText.textContent = 'Already sent';
+                        } else {
+                            buttonElement.innerHTML = '<i class="fas fa-check"></i> Already sent';
+                        }
+                    }
+                    
+                    statusDiv.innerHTML = '<div style="color: #28a745; padding: 10px; background: #d4edda; border-radius: 5px;"><i class="fas fa-check-circle"></i> Successfully sent email to ' + agentName + ' (' + emailId + ').</div>';
+                } else {
+                    // Re-enable button on error
+                    if (buttonElement) {
+                        buttonElement.disabled = false;
+                        buttonElement.style.cursor = 'pointer';
+                        buttonElement.style.opacity = '1';
+                    }
+                    statusDiv.innerHTML = '<div style="color: #dc3545; padding: 10px; background: #f8d7da; border-radius: 5px;"><i class="fas fa-exclamation-circle"></i> Error: ' + (data.error || 'Failed to send email') + '</div>';
+                }
+            })
+            .catch(error => {
+                // Re-enable button on error
+                if (buttonElement) {
+                    buttonElement.disabled = false;
+                    buttonElement.style.cursor = 'pointer';
+                    buttonElement.style.opacity = '1';
+                }
+                statusDiv.innerHTML = '<div style="color: #dc3545; padding: 10px; background: #f8d7da; border-radius: 5px;"><i class="fas fa-exclamation-circle"></i> Error: ' + error.message + '</div>';
+            });
         }
         
         // Toast Notification Functions
@@ -11962,6 +12377,8 @@ def process_allocation_files_with_dates(
 def index():
     global allocation_data, data_file_data, allocation_filename, data_filename, processing_result
     global agent_processing_result, agent_allocations_data
+    global email_staff_details, email_staff_filename
+    global email_allocation_data, email_allocation_filename, email_allocation_agents_list
 
     # Get current user
     user = get_user_by_username(session.get("user_id"))
@@ -11990,6 +12407,12 @@ def index():
         agent_work_files=agent_work_files,
         all_agent_work_files=all_agent_work_files,
         current_time=current_time,
+        email_staff_details=email_staff_details,
+        email_staff_filename=email_staff_filename,
+        email_allocation_data=email_allocation_data,
+        email_allocation_filename=email_allocation_filename,
+        email_allocation_agents_list=email_allocation_agents_list,
+        email_sent_agents=list(email_sent_agents) if email_sent_agents else [],
     )
 
 
@@ -12201,6 +12624,413 @@ def logout():
 @login_required
 def dashboard():
     return redirect(url_for("index"))
+
+
+@app.route("/upload_email_staff_details", methods=["POST"])
+@admin_required
+def upload_email_staff_details():
+    global email_staff_details, email_staff_filename
+    global email_sent_agents
+    
+    if "file" not in request.files:
+        flash("No file provided", "error")
+        return redirect("/?tab=email-allocation")
+    
+    file = request.files["file"]
+    if file.filename == "":
+        flash("No file selected", "error")
+        return redirect("/?tab=email-allocation")
+    
+    try:
+        # Save uploaded file temporarily
+        filename = secure_filename(file.filename)
+        file.save(filename)
+        
+        # Load Excel file
+        df = pd.read_excel(filename, sheet_name=0, parse_dates=False)
+        
+        # Find Email id and Agent Name columns (case-insensitive)
+        email_col = None
+        agent_name_col = None
+        
+        for col in df.columns:
+            col_str = str(col).strip().lower()
+            if "email" in col_str and "id" in col_str:
+                email_col = col
+            elif "agent" in col_str and "name" in col_str:
+                agent_name_col = col
+        
+        if not email_col:
+            flash("Error: 'Email id' column not found in the file", "error")
+            if os.path.exists(filename):
+                os.remove(filename)
+            return redirect("/")
+        
+        if not agent_name_col:
+            flash("Error: 'Agent Name' column not found in the file", "error")
+            if os.path.exists(filename):
+                os.remove(filename)
+            return redirect("/")
+        
+        # Reset email sent tracking when new staff details are uploaded
+        email_sent_agents = set()
+        
+        # Extract email and agent name data
+        email_staff_details = []
+        for idx, row in df.iterrows():
+            email_id = row[email_col]
+            agent_name = row[agent_name_col]
+            
+            # Skip rows with missing data
+            if pd.notna(email_id) and pd.notna(agent_name):
+                email_staff_details.append({
+                    "agent_name": str(agent_name).strip(),
+                    "email_id": str(email_id).strip()
+                })
+        
+        email_staff_filename = filename
+        
+        # If allocation file is already uploaded, filter staff details to match allocation agents
+        if email_allocation_data is not None:
+            # Find Agent Name column in allocation file
+            allocation_agent_name_col = None
+            for col in email_allocation_data.columns:
+                col_str = str(col).strip().lower()
+                if "agent" in col_str and "name" in col_str:
+                    allocation_agent_name_col = col
+                    break
+            
+            if allocation_agent_name_col:
+                # Extract unique agent names from allocation file
+                allocation_agent_names = set()
+                for idx, row in email_allocation_data.iterrows():
+                    agent_name = row[allocation_agent_name_col]
+                    if pd.notna(agent_name):
+                        allocation_agent_names.add(str(agent_name).strip())
+                
+                # Filter staff details to only include agents present in allocation file
+                original_count = len(email_staff_details)
+                email_staff_details = [
+                    staff for staff in email_staff_details
+                    if staff["agent_name"] in allocation_agent_names
+                ]
+                flash(f"✅ Staff details uploaded successfully! Loaded {original_count} staff members. Filtered to {len(email_staff_details)} matching agents from allocation file.", "success")
+            else:
+                flash(f"✅ Staff details uploaded successfully! Loaded {len(email_staff_details)} staff members.", "success")
+        else:
+            flash(f"✅ Staff details uploaded successfully! Loaded {len(email_staff_details)} staff members.", "success")
+        
+        # Clean up temporary file
+        if os.path.exists(filename):
+            os.remove(filename)
+        
+        return redirect("/?tab=email-allocation")
+        
+    except Exception as e:
+        flash(f"Error uploading file: {str(e)}", "error")
+        if os.path.exists(filename):
+            os.remove(filename)
+        return redirect("/?tab=email-allocation")
+
+
+@app.route("/upload_email_allocation", methods=["POST"])
+@admin_required
+def upload_email_allocation():
+    global email_allocation_data, email_allocation_filename, email_staff_details, email_allocation_agents_list
+    global email_sent_agents
+    
+    if "file" not in request.files:
+        flash("No file provided", "error")
+        return redirect("/?tab=email-allocation")
+    
+    file = request.files["file"]
+    if file.filename == "":
+        flash("No file selected", "error")
+        return redirect("/?tab=email-allocation")
+    
+    try:
+        # Save uploaded file temporarily
+        filename = secure_filename(file.filename)
+        file.save(filename)
+        
+        # Load Excel file
+        df = pd.read_excel(filename, sheet_name=0, parse_dates=False)
+        
+        # Find Agent Name column (case-insensitive)
+        agent_name_col = None
+        for col in df.columns:
+            col_str = str(col).strip().lower()
+            if "agent" in col_str and "name" in col_str:
+                agent_name_col = col
+                break
+        
+        if not agent_name_col:
+            flash("Error: 'Agent Name' column not found in the allocation file", "error")
+            if os.path.exists(filename):
+                os.remove(filename)
+            return redirect("/?tab=email-allocation")
+        
+        # Extract unique agent names from allocation file
+        allocation_agent_names = set()
+        for idx, row in df.iterrows():
+            agent_name = row[agent_name_col]
+            if pd.notna(agent_name):
+                allocation_agent_names.add(str(agent_name).strip())
+        
+        # Reset email sent tracking when new allocation file is uploaded
+        email_sent_agents = set()
+        
+        email_allocation_data = df
+        email_allocation_filename = filename
+        
+        # Create a list of agents from allocation file for display
+        # This will be used to show agents even if staff details aren't uploaded yet
+        email_allocation_agents_list = []
+        for agent_name in sorted(allocation_agent_names):
+            # Try to find matching email from staff details
+            email_id = None
+            if email_staff_details:
+                for staff in email_staff_details:
+                    if staff["agent_name"] == agent_name:
+                        email_id = staff["email_id"]
+                        break
+            
+            email_allocation_agents_list.append({
+                "agent_name": agent_name,
+                "email_id": email_id
+            })
+        
+        # Filter staff details to only include agents present in allocation file
+        if email_staff_details:
+            original_count = len(email_staff_details)
+            email_staff_details = [
+                staff for staff in email_staff_details
+                if staff["agent_name"] in allocation_agent_names
+            ]
+            filtered_count = len(email_staff_details)
+            # Update email_allocation_agents_list with filtered emails
+            for agent in email_allocation_agents_list:
+                for staff in email_staff_details:
+                    if staff["agent_name"] == agent["agent_name"]:
+                        agent["email_id"] = staff["email_id"]
+                        break
+            flash(f"✅ Allocation file uploaded successfully! Found {len(allocation_agent_names)} agents. Filtered staff details from {original_count} to {filtered_count} matching agents.", "success")
+        else:
+            flash(f"✅ Allocation file uploaded successfully! Found {len(allocation_agent_names)} agents. Upload staff details file to see email addresses.", "success")
+        
+        # Clean up temporary file
+        if os.path.exists(filename):
+            os.remove(filename)
+        
+        return redirect("/?tab=email-allocation")
+        
+    except Exception as e:
+        flash(f"Error uploading file: {str(e)}", "error")
+        if 'filename' in locals() and os.path.exists(filename):
+            os.remove(filename)
+        return redirect("/?tab=email-allocation")
+
+
+@app.route("/send_email_to_agent", methods=["POST"])
+@admin_required
+def send_email_to_agent():
+    """Send email to a specific agent from email allocation"""
+    try:
+        global email_allocation_data, email_allocation_filename
+        global email_sent_agents
+        
+        data = request.get_json()
+        agent_name = data.get("agent_name")
+        email_id = data.get("email_id")
+        
+        if not agent_name:
+            return jsonify({"success": False, "error": "Agent name is required"})
+        
+        if not email_id:
+            return jsonify({"success": False, "error": "Email ID is required"})
+        
+        if email_allocation_data is None:
+            return jsonify({"success": False, "error": "Allocation file not uploaded"})
+        
+        # Find Agent Name column in allocation file
+        agent_name_col = None
+        for col in email_allocation_data.columns:
+            col_str = str(col).strip().lower()
+            if "agent" in col_str and "name" in col_str:
+                agent_name_col = col
+                break
+        
+        if not agent_name_col:
+            return jsonify({"success": False, "error": "Agent Name column not found in allocation file"})
+        
+        # Filter rows for this agent
+        agent_rows = email_allocation_data[email_allocation_data[agent_name_col].astype(str).str.strip() == agent_name]
+        
+        if len(agent_rows) == 0:
+            return jsonify({"success": False, "error": f"No rows found for agent '{agent_name}'"})
+        
+        # Create Excel file with agent's data
+        temp_fd, temp_path = tempfile.mkstemp(suffix=".xlsx")
+        try:
+            with pd.ExcelWriter(temp_path, engine="openpyxl") as writer:
+                agent_rows.to_excel(writer, sheet_name=f"{agent_name}_Allocation", index=False)
+            
+            # Read the Excel file as bytes
+            with open(temp_path, 'rb') as f:
+                excel_bytes = io.BytesIO(f.read())
+            
+            # Prepare email content
+            html_content = f"""
+            <html>
+            <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
+                <h2>Your Work Allocation - {agent_name}</h2>
+                <p>Dear {agent_name},</p>
+                <p>Your work allocation has been prepared and is attached to this email.</p>
+                <p><strong>Total Rows:</strong> {len(agent_rows)}</p>
+                <p>Please review the attached Excel file for detailed allocation information.</p>
+                <p>Best regards,<br>Allocation System</p>
+            </body>
+            </html>
+            """
+            
+            # Send email
+            today_date = datetime.now().strftime("%m/%d/%Y")
+            attachment_filename = f'{agent_name}_allocation_{datetime.now().strftime("%Y%m%d")}.xlsx'
+            success, message = send_email_with_resend(
+                to_email=email_id,
+                subject=f"Your Work Allocation - {agent_name} - {today_date}",
+                html_content=html_content,
+                attachment_data=excel_bytes,
+                attachment_filename=attachment_filename,
+            )
+            
+            if success:
+                # Track that email has been sent to this agent
+                email_sent_agents.add(agent_name)
+                return jsonify({"success": True, "message": f"Email sent successfully to {agent_name}"})
+            else:
+                return jsonify({"success": False, "error": message})
+                
+        finally:
+            os.close(temp_fd)
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+            
+    except Exception as e:
+        return jsonify({"success": False, "error": f"Error sending email: {str(e)}"})
+
+
+@app.route("/get_agent_allocation_data", methods=["POST"])
+@admin_required
+def get_agent_allocation_data():
+    """Get allocation data for a specific agent"""
+    try:
+        global email_allocation_data
+        
+        data = request.get_json()
+        agent_name = data.get("agent_name")
+        
+        if not agent_name:
+            return jsonify({"success": False, "error": "Agent name is required"})
+        
+        if email_allocation_data is None:
+            return jsonify({"success": False, "error": "Allocation file not uploaded"})
+        
+        # Find Agent Name column in allocation file
+        agent_name_col = None
+        for col in email_allocation_data.columns:
+            col_str = str(col).strip().lower()
+            if "agent" in col_str and "name" in col_str:
+                agent_name_col = col
+                break
+        
+        if not agent_name_col:
+            return jsonify({"success": False, "error": "Agent Name column not found in allocation file"})
+        
+        # Filter rows for this agent
+        agent_rows = email_allocation_data[email_allocation_data[agent_name_col].astype(str).str.strip() == agent_name].copy()
+        
+        if len(agent_rows) == 0:
+            return jsonify({"success": False, "error": f"No rows found for agent '{agent_name}'"})
+        
+        # Convert to dictionary format for JSON response
+        columns = list(agent_rows.columns)
+        rows = []
+        for idx, row in agent_rows.iterrows():
+            row_dict = {}
+            for col in columns:
+                value = row[col]
+                # Handle NaN and None values
+                if pd.isna(value):
+                    row_dict[col] = ""
+                else:
+                    row_dict[col] = str(value)
+            rows.append(row_dict)
+        
+        return jsonify({
+            "success": True,
+            "agent_name": agent_name,
+            "columns": columns,
+            "rows": rows,
+            "row_count": len(rows)
+        })
+        
+    except Exception as e:
+        return jsonify({"success": False, "error": f"Error getting agent data: {str(e)}"})
+
+
+@app.route("/download_agent_allocation_excel", methods=["POST"])
+@admin_required
+def download_agent_allocation_excel():
+    """Download Excel file for a specific agent's allocation"""
+    try:
+        global email_allocation_data
+        
+        data = request.get_json()
+        agent_name = data.get("agent_name")
+        
+        if not agent_name:
+            return jsonify({"success": False, "error": "Agent name is required"}), 400
+        
+        if email_allocation_data is None:
+            return jsonify({"success": False, "error": "Allocation file not uploaded"}), 400
+        
+        # Find Agent Name column in allocation file
+        agent_name_col = None
+        for col in email_allocation_data.columns:
+            col_str = str(col).strip().lower()
+            if "agent" in col_str and "name" in col_str:
+                agent_name_col = col
+                break
+        
+        if not agent_name_col:
+            return jsonify({"success": False, "error": "Agent Name column not found in allocation file"}), 400
+        
+        # Filter rows for this agent
+        agent_rows = email_allocation_data[email_allocation_data[agent_name_col].astype(str).str.strip() == agent_name].copy()
+        
+        if len(agent_rows) == 0:
+            return jsonify({"success": False, "error": f"No rows found for agent '{agent_name}'"}), 404
+        
+        # Create Excel file in memory
+        excel_buffer = io.BytesIO()
+        with pd.ExcelWriter(excel_buffer, engine="openpyxl") as writer:
+            agent_rows.to_excel(writer, sheet_name=f"{agent_name}_Allocation", index=False)
+        
+        excel_buffer.seek(0)
+        
+        # Create filename
+        filename = f'{agent_name}_allocation_{datetime.now().strftime("%Y%m%d")}.xlsx'
+        
+        return send_file(
+            excel_buffer,
+            mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            as_attachment=True,
+            download_name=filename
+        )
+        
+    except Exception as e:
+        return jsonify({"success": False, "error": f"Error creating Excel file: {str(e)}"}), 500
 
 
 @app.route("/upload_allocation", methods=["POST"])
@@ -16794,6 +17624,8 @@ def create_agent_excel_file(agent_name, agent_info):
 def reset_app():
     global allocation_data, data_file_data, allocation_filename, data_filename, processing_result
     global agent_allocations_data
+    global email_staff_details, email_staff_filename
+    global email_allocation_data, email_allocation_filename, email_allocation_agents_list
 
     try:
         # Do NOT clear agent work files - preserve all agent files (both uploaded and consolidated)
@@ -16801,13 +17633,21 @@ def reset_app():
         # Clear all allocations from database
         Allocation.query.delete()
 
-        # Reset all global variables
+        # Reset all global variables including email allocation variables
         allocation_data = None
         data_file_data = None
         allocation_filename = None
         data_filename = None
         processing_result = "🔄 Application reset successfully! All uploaded files and data have been cleared. All agent work files have been preserved."
         agent_allocations_data = None
+        
+        # Reset email allocation variables
+        email_staff_details = None
+        email_staff_filename = None
+        email_allocation_data = None
+        email_allocation_filename = None
+        email_allocation_agents_list = None
+        email_sent_agents = set()
 
         # Commit database changes
         db.session.commit()

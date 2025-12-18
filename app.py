@@ -5955,6 +5955,43 @@ def check_insurance_match(
     return False
 
 
+def can_agent_work_with_priority(agent, row_priority_status):
+    """
+    Centralized function to check if an agent can work with a specific priority status.
+    
+    Args:
+        agent: Agent dictionary containing 'priority_status' field
+        row_priority_status: Priority status from data row ("First Priority", "Second Priority", "Third Priority")
+    
+    Returns:
+        True if agent can work with this priority, False otherwise
+    
+    Rules:
+        - Agent "First" → only "First Priority" rows
+        - Agent "Second" → "Second Priority" or "Third Priority" rows
+        - Agent empty/null → defaults to "Second" (can work on Second/Third Priority)
+    """
+    # Get agent's priority status capability
+    agent_priority_status = agent.get("priority_status", "Second")  # Default to "Second" if empty/null
+    
+    # Normalize agent priority status (case-insensitive)
+    agent_priority_upper = str(agent_priority_status).strip().upper() if agent_priority_status else "SECOND"
+    
+    # Normalize row priority status (case-insensitive)
+    row_priority_upper = str(row_priority_status).strip().upper() if row_priority_status else ""
+    
+    # If agent is "First", can only work with "First Priority" rows
+    if agent_priority_upper == "FIRST":
+        return row_priority_upper == "FIRST PRIORITY"
+    
+    # If agent is "Second" (or default), can work with "Second Priority" or "Third Priority" rows
+    if agent_priority_upper == "SECOND":
+        return row_priority_upper in ["SECOND PRIORITY", "THIRD PRIORITY"]
+    
+    # Default: if agent priority status is unknown, default to "Second" behavior
+    return row_priority_upper in ["SECOND PRIORITY", "THIRD PRIORITY"]
+
+
 def can_agent_work_with_insurance(agent, row_insurance):
     """
     Centralized function to check if an agent can work with a specific insurance company.
@@ -6809,6 +6846,7 @@ def process_allocation_files_with_dates(
                 domain_col = None
                 allocation_preference_col = None
                 status_col = None
+                priority_status_col = None  # Priority Status column (First/Second)
                 for col in agent_df.columns:
                     col_lower = col.lower()
                     if "agent" in col_lower and "name" in col_lower:
@@ -6863,6 +6901,8 @@ def process_allocation_files_with_dates(
                         allocation_preference_col = col
                     elif col_lower == "status":
                         status_col = col
+                    elif "priority" in col_lower and "status" in col_lower:
+                        priority_status_col = col
 
                 # Use CC column if available, otherwise fallback to counts_col
                 capacity_col = cc_col if cc_col else counts_col
@@ -6894,6 +6934,8 @@ def process_allocation_files_with_dates(
                         columns_to_select.append(allocation_preference_col)
                     if status_col:
                         columns_to_select.append(status_col)
+                    if priority_status_col:
+                        columns_to_select.append(priority_status_col)
 
                     agent_data = agent_df[columns_to_select].dropna(
                         subset=[agent_name_col, capacity_col]
@@ -7317,6 +7359,16 @@ def process_allocation_files_with_dates(
                         if shift_time_col and pd.notna(row[shift_time_col]):
                             original_shift_time = str(row[shift_time_col]).strip()
 
+                        # Get Priority Status capability (default to "Second" if empty/null)
+                        priority_status = "Second"  # Default value
+                        if priority_status_col and pd.notna(row[priority_status_col]):
+                            priority_status_raw = str(row[priority_status_col]).strip().upper()
+                            if priority_status_raw == "FIRST":
+                                priority_status = "First"
+                            elif priority_status_raw == "SECOND":
+                                priority_status = "Second"
+                            # If empty/null or unknown, keep default "Second"
+
                         agent_allocations.append(
                             {
                                 "id": agent_id,  # Unique identifier (ID column or name + index)
@@ -7349,6 +7401,7 @@ def process_allocation_files_with_dates(
                                     if "allocation_preference_raw_value" in locals()
                                     else None
                                 ),  # Raw allocation preference value for debugging
+                                "priority_status": priority_status,  # Priority Status capability ("First" or "Second", defaults to "Second")
                                 "row_indices": [],
                                 # New field to enforce single-insurance allocation rule
                                 "assigned_insurance": None,
@@ -7660,6 +7713,25 @@ def process_allocation_files_with_dates(
 
                             # Exclude "Not to work" rows
                             ntbp_mask = ntbp_mask & ~not_to_work_mask
+                            
+                            # PRIORITY STATUS FILTER: Filter out rows without Priority Status
+                            priority_status_col_name = None
+                            for col in processed_df.columns:
+                                if col.lower() == "priority status":
+                                    priority_status_col_name = col
+                                    break
+                            
+                            if priority_status_col_name:
+                                priority_status_series = processed_df[priority_status_col_name].fillna("")
+                                priority_status_mask = (
+                                    priority_status_series.astype(str).str.strip() != ""
+                                ) & (
+                                    priority_status_series.astype(str).str.strip().str.upper().isin([
+                                        "FIRST PRIORITY", "SECOND PRIORITY", "THIRD PRIORITY"
+                                    ])
+                                )
+                                ntbp_mask = ntbp_mask & priority_status_mask
+                            
                             all_ntbp_rows = processed_df.index[ntbp_mask].tolist()
 
                             print(
@@ -7749,6 +7821,25 @@ def process_allocation_files_with_dates(
                                                 % len(available_pb_agents)
                                             ]
 
+                                            # PRIORITY STATUS CHECK: First filter - check if agent can work with this priority
+                                            row_priority_status = None
+                                            if priority_status_col_name and pd.notna(
+                                                processed_df.at[ntbp_row_idx, priority_status_col_name]
+                                            ):
+                                                row_priority_status = str(
+                                                    processed_df.at[ntbp_row_idx, priority_status_col_name]
+                                                ).strip()
+                                            
+                                            # Skip row if no Priority Status (should have been filtered earlier, but double-check)
+                                            if not row_priority_status or row_priority_status == "":
+                                                attempts += 1
+                                                continue
+                                            
+                                            # Check if agent can work with this priority
+                                            if not can_agent_work_with_priority(agent, row_priority_status):
+                                                attempts += 1
+                                                continue
+
                                             # Check appointment date limit before allocating
                                             if can_allocate_row_by_appointment_date(
                                                 agent,
@@ -7818,9 +7909,26 @@ def process_allocation_files_with_dates(
                                                 assigned = remaining_ntbp_rows[
                                                     :rows_to_assign
                                                 ]
-                                                # Safety check: Filter out any "Not to work" rows and check appointment date limit
+                                                # Safety check: Filter out any "Not to work" rows, check priority status, and check appointment date limit
                                                 filtered_assigned = []
                                                 for idx in assigned:
+                                                    # PRIORITY STATUS CHECK: First filter - check if agent can work with this priority
+                                                    row_priority_status = None
+                                                    if priority_status_col_name and pd.notna(
+                                                        processed_df.at[idx, priority_status_col_name]
+                                                    ):
+                                                        row_priority_status = str(
+                                                            processed_df.at[idx, priority_status_col_name]
+                                                        ).strip()
+                                                    
+                                                    # Skip row if no Priority Status
+                                                    if not row_priority_status or row_priority_status == "":
+                                                        continue
+                                                    
+                                                    # Check if agent can work with this priority
+                                                    if not can_agent_work_with_priority(agent, row_priority_status):
+                                                        continue
+                                                    
                                                     if remark_col and pd.notna(
                                                         processed_df.at[idx, remark_col]
                                                     ):
@@ -7896,6 +8004,19 @@ def process_allocation_files_with_dates(
 
                             # Exclude "Not to work" rows
                             ntc_mask = ntc_mask & ~not_to_work_mask
+                            
+                            # PRIORITY STATUS FILTER: Filter out rows without Priority Status
+                            if priority_status_col_name:
+                                priority_status_series = processed_df[priority_status_col_name].fillna("")
+                                priority_status_mask = (
+                                    priority_status_series.astype(str).str.strip() != ""
+                                ) & (
+                                    priority_status_series.astype(str).str.strip().str.upper().isin([
+                                        "FIRST PRIORITY", "SECOND PRIORITY", "THIRD PRIORITY"
+                                    ])
+                                )
+                                ntc_mask = ntc_mask & priority_status_mask
+                            
                             all_ntc_rows = processed_df.index[ntc_mask].tolist()
 
                             print(
@@ -7981,6 +8102,25 @@ def process_allocation_files_with_dates(
                                                 % len(available_ntc_agents)
                                             ]
 
+                                            # PRIORITY STATUS CHECK: First filter - check if agent can work with this priority
+                                            row_priority_status = None
+                                            if priority_status_col_name and pd.notna(
+                                                processed_df.at[ntc_row_idx, priority_status_col_name]
+                                            ):
+                                                row_priority_status = str(
+                                                    processed_df.at[ntc_row_idx, priority_status_col_name]
+                                                ).strip()
+                                            
+                                            # Skip row if no Priority Status (should have been filtered earlier, but double-check)
+                                            if not row_priority_status or row_priority_status == "":
+                                                attempts += 1
+                                                continue
+                                            
+                                            # Check if agent can work with this priority
+                                            if not can_agent_work_with_priority(agent, row_priority_status):
+                                                attempts += 1
+                                                continue
+
                                             # Check appointment date limit before allocating
                                             if can_allocate_row_by_appointment_date(
                                                 agent,
@@ -8048,9 +8188,26 @@ def process_allocation_files_with_dates(
                                                 assigned = remaining_ntc_rows[
                                                     :rows_to_assign
                                                 ]
-                                                # Safety check: Filter out any "Not to work" rows and check appointment date limit
+                                                # Safety check: Filter out any "Not to work" rows, check priority status, and check appointment date limit
                                                 filtered_assigned = []
                                                 for idx in assigned:
+                                                    # PRIORITY STATUS CHECK: First filter - check if agent can work with this priority
+                                                    row_priority_status = None
+                                                    if priority_status_col_name and pd.notna(
+                                                        processed_df.at[idx, priority_status_col_name]
+                                                    ):
+                                                        row_priority_status = str(
+                                                            processed_df.at[idx, priority_status_col_name]
+                                                        ).strip()
+                                                    
+                                                    # Skip row if no Priority Status
+                                                    if not row_priority_status or row_priority_status == "":
+                                                        continue
+                                                    
+                                                    # Check if agent can work with this priority
+                                                    if not can_agent_work_with_priority(agent, row_priority_status):
+                                                        continue
+                                                    
                                                     if remark_col and pd.notna(
                                                         processed_df.at[idx, remark_col]
                                                     ):
@@ -8252,6 +8409,19 @@ def process_allocation_files_with_dates(
                                     ]:
                                         continue
 
+                                    # PRIORITY STATUS CHECK: First filter - skip rows without Priority Status
+                                    row_priority_status = None
+                                    if priority_status_col_name and pd.notna(
+                                        processed_df.at[idx, priority_status_col_name]
+                                    ):
+                                        row_priority_status = str(
+                                            processed_df.at[idx, priority_status_col_name]
+                                        ).strip()
+                                    
+                                    # Skip row if no Priority Status
+                                    if not row_priority_status or row_priority_status == "":
+                                        continue
+
                                     # Check if row has secondary insurance
                                     if pd.notna(
                                         processed_df.at[idx, secondary_insurance_col]
@@ -8328,6 +8498,30 @@ def process_allocation_files_with_dates(
                                             available_sec_single = []
                                             for a in sec_single_agents:
                                                 if (a["capacity"] - a["allocated"]) > 0:
+                                                    # PRIORITY STATUS CHECK: Filter rows by priority compatibility
+                                                    # Check each row in carrier_rows to see if agent can work with its priority
+                                                    compatible_rows = []
+                                                    for row_idx in carrier_rows:
+                                                        row_priority_status = None
+                                                        if priority_status_col_name and pd.notna(
+                                                            processed_df.at[row_idx, priority_status_col_name]
+                                                        ):
+                                                            row_priority_status = str(
+                                                                processed_df.at[row_idx, priority_status_col_name]
+                                                            ).strip()
+                                                        
+                                                        # Skip row if no Priority Status
+                                                        if not row_priority_status or row_priority_status == "":
+                                                            continue
+                                                        
+                                                        # Check if agent can work with this priority
+                                                        if can_agent_work_with_priority(a, row_priority_status):
+                                                            compatible_rows.append(row_idx)
+                                                    
+                                                    # Only add agent if there are compatible rows
+                                                    if not compatible_rows:
+                                                        continue
+                                                    
                                                     # Check if agent can work with the PRIMARY insurance company
                                                     can_work_with_primary = (
                                                         can_agent_work_with_insurance(
@@ -8384,9 +8578,26 @@ def process_allocation_files_with_dates(
                                                         slice_rows = carrier_rows[
                                                             row_pos : row_pos + take
                                                         ]
-                                                        # Filter by appointment date limit (max 20 per date)
+                                                        # Filter by priority status and appointment date limit (max 20 per date)
                                                         final_slice = []
                                                         for idx in slice_rows:
+                                                            # PRIORITY STATUS CHECK: First filter - check if agent can work with this priority
+                                                            row_priority_status = None
+                                                            if priority_status_col_name and pd.notna(
+                                                                processed_df.at[idx, priority_status_col_name]
+                                                            ):
+                                                                row_priority_status = str(
+                                                                    processed_df.at[idx, priority_status_col_name]
+                                                                ).strip()
+                                                            
+                                                            # Skip row if no Priority Status
+                                                            if not row_priority_status or row_priority_status == "":
+                                                                continue
+                                                            
+                                                            # Check if agent can work with this priority
+                                                            if not can_agent_work_with_priority(agent, row_priority_status):
+                                                                continue
+                                                            
                                                             if can_allocate_row_by_appointment_date(
                                                                 agent,
                                                                 idx,
@@ -8483,6 +8694,24 @@ def process_allocation_files_with_dates(
                                                             for i in ag["row_indices"]
                                                         ]:
                                                             continue
+                                                        
+                                                        # PRIORITY STATUS CHECK: First filter - skip rows without Priority Status
+                                                        row_priority_status = None
+                                                        if priority_status_col_name and pd.notna(
+                                                            processed_df.at[idx, priority_status_col_name]
+                                                        ):
+                                                            row_priority_status = str(
+                                                                processed_df.at[idx, priority_status_col_name]
+                                                            ).strip()
+                                                        
+                                                        # Skip row if no Priority Status
+                                                        if not row_priority_status or row_priority_status == "":
+                                                            continue
+                                                        
+                                                        # Check if agent can work with this priority
+                                                        if not can_agent_work_with_priority(agent, row_priority_status):
+                                                            continue
+                                                        
                                                         # Skip rows with secondary insurance (already allocated)
                                                         if (
                                                             secondary_insurance_col
@@ -8643,12 +8872,30 @@ def process_allocation_files_with_dates(
 
                                             # CRITICAL: Filter secondary insurance rows where agent can work with PRIMARY insurance
                                             # Only allocate if agent can work with the PRIMARY insurance company from "Dental Primary Ins Carr"
+                                            # PRIORITY STATUS CHECK: Also filter by priority compatibility
                                             valid_secondary_rows = []
                                             for (
                                                 row_idx
                                             ) in rows_with_secondary_insurance[
                                                 row_pos:
                                             ]:
+                                                # PRIORITY STATUS CHECK: First filter - check if agent can work with this priority
+                                                row_priority_status = None
+                                                if priority_status_col_name and pd.notna(
+                                                    processed_df.at[row_idx, priority_status_col_name]
+                                                ):
+                                                    row_priority_status = str(
+                                                        processed_df.at[row_idx, priority_status_col_name]
+                                                    ).strip()
+                                                
+                                                # Skip row if no Priority Status
+                                                if not row_priority_status or row_priority_status == "":
+                                                    continue
+                                                
+                                                # Check if agent can work with this priority
+                                                if not can_agent_work_with_priority(agent, row_priority_status):
+                                                    continue
+                                                
                                                 # Get primary insurance from "Dental Primary Ins Carr"
                                                 if insurance_carrier_col and pd.notna(
                                                     processed_df.at[
@@ -8683,9 +8930,10 @@ def process_allocation_files_with_dates(
                                             )
                                             if take > 0:
                                                 slice_rows = valid_secondary_rows[:take]
-                                                # Filter out "Not to work" rows and check appointment date limit
+                                                # Filter out "Not to work" rows, check priority status (already checked above), and check appointment date limit
                                                 filtered_slice = []
                                                 for idx in slice_rows:
+                                                    # Priority status already checked when building valid_secondary_rows
                                                     if not should_skip_row_for_allocation(
                                                         idx, processed_df, remark_col
                                                     ):
@@ -8782,6 +9030,24 @@ def process_allocation_files_with_dates(
                                                             for i in ag["row_indices"]
                                                         ]:
                                                             continue
+                                                        
+                                                        # PRIORITY STATUS CHECK: First filter - skip rows without Priority Status
+                                                        row_priority_status = None
+                                                        if priority_status_col_name and pd.notna(
+                                                            processed_df.at[idx, priority_status_col_name]
+                                                        ):
+                                                            row_priority_status = str(
+                                                                processed_df.at[idx, priority_status_col_name]
+                                                            ).strip()
+                                                        
+                                                        # Skip row if no Priority Status
+                                                        if not row_priority_status or row_priority_status == "":
+                                                            continue
+                                                        
+                                                        # Check if agent can work with this priority
+                                                        if not can_agent_work_with_priority(agent, row_priority_status):
+                                                            continue
+                                                        
                                                         # Skip rows with secondary insurance (already allocated)
                                                         if (
                                                             secondary_insurance_col
@@ -9660,6 +9926,23 @@ def process_allocation_files_with_dates(
                                         if idx in all_allocated_indices:
                                             continue
 
+                                        # PRIORITY STATUS CHECK: First filter - skip rows without Priority Status
+                                        row_priority_status = None
+                                        if priority_status_col_name and pd.notna(
+                                            processed_df.at[idx, priority_status_col_name]
+                                        ):
+                                            row_priority_status = str(
+                                                processed_df.at[idx, priority_status_col_name]
+                                            ).strip()
+                                        
+                                        # Skip row if no Priority Status
+                                        if not row_priority_status or row_priority_status == "":
+                                            continue
+                                        
+                                        # Check if agent can work with this priority
+                                        if not can_agent_work_with_priority(agent, row_priority_status):
+                                            continue
+
                                         # Skip rows with secondary insurance (those go to "Sec + X" agents)
                                         if secondary_insurance_col and pd.notna(
                                             processed_df.at[
@@ -9776,6 +10059,23 @@ def process_allocation_files_with_dates(
                                         ]:
                                             continue
 
+                                        # PRIORITY STATUS CHECK: First filter - skip rows without Priority Status
+                                        row_priority_status = None
+                                        if priority_status_col_name and pd.notna(
+                                            processed_df.at[idx, priority_status_col_name]
+                                        ):
+                                            row_priority_status = str(
+                                                processed_df.at[idx, priority_status_col_name]
+                                            ).strip()
+                                        
+                                        # Skip row if no Priority Status
+                                        if not row_priority_status or row_priority_status == "":
+                                            continue
+                                        
+                                        # Check if agent can work with this priority
+                                        if not can_agent_work_with_priority(agent, row_priority_status):
+                                            continue
+
                                         # Skip rows with secondary insurance (those go to "Sec + X" agents)
                                         if secondary_insurance_col and pd.notna(
                                             processed_df.at[
@@ -9835,6 +10135,23 @@ def process_allocation_files_with_dates(
                                                 for ag in agent_allocations
                                                 for i in ag["row_indices"]
                                             ]:
+                                                continue
+
+                                            # PRIORITY STATUS CHECK: First filter - skip rows without Priority Status
+                                            row_priority_status = None
+                                            if priority_status_col_name and pd.notna(
+                                                processed_df.at[idx, priority_status_col_name]
+                                            ):
+                                                row_priority_status = str(
+                                                    processed_df.at[idx, priority_status_col_name]
+                                                ).strip()
+                                            
+                                            # Skip row if no Priority Status
+                                            if not row_priority_status or row_priority_status == "":
+                                                continue
+                                            
+                                            # Check if agent can work with this priority
+                                            if not can_agent_work_with_priority(agent, row_priority_status):
                                                 continue
 
                                             # Skip rows with secondary insurance (those go to "Sec + X" agents)
@@ -10014,6 +10331,23 @@ def process_allocation_files_with_dates(
                                     ]:
                                         continue
 
+                                    # PRIORITY STATUS CHECK: First filter - skip rows without Priority Status
+                                    row_priority_status = None
+                                    if priority_status_col_name and pd.notna(
+                                        processed_df.at[idx, priority_status_col_name]
+                                    ):
+                                        row_priority_status = str(
+                                            processed_df.at[idx, priority_status_col_name]
+                                        ).strip()
+                                    
+                                    # Skip row if no Priority Status
+                                    if not row_priority_status or row_priority_status == "":
+                                        continue
+                                    
+                                    # Check if agent can work with this priority
+                                    if not can_agent_work_with_priority(agent, row_priority_status):
+                                        continue
+
                                     # Skip rows with secondary insurance (those go to "Sec + X" agents)
                                     if secondary_insurance_col and pd.notna(
                                         processed_df.at[idx, secondary_insurance_col]
@@ -10154,12 +10488,26 @@ def process_allocation_files_with_dates(
                                                         break
 
                                         # Filter row indices based on Domain/Remark rule: NTBP rows only go to PB agents, NTC rows only go to NTC preference agents
+                                        # PRIORITY STATUS CHECK: Also filter rows without Priority Status
                                         filtered_row_indices = []
                                         if (
                                             remark_col
                                             and remark_col in processed_df.columns
                                         ):
                                             for row_idx in row_indices:
+                                                # PRIORITY STATUS CHECK: First filter - skip rows without Priority Status
+                                                row_priority_status = None
+                                                if priority_status_col_name and pd.notna(
+                                                    processed_df.at[row_idx, priority_status_col_name]
+                                                ):
+                                                    row_priority_status = str(
+                                                        processed_df.at[row_idx, priority_status_col_name]
+                                                    ).strip()
+                                                
+                                                # Skip row if no Priority Status
+                                                if not row_priority_status or row_priority_status == "":
+                                                    continue
+                                                
                                                 row_remark = None
                                                 if pd.notna(
                                                     processed_df.at[row_idx, remark_col]
@@ -10288,6 +10636,23 @@ def process_allocation_files_with_dates(
                                                                 check_idx
                                                             ]
                                                         )
+
+                                                        # PRIORITY STATUS CHECK: First filter - check if agent can work with this priority
+                                                        row_priority_status = None
+                                                        if priority_status_col_name and pd.notna(
+                                                            processed_df.at[actual_row_idx, priority_status_col_name]
+                                                        ):
+                                                            row_priority_status = str(
+                                                                processed_df.at[actual_row_idx, priority_status_col_name]
+                                                            ).strip()
+                                                        
+                                                        # Skip row if no Priority Status (should have been filtered earlier, but double-check)
+                                                        if not row_priority_status or row_priority_status == "":
+                                                            continue
+                                                        
+                                                        # Check if agent can work with this priority
+                                                        if not can_agent_work_with_priority(senior_agent, row_priority_status):
+                                                            continue
 
                                                         # For agents with "Single" preference, only allow rows from their assigned insurance
                                                         if senior_agent.get(
@@ -10826,12 +11191,26 @@ def process_allocation_files_with_dates(
                                     ]
 
                                     # Exclude NTBP rows - they should only go to PB preference agents (allocated in Step 2.5)
+                                    # PRIORITY STATUS CHECK: Also filter rows without Priority Status
                                     if (
                                         remark_col
                                         and remark_col in processed_df.columns
                                     ):
                                         filtered_indices = []
                                         for idx in unallocated_row_indices:
+                                            # PRIORITY STATUS CHECK: First filter - skip rows without Priority Status
+                                            row_priority_status = None
+                                            if priority_status_col_name and pd.notna(
+                                                processed_df.at[idx, priority_status_col_name]
+                                            ):
+                                                row_priority_status = str(
+                                                    processed_df.at[idx, priority_status_col_name]
+                                                ).strip()
+                                            
+                                            # Skip row if no Priority Status
+                                            if not row_priority_status or row_priority_status == "":
+                                                continue
+                                            
                                             if pd.notna(
                                                 processed_df.at[idx, remark_col]
                                             ):
@@ -10845,6 +11224,25 @@ def process_allocation_files_with_dates(
                                                 if row_remark == "NTBP":
                                                     # Skip NTBP rows - they should only go to PB preference agents
                                                     continue
+                                            filtered_indices.append(idx)
+                                        unallocated_row_indices = filtered_indices
+                                    else:
+                                        # If no remark column, still filter by priority status
+                                        filtered_indices = []
+                                        for idx in unallocated_row_indices:
+                                            # PRIORITY STATUS CHECK: First filter - skip rows without Priority Status
+                                            row_priority_status = None
+                                            if priority_status_col_name and pd.notna(
+                                                processed_df.at[idx, priority_status_col_name]
+                                            ):
+                                                row_priority_status = str(
+                                                    processed_df.at[idx, priority_status_col_name]
+                                                ).strip()
+                                            
+                                            # Skip row if no Priority Status
+                                            if not row_priority_status or row_priority_status == "":
+                                                continue
+                                            
                                             filtered_indices.append(idx)
                                         unallocated_row_indices = filtered_indices
 
@@ -11069,6 +11467,19 @@ def process_allocation_files_with_dates(
 
                                             if secondary_insurance_col and sec_agents:
                                                 for row_idx in rows:
+                                                    # PRIORITY STATUS CHECK: First filter - skip rows without Priority Status
+                                                    row_priority_status = None
+                                                    if priority_status_col_name and pd.notna(
+                                                        processed_df.at[row_idx, priority_status_col_name]
+                                                    ):
+                                                        row_priority_status = str(
+                                                            processed_df.at[row_idx, priority_status_col_name]
+                                                        ).strip()
+                                                    
+                                                    # Skip row if no Priority Status (rows should have been filtered earlier, but double-check)
+                                                    if not row_priority_status or row_priority_status == "":
+                                                        continue
+                                                    
                                                     has_secondary = False
                                                     if pd.notna(
                                                         processed_df.at[
@@ -11098,7 +11509,24 @@ def process_allocation_files_with_dates(
                                                             row_idx
                                                         )
                                             else:
-                                                rows_without_secondary = rows.copy()
+                                                # Filter rows by priority status even if no secondary insurance column
+                                                filtered_rows = []
+                                                for row_idx in rows:
+                                                    # PRIORITY STATUS CHECK: First filter - skip rows without Priority Status
+                                                    row_priority_status = None
+                                                    if priority_status_col_name and pd.notna(
+                                                        processed_df.at[row_idx, priority_status_col_name]
+                                                    ):
+                                                        row_priority_status = str(
+                                                            processed_df.at[row_idx, priority_status_col_name]
+                                                        ).strip()
+                                                    
+                                                    # Skip row if no Priority Status
+                                                    if not row_priority_status or row_priority_status == "":
+                                                        continue
+                                                    
+                                                    filtered_rows.append(row_idx)
+                                                rows_without_secondary = filtered_rows
 
                                             # First, allocate rows with secondary insurance to "Sec + X" agents
                                             if rows_with_secondary and sec_agents:
@@ -11616,6 +12044,19 @@ def process_allocation_files_with_dates(
                             # Group unallocated rows by insurance company
                             unallocated_by_insurance = {}
                             for idx in unallocated_indices:
+                                # PRIORITY STATUS CHECK: First filter - skip rows without Priority Status
+                                row_priority_status = None
+                                if priority_status_col_name and pd.notna(
+                                    processed_df.at[idx, priority_status_col_name]
+                                ):
+                                    row_priority_status = str(
+                                        processed_df.at[idx, priority_status_col_name]
+                                    ).strip()
+                                
+                                # Skip row if no Priority Status
+                                if not row_priority_status or row_priority_status == "":
+                                    continue
+                                
                                 # Skip rows with secondary insurance (those should go to Sec + X agents)
                                 if secondary_insurance_col and pd.notna(
                                     processed_df.at[idx, secondary_insurance_col]
@@ -11765,6 +12206,24 @@ def process_allocation_files_with_dates(
 
                                         if remaining_capacity > 0:
                                             agent = agent_with_capacity  # Use the agent we found
+                                            
+                                            # PRIORITY STATUS CHECK: First filter - check if agent can work with this priority
+                                            row_priority_status = None
+                                            if priority_status_col_name and pd.notna(
+                                                processed_df.at[row_idx, priority_status_col_name]
+                                            ):
+                                                row_priority_status = str(
+                                                    processed_df.at[row_idx, priority_status_col_name]
+                                                ).strip()
+                                            
+                                            # Skip row if no Priority Status (should have been filtered earlier, but double-check)
+                                            if not row_priority_status or row_priority_status == "":
+                                                continue
+                                            
+                                            # Check if agent can work with this priority
+                                            if not can_agent_work_with_priority(agent, row_priority_status):
+                                                continue
+                                            
                                             # Safety check: Verify this is not a "Not to work" row before allocating
                                             if remark_col and pd.notna(
                                                 processed_df.at[row_idx, remark_col]

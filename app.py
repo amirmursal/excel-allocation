@@ -15564,7 +15564,6 @@ def validate_agent_work_file_columns(file_data):
         "Dental Primary Ins Carr",
         "Dental Secondary Ins Carr",
         "Received date",
-        "Type",
         "Status Code",
         "Comment",
         "Group Number",

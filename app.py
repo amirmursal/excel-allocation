@@ -1945,7 +1945,7 @@ HTML_TEMPLATE = """
                         </div>
                         
                         <form action="/process_files" method="post" id="process-form">
-                            <button type="submit" class="process-btn" id="process-btn">
+                            <button type="submit" class="process-btn" id="process-btn" disabled style="opacity: 0.5; cursor: not-allowed;">
                                 <i class="fas fa-cogs"></i> Process Data File
                             </button>
                         </form>
@@ -2913,6 +2913,20 @@ HTML_TEMPLATE = """
                 const selectedShift = this.value;
                 const agentExclusionContainer = document.getElementById('agent-exclusion-container');
                 const excludeAgentsSelect = document.getElementById('exclude-agents');
+                const processBtn = document.getElementById('process-btn');
+                
+                // Enable or disable process button based on shift selection
+                if (processBtn) {
+                    if (selectedShift) {
+                        processBtn.disabled = false;
+                        processBtn.style.opacity = '1';
+                        processBtn.style.cursor = 'pointer';
+                    } else {
+                        processBtn.disabled = true;
+                        processBtn.style.opacity = '0.5';
+                        processBtn.style.cursor = 'not-allowed';
+                    }
+                }
                 
                 if (!selectedShift) {
                     agentExclusionContainer.style.display = 'none';
@@ -6602,6 +6616,19 @@ def process_allocation_files_with_dates(
 
     # Initialize timing for performance tracking
     start_time = time.time()
+    # Processing timeout (seconds); can be overridden via env var PROCESSING_TIMEOUT_SECONDS
+    try:
+        timeout_seconds = int(os.environ.get("PROCESSING_TIMEOUT_SECONDS", "180"))
+    except Exception:
+        timeout_seconds = 180
+    
+    def check_timeout(step_name: str):
+        """Raise a runtime error if processing exceeds allowed time"""
+        elapsed = time.time() - start_time
+        if elapsed > timeout_seconds:
+            raise RuntimeError(
+                f"Processing timed out during {step_name} after {elapsed:.2f}s (limit {timeout_seconds}s)."
+            )
     
     # Handle excluded agents parameter
     if excluded_agents is None:
@@ -7574,6 +7601,16 @@ def process_allocation_files_with_dates(
                             print(f"   After excluding {len(excluded_agents)} agents: {len(agent_allocations)} agents remaining")
                         else:
                             agent_allocations = shift_filtered_agents
+                        
+                        # CRITICAL CHECK: Verify if shift has any agents with capacity
+                        agents_with_available_capacity = [
+                            a for a in agent_allocations
+                            if (a["capacity"] - a["allocated"]) > 0
+                        ]
+                        print(f"   Shift {selected_shift_int} has {len(agents_with_available_capacity)} agents with available capacity")
+                        if not agents_with_available_capacity:
+                            print(f"⚠️ WARNING: Shift {selected_shift_int} has NO agents with available capacity!")
+                            print(f"   Agent allocations will skip for this shift. Unallocated rows will remain unassigned.")
                     else:
                         print(f"👥 No shift filter applied - using all {len(agent_allocations)} agents")
 
@@ -7850,6 +7887,21 @@ def process_allocation_files_with_dates(
                         # Initialize Agent Name column if it doesn't exist
                         if "Agent Name" not in processed_df.columns:
                             processed_df["Agent Name"] = ""
+                        # Ensure Agent Name column is of object dtype to avoid FutureWarning
+                        processed_df["Agent Name"] = processed_df["Agent Name"].astype('object')
+
+                        # CRITICAL SAFETY CHECK: If no agents available, skip allocation entirely
+                        if not agent_allocations:
+                            print(f"⚠️ CRITICAL: No agents available for allocation (shift filtering may have removed all agents)")
+                            print(f"   Rows will remain unallocated in 'Agent Name' column")
+                            # Return early with unallocated data
+                            elapsed_time = time.time() - start_time
+                            return (
+                                f"⚠️ Processing completed but NO agents available for allocation. "
+                                f"Check shift selection and agent exclusions. "
+                                f"All rows remain unallocated. Elapsed: {elapsed_time:.2f}s",
+                                processed_df
+                            )
 
                         # PERFORMANCE FIX: Create set of allocated indices ONCE for O(1) lookup instead of O(n*m*k)
                         allocated_indices_set = set()
@@ -7985,6 +8037,7 @@ def process_allocation_files_with_dates(
                                         max_attempts = len(available_pb_agents)
 
                                         while attempts < max_attempts and not assigned:
+                                            check_timeout("NTBP round-robin allocation")
                                             agent = available_pb_agents[
                                                 (agent_idx + attempts)
                                                 % len(available_pb_agents)
@@ -8145,6 +8198,7 @@ def process_allocation_files_with_dates(
                                                 )
 
                         # Step 3.5: Global NTC Allocation - Allocate all NTC remark rows globally
+                        print(f"🧭 [Step 3.5] Starting Global NTC Allocation at {time.time() - start_time:.2f}s")
                         # Allocate NTC rows to agents with NTC in Allocation Preference column
                         # Valid Allocation Preference values: "Sec+NTC", "Sec+Mix+NTC", "Mix+NTC", "NTC"
                         # Use CC column for current capacity
@@ -8523,6 +8577,7 @@ def process_allocation_files_with_dates(
                                         remaining_capacity > 0
                                         and allocated_count < len(mix_ntc_rows)
                                     ):
+                                        check_timeout("Mix+NTC allocation loop")
                                         take = min(
                                             remaining_capacity,
                                             len(mix_ntc_rows) - allocated_count,
@@ -8547,7 +8602,10 @@ def process_allocation_files_with_dates(
                                         else:
                                             break
 
+                        print(f"✅ [Step 3.5] Finished Global NTC Allocation at {time.time() - start_time:.2f}s")
+
                         # Step 3.6: Global Secondary Insurance Allocation - Allocate rows with secondary insurance to "Sec + X" agents
+                        print(f"🧭 [Step 3.6] Starting Global Secondary Insurance Allocation at {time.time() - start_time:.2f}s")
                         # This should happen before other allocations so "Sec + X" agents get secondary insurance rows first
                         if (
                             secondary_insurance_col
@@ -8978,6 +9036,7 @@ def process_allocation_files_with_dates(
                                                         and allocated_count
                                                         < len(same_insurance_rows)
                                                     ):
+                                                        check_timeout("Sec+Single same-insurance allocation loop")
                                                         take = min(
                                                             remaining_capacity,
                                                             len(same_insurance_rows)
@@ -10040,7 +10099,10 @@ def process_allocation_files_with_dates(
                                         else:
                                             break
 
+                        print(f"✅ [Step 3.6] Finished Global Secondary Insurance Allocation at {time.time() - start_time:.2f}s")
+
                         # Step 3.7: Global Single Allocation - Allocate same insurance company rows to "Single" preference agents
+                        print(f"🧭 [Step 3.7] Starting Global Single Allocation at {time.time() - start_time:.2f}s")
                         # This ensures agents with "Single" preference (not "Sec + Single") get same insurance company rows to fill their capacity
                         # Exclude PB preference agents (should only get NTBP rows in Step 2.5)
                         single_preference_agents = [
@@ -10429,6 +10491,7 @@ def process_allocation_files_with_dates(
                                             and allocated_count
                                             < len(filtered_same_insurance_rows)
                                         ):
+                                            check_timeout("Single same-insurance allocation loop")
                                             take = min(
                                                 remaining_capacity,
                                                 len(filtered_same_insurance_rows)
@@ -10457,7 +10520,10 @@ def process_allocation_files_with_dates(
                                             else:
                                                 break
 
+                        print(f"✅ [Step 3.7] Finished Global Single Allocation at {time.time() - start_time:.2f}s")
+
                         # Step 3.8: Global Mix Allocation - Allocate multiple insurance company rows to "Mix" preference agents
+                        print(f"🧭 [Step 3.8] Starting Global Mix Allocation at {time.time() - start_time:.2f}s")
                         # Agents with "Mix" preference should get rows from multiple insurance companies (unlike "Single" which gets only one)
                         # Exclude "Sec + Mix" agents (handled in Step 3.6), "Mix + NTC" agents (handled in Step 3.5.5), and "PB" preference agents (should only get NTBP rows)
                         mix_preference_agents = [
@@ -10576,6 +10642,7 @@ def process_allocation_files_with_dates(
                                         remaining_capacity > 0
                                         and allocated_count < len(mix_rows)
                                     ):
+                                        check_timeout("Mix allocation loop")
                                         take = min(
                                             remaining_capacity,
                                             len(mix_rows) - allocated_count,
@@ -10600,6 +10667,8 @@ def process_allocation_files_with_dates(
                                         else:
                                             break
 
+                        print(f"✅ [Step 3.8] Finished Global Mix Allocation at {time.time() - start_time:.2f}s")
+
                         # Step 3: REMOVED - First Priority allocation to senior agents
                         # Senior agents will ONLY get unmatched insurance companies (handled in Step 4)
                         # This ensures senior agents are restricted to their insurance list for unmatched insurance
@@ -10609,12 +10678,20 @@ def process_allocation_files_with_dates(
                         # Step 4: Allocate unmatched insurance companies to senior agents (after First Priority matched work)
                         # Also include "Afreen Ansari" even if not marked as senior
                         # Check if we have unmatched insurance and (senior agents OR Afreen Ansari)
+                        # SAFETY: Only proceed if we have agents with available capacity
+                        agents_with_capacity = [
+                            a for a in agent_allocations
+                            if (a["capacity"] - a["allocated"]) > 0
+                        ]
+                        if not agents_with_capacity:
+                            print(f"⚠️ [Step 4] No agents with available capacity - skipping unmatched insurance allocation")
+                        
                         has_afreen_ansari = any(
                             a["name"] == "Afreen Ansari" for a in agent_allocations
                         )
                         if unmatched_insurance_companies and (
                             senior_agents or has_afreen_ansari
-                        ):
+                        ) and agents_with_capacity:
                             for (
                                 insurance_carrier,
                                 priority_data,
@@ -11014,7 +11091,8 @@ def process_allocation_files_with_dates(
                         # Step 4.5: Reshuffle logic - Reallocate senior rows to junior/trainee to free up capacity for unmatched insurance
                         # If there are unmatched insurance rows that couldn't be allocated (seniors at capacity),
                         # try to reallocate senior-assigned rows to junior/trainee agents who can handle them
-                        if unmatched_insurance_companies:
+                        # SAFETY: Only proceed if we have unmatched insurance AND agents with capacity
+                        if unmatched_insurance_companies and agents_with_capacity:
                             # Collect remaining unmatched rows that need allocation
                             remaining_unmatched_rows = []
                             for (
@@ -11333,7 +11411,7 @@ def process_allocation_files_with_dates(
                                             continue
 
                         # Step 5: Allocate remaining matched insurance companies to capable agents (normal allocation)
-
+                        # SAFETY: timeout checks in while-loops will prevent hangs
                         for (
                             insurance_carrier,
                             priority_data,
@@ -11417,6 +11495,17 @@ def process_allocation_files_with_dates(
 
                                     if not unallocated_row_indices:
                                         continue
+
+                                    # CRITICAL FIX: Check if ANY agent has remaining capacity before attempting allocation
+                                    # This prevents endless loops when all agents are exhausted
+                                    agents_with_remaining_capacity = [
+                                        a for a in agent_allocations
+                                        if (a["capacity"] - a["allocated"]) > 0
+                                    ]
+                                    if not agents_with_remaining_capacity:
+                                        # All agents are at capacity - skip remaining rows
+                                        print(f"⚠️ [Step 5] No agents with remaining capacity - skipping remaining {len(unallocated_row_indices)} rows for {insurance_carrier}")
+                                        break
 
                                     # For First Priority and Unknown insurance, ONLY consider senior agents
                                     # For Second/Third Priority, EXCLUDE senior agents (they should only get First Priority)
@@ -12025,55 +12114,65 @@ def process_allocation_files_with_dates(
                                             # Phase 2: remaining rows can go to agents with different carrier if their primary exhausted
                                             # Exclude "Single" and "Sec + Single" agents from Phase 2 (they should only get same insurance)
                                             if row_pos < len(rows):
-                                                phase2_agents = [
-                                                    a
-                                                    for a in agents
-                                                    if a.get("assigned_insurance")
-                                                    not in (None, carrier)
-                                                    and (a["capacity"] - a["allocated"])
-                                                    > 0
-                                                    and not a.get(
-                                                        "has_single_preference", False
-                                                    )
-                                                    and not a.get(
-                                                        "has_sec_single_preference",
-                                                        False,
-                                                    )
+                                                # CRITICAL FIX: Check if ANY agent has remaining capacity
+                                                # This prevents endless loops when all agents are exhausted
+                                                agents_still_available = [
+                                                    a for a in agents
+                                                    if (a["capacity"] - a["allocated"]) > 0
                                                 ]
-                                                phase2_agents.sort(
-                                                    key=lambda a: a["capacity"]
-                                                    - a["allocated"],
-                                                    reverse=True,
-                                                )
-                                                while (
-                                                    row_pos < len(rows)
-                                                    and phase2_agents
-                                                ):
-                                                    for agent in phase2_agents:
-                                                        if row_pos >= len(rows):
-                                                            break
-                                                        remaining = (
-                                                            agent["capacity"]
-                                                            - agent["allocated"]
+                                                if not agents_still_available:
+                                                    # All agents exhausted - exit Phase 2
+                                                    print(f"⚠️ [Phase 2] No agents with remaining capacity - skipping remaining {len(rows) - row_pos} rows")
+                                                else:
+                                                    phase2_agents = [
+                                                        a
+                                                        for a in agents
+                                                        if a.get("assigned_insurance")
+                                                        not in (None, carrier)
+                                                        and (a["capacity"] - a["allocated"])
+                                                        > 0
+                                                        and not a.get(
+                                                            "has_single_preference", False
                                                         )
-                                                        if remaining <= 0:
-                                                            continue
-                                                        take = min(
-                                                            remaining,
-                                                            len(rows) - row_pos,
+                                                        and not a.get(
+                                                            "has_sec_single_preference",
+                                                            False,
                                                         )
-                                                        if take <= 0:
-                                                            continue
-                                                        slice_rows = rows[
-                                                            row_pos : row_pos + take
-                                                        ]
-                                                        # Use safe extend function to filter out "Not to work" rows
-                                                        actual_allocated = (
-                                                            safe_extend_row_indices(
-                                                                agent,
-                                                                slice_rows,
-                                                                processed_df,
-                                                                remark_col,
+                                                    ]
+                                                    phase2_agents.sort(
+                                                        key=lambda a: a["capacity"]
+                                                        - a["allocated"],
+                                                        reverse=True,
+                                                    )
+                                                    while (
+                                                        row_pos < len(rows)
+                                                        and phase2_agents
+                                                    ):
+                                                        for agent in phase2_agents:
+                                                            if row_pos >= len(rows):
+                                                                break
+                                                            remaining = (
+                                                                agent["capacity"]
+                                                                - agent["allocated"]
+                                                            )
+                                                            if remaining <= 0:
+                                                                continue
+                                                            take = min(
+                                                                remaining,
+                                                                len(rows) - row_pos,
+                                                            )
+                                                            if take <= 0:
+                                                                continue
+                                                            slice_rows = rows[
+                                                                row_pos : row_pos + take
+                                                            ]
+                                                            # Use safe extend function to filter out "Not to work" rows
+                                                            actual_allocated = (
+                                                                safe_extend_row_indices(
+                                                                    agent,
+                                                                    slice_rows,
+                                                                    processed_df,
+                                                                    remark_col,
                                                                 agent["name"],
                                                             )
                                                         )
@@ -12279,6 +12378,17 @@ def process_allocation_files_with_dates(
                                 insurance_carrier,
                                 row_indices_list,
                             ) in unallocated_by_insurance.items():
+                                # CRITICAL FIX: Check if ANY agent has remaining capacity
+                                # This prevents endless loops when all agents are exhausted
+                                agents_with_remaining_capacity = [
+                                    a for a in agent_allocations
+                                    if (a["capacity"] - a["allocated"]) > 0
+                                ]
+                                if not agents_with_remaining_capacity:
+                                    # All agents are at capacity - skip remaining unallocated rows
+                                    print(f"⚠️ [Step 6] No agents with remaining capacity - skipping remaining {len(unallocated_by_insurance)} insurance groups")
+                                    break
+                                
                                 # Find agents with matching insurance capabilities (except PB agents)
                                 # ✅ STRICT: Only agents with matching insurance are considered
                                 # ✅ PRIORITY: Separate junior/trainee and senior agents

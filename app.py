@@ -1780,9 +1780,9 @@ HTML_TEMPLATE = """
                         <button class="admin-tab-btn" onclick="switchAdminTab('email-allocation')" style="padding: 12px 24px; border: none; background: #f8f9fa; color: #666; cursor: pointer; border-bottom: 3px solid transparent; transition: all 0.3s;">
                             <i class="fas fa-envelope"></i> Email Allocation
                         </button>
-                        <button class="admin-tab-btn" onclick="switchAdminTab('agent-allocation')" style="padding: 12px 24px; border: none; background: #f8f9fa; color: #666; cursor: pointer; border-bottom: 3px solid transparent; transition: all 0.3s;">
+                        <!-- <button class="admin-tab-btn" onclick="switchAdminTab('agent-allocation')" style="padding: 12px 24px; border: none; background: #f8f9fa; color: #666; cursor: pointer; border-bottom: 3px solid transparent; transition: all 0.3s;">
                             <i class="fas fa-users"></i> Agent Allocation
-                        </button>
+                        </button> -->
                         <button class="admin-tab-btn" onclick="switchAdminTab('agent-consolidation')" style="padding: 12px 24px; border: none; background: #f8f9fa; color: #666; cursor: pointer; border-bottom: 3px solid transparent; transition: all 0.3s;">
                             <i class="fas fa-compress-arrows-alt"></i> Agent Consolidation
                         </button>
@@ -1842,6 +1842,34 @@ HTML_TEMPLATE = """
                     </div>
                 </div>
 
+
+                <!-- Shift Selection Section -->
+                {% if allocation_data and data_file_data %}
+                <div class="section">
+                    <h3>👥 Shift Selection</h3>
+                    <div style="background: #f8f9fa; padding: 20px; border-radius: 8px; margin-bottom: 20px;">
+                        <div class="form-group">
+                            <label for="shift-select" style="display: block; margin-bottom: 8px; font-weight: 600; color: #555;">
+                                <i class="fas fa-clock"></i> Select Shift:
+                            </label>
+                            <select id="shift-select" style="width: 100%; padding: 12px; border: 2px solid #ddd; border-radius: 8px; font-size: 16px; transition: border-color 0.3s;">
+                                <option value="">-- Select a Shift --</option>
+                            </select>
+                        </div>
+                        
+                        <div id="agent-exclusion-container" style="display: none; margin-top: 20px;">
+                            <label for="exclude-agents" style="display: block; margin-bottom: 8px; font-weight: 600; color: #555;">
+                                <i class="fas fa-user-slash"></i> Exclude Agents (optional):
+                            </label>
+                            <select id="exclude-agents" multiple style="width: 100%; padding: 12px; border: 2px solid #ddd; border-radius: 8px; font-size: 16px; min-height: 150px;">
+                            </select>
+                            <p style="margin-top: 8px; font-size: 13px; color: #666;">
+                                <i class="fas fa-info-circle"></i> Hold Ctrl (Cmd on Mac) to select multiple agents to exclude from allocation.
+                            </p>
+                        </div>
+                    </div>
+                </div>
+                {% endif %}
 
                 <!-- Processing Section -->
                 {% if data_file_data %}
@@ -2834,6 +2862,9 @@ HTML_TEMPLATE = """
         
         // Populate date fields when page loads
         document.addEventListener('DOMContentLoaded', function() {
+            // Load shifts first if both files are uploaded
+            loadShifts();
+            
             // Only load appointment dates if files have been uploaded
             // Check if data file container exists and has content before showing loader
             const calendarContainer = document.getElementById('calendar_container');
@@ -2843,6 +2874,83 @@ HTML_TEMPLATE = """
                 loadAppointmentDatesWithoutLoader();
             }
         });
+        
+        // Load available shifts from uploaded staff details
+        function loadShifts() {
+            const shiftSelect = document.getElementById('shift-select');
+            if (!shiftSelect) return;
+            
+            fetch('/get_shifts')
+                .then(response => response.json())
+                .then(data => {
+                    if (data.error) {
+                        console.log('No shifts available:', data.error);
+                        return;
+                    }
+                    
+                    // Clear existing options except the first one
+                    while (shiftSelect.options.length > 1) {
+                        shiftSelect.remove(1);
+                    }
+                    
+                    // Add shift options
+                    data.shifts.forEach(shift => {
+                        const option = document.createElement('option');
+                        option.value = shift.value;
+                        option.textContent = shift.label;
+                        shiftSelect.appendChild(option);
+                    });
+                })
+                .catch(error => {
+                    console.log('Error loading shifts:', error);
+                });
+        }
+        
+        // Handle shift selection change
+        const shiftSelect = document.getElementById('shift-select');
+        if (shiftSelect) {
+            shiftSelect.addEventListener('change', function() {
+                const selectedShift = this.value;
+                const agentExclusionContainer = document.getElementById('agent-exclusion-container');
+                const excludeAgentsSelect = document.getElementById('exclude-agents');
+                
+                if (!selectedShift) {
+                    agentExclusionContainer.style.display = 'none';
+                    return;
+                }
+                
+                // Show loading state
+                agentExclusionContainer.style.display = 'block';
+                excludeAgentsSelect.innerHTML = '<option disabled>Loading agents...</option>';
+                
+                // Load agents for selected shift
+                fetch(`/get_agents_by_shift?shift=${selectedShift}`)
+                    .then(response => response.json())
+                    .then(data => {
+                        if (data.error) {
+                            excludeAgentsSelect.innerHTML = `<option disabled>Error: ${data.error}</option>`;
+                            return;
+                        }
+                        
+                        // Clear and populate agent list
+                        excludeAgentsSelect.innerHTML = '';
+                        data.agents.forEach(agent => {
+                            const option = document.createElement('option');
+                            option.value = agent.id;
+                            option.textContent = agent.name;
+                            excludeAgentsSelect.appendChild(option);
+                        });
+                        
+                        if (data.agents.length === 0) {
+                            excludeAgentsSelect.innerHTML = '<option disabled>No agents found for this shift</option>';
+                        }
+                    })
+                    .catch(error => {
+                        excludeAgentsSelect.innerHTML = `<option disabled>Error loading agents</option>`;
+                        console.error('Error loading agents:', error);
+                    });
+            });
+        }
         
         // Version of loadAppointmentDates that checks if loader should be shown (for initial page load after file upload)
         function loadAppointmentDatesWithoutLoader() {
@@ -3790,6 +3898,36 @@ HTML_TEMPLATE = """
                 
                 const existingSecondInputs = form.querySelectorAll('input[name="appointment_dates_second"]');
                 existingSecondInputs.forEach(input => input.remove());
+                
+                // Remove existing shift and excluded agent inputs
+                const existingShiftInput = form.querySelector('input[name="selected_shift"]');
+                if (existingShiftInput) existingShiftInput.remove();
+                
+                const existingExcludedInputs = form.querySelectorAll('input[name="excluded_agents"]');
+                existingExcludedInputs.forEach(input => input.remove());
+                
+                // Add shift selection
+                const shiftSelect = document.getElementById('shift-select');
+                if (shiftSelect && shiftSelect.value) {
+                    const shiftInput = document.createElement('input');
+                    shiftInput.type = 'hidden';
+                    shiftInput.name = 'selected_shift';
+                    shiftInput.value = shiftSelect.value;
+                    form.appendChild(shiftInput);
+                }
+                
+                // Add excluded agents
+                const excludeAgentsSelect = document.getElementById('exclude-agents');
+                if (excludeAgentsSelect) {
+                    const selectedOptions = Array.from(excludeAgentsSelect.selectedOptions);
+                    selectedOptions.forEach(option => {
+                        const input = document.createElement('input');
+                        input.type = 'hidden';
+                        input.name = 'excluded_agents';
+                        input.value = option.value;
+                        form.appendChild(input);
+                    });
+                }
                 
                 // Add First Priority selected dates as hidden inputs
                 selectedDates.forEach(date => {
@@ -6454,6 +6592,8 @@ def process_allocation_files_with_dates(
     appointment_dates,
     appointment_dates_second=None,
     receive_dates=None,
+    selected_shift=None,
+    excluded_agents=None,
 ):
     """Process data file with priority assignment and generate agent allocation summary"""
     global agent_allocations_data
@@ -6462,6 +6602,10 @@ def process_allocation_files_with_dates(
 
     # Initialize timing for performance tracking
     start_time = time.time()
+    
+    # Handle excluded agents parameter
+    if excluded_agents is None:
+        excluded_agents = []
 
     try:
         import pandas as pd
@@ -7407,6 +7551,31 @@ def process_allocation_files_with_dates(
                                 "assigned_insurance": None,
                             }
                         )
+
+                    # Filter agents by selected shift and exclude specified agents
+                    if selected_shift:
+                        selected_shift_int = int(selected_shift)
+                        print(f"👥 Filtering agents for shift {selected_shift_int}...")
+                        
+                        # Filter by shift group
+                        shift_filtered_agents = [
+                            agent for agent in agent_allocations
+                            if agent.get('shift_group') == selected_shift_int
+                        ]
+                        
+                        print(f"   Found {len(shift_filtered_agents)} agents in shift {selected_shift_int} (from {len(agent_allocations)} total agents)")
+                        
+                        # Exclude specified agents
+                        if excluded_agents:
+                            agent_allocations = [
+                                agent for agent in shift_filtered_agents
+                                if agent.get('id') not in excluded_agents
+                            ]
+                            print(f"   After excluding {len(excluded_agents)} agents: {len(agent_allocations)} agents remaining")
+                        else:
+                            agent_allocations = shift_filtered_agents
+                    else:
+                        print(f"👥 No shift filter applied - using all {len(agent_allocations)} agents")
 
                     # Retroactive check: Determine assigned insurance company for "Single" preference agents
                     # based on their existing allocations (if any)
@@ -13725,10 +13894,17 @@ def process_files():
         receive_dates = request.form.getlist("receive_dates")
         debug_count = request.form.get("debug_selected_count", "0")
         debug_count_second = request.form.get("debug_selected_count_second", "0")
+        
+        # Get shift selection and excluded agents
+        selected_shift = request.form.get("selected_shift")
+        excluded_agents = request.form.getlist("excluded_agents")
 
         print(
             f"📅 [process_files] Selected dates - First: {len(appointment_dates)}, Second: {len(appointment_dates_second)}, Receive: {len(receive_dates)}"
         )
+        
+        if selected_shift:
+            print(f"👥 [process_files] Selected shift: {selected_shift}, Excluded agents: {len(excluded_agents)}")
 
         # Process the data file with selected dates and allocation data
         print(f"⚙️ [process_files] Calling process_allocation_files_with_dates...")
@@ -13740,6 +13916,8 @@ def process_files():
             appointment_dates,
             appointment_dates_second,
             receive_dates,
+            selected_shift,
+            excluded_agents,
         )
 
         process_elapsed = time.time() - process_start_time
@@ -16315,6 +16493,154 @@ def get_receive_dates():
                 ),
             }
         )
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/get_shifts")
+@admin_required
+def get_shifts():
+    """Get available shifts from uploaded staff details file"""
+    global allocation_data
+
+    if not allocation_data:
+        return jsonify({"error": "No allocation file uploaded"}), 400
+
+    try:
+        # Get the first sheet from allocation file (staff details)
+        staff_df = None
+        if 'main' in allocation_data:
+            staff_df = allocation_data['main']
+        elif len(allocation_data) > 0:
+            staff_df = list(allocation_data.values())[0]
+
+        if staff_df is None:
+            return jsonify({"error": "No staff data found in allocation file"}), 400
+
+        # Find the Shift Group column
+        shift_group_col = None
+        for col in staff_df.columns:
+            if 'shift' in str(col).lower() and 'group' in str(col).lower():
+                shift_group_col = col
+                break
+
+        if shift_group_col is None:
+            return jsonify({"error": "Shift Group column not found in staff details"}), 400
+
+        # Get unique shift values (1, 2, 3)
+        unique_shifts = staff_df[shift_group_col].dropna().unique()
+        
+        # Convert to integers and sort
+        shifts = []
+        shift_names = {1: "First Shift", 2: "Second Shift", 3: "Third Shift"}
+        
+        for shift in sorted([int(float(s)) for s in unique_shifts if pd.notna(s)]):
+            if shift in shift_names:
+                shifts.append({
+                    "value": shift,
+                    "label": shift_names[shift]
+                })
+
+        return jsonify({"shifts": shifts})
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/get_agents_by_shift")
+@admin_required
+def get_agents_by_shift():
+    """Get list of agents for a specific shift"""
+    global allocation_data
+
+    if not allocation_data:
+        return jsonify({"error": "No allocation file uploaded"}), 400
+
+    shift = request.args.get('shift')
+    if not shift:
+        return jsonify({"error": "Shift parameter required"}), 400
+
+    try:
+        shift_value = int(shift)
+        
+        # Get the first sheet from allocation file (staff details)
+        staff_df = None
+        if 'main' in allocation_data:
+            staff_df = allocation_data['main']
+        elif len(allocation_data) > 0:
+            staff_df = list(allocation_data.values())[0]
+
+        if staff_df is None:
+            return jsonify({"error": "No staff data found in allocation file"}), 400
+
+        # Find the Shift Group and Agent Name columns
+        shift_group_col = None
+        agent_name_col = None
+        status_col = None
+        category_col = None
+        
+        for col in staff_df.columns:
+            col_lower = str(col).lower().strip()
+            if 'shift' in col_lower and 'group' in col_lower:
+                shift_group_col = col
+            elif ('agent' in col_lower and 'name' in col_lower) or col_lower in ['name', 'agent']:
+                agent_name_col = col
+            elif col_lower == 'status':
+                status_col = col
+            elif col_lower == 'category':
+                category_col = col
+
+        if shift_group_col is None:
+            return jsonify({"error": "Shift Group column not found"}), 400
+        
+        if agent_name_col is None:
+            return jsonify({"error": "Agent Name column not found"}), 400
+
+        # Filter agents by shift group
+        mask = staff_df[shift_group_col].apply(
+            lambda x: int(float(x)) == shift_value if pd.notna(x) else False
+        )
+        shift_agents = staff_df[mask]
+
+        # Get agent names and IDs
+        agents = []
+        for idx, row in shift_agents.iterrows():
+            agent_name = str(row[agent_name_col]).strip() if pd.notna(row[agent_name_col]) else None
+            
+            # Skip if agent name is not valid
+            if not agent_name:
+                continue
+            
+            # Check Status column - exclude if "No Allocation"
+            if status_col and pd.notna(row[status_col]):
+                status_value = str(row[status_col]).strip().lower()
+                if status_value == 'no allocation':
+                    continue
+            
+            # Check Category column - exclude if "Caller" or "Auditor"
+            if category_col and pd.notna(row[category_col]):
+                category_value = str(row[category_col]).strip().lower()
+                if category_value in ['caller', 'auditor']:
+                    continue
+            
+            # Also check agent name directly for "auditor" or "caller"
+            if agent_name.lower() in ['auditor', 'caller']:
+                continue
+                
+            # Try to get agent ID if available
+            agent_id = None
+            for col in staff_df.columns:
+                if str(col).lower() == 'id':
+                    agent_id = str(row[col]).strip() if pd.notna(row[col]) else None
+                    break
+            
+            agents.append({
+                "id": agent_id or f"{agent_name}_{idx}",
+                "name": agent_name
+            })
+
+        return jsonify({"agents": agents})
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500

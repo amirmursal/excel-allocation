@@ -7018,6 +7018,7 @@ def process_allocation_files_with_dates(
                 allocation_preference_col = None
                 status_col = None
                 priority_status_col = None  # Priority Status column (First/Second)
+                supervisor_col = None  # Supervisor column
                 for col in agent_df.columns:
                     col_lower = col.lower()
                     if "agent" in col_lower and "name" in col_lower:
@@ -7074,6 +7075,8 @@ def process_allocation_files_with_dates(
                         status_col = col
                     elif "priority" in col_lower and "status" in col_lower:
                         priority_status_col = col
+                    elif col_lower == "supervisor" or ("supervisor" in col_lower and "name" in col_lower):
+                        supervisor_col = col
 
                 # Use CC column if available, otherwise fallback to counts_col
                 capacity_col = cc_col if cc_col else counts_col
@@ -7107,6 +7110,8 @@ def process_allocation_files_with_dates(
                         columns_to_select.append(status_col)
                     if priority_status_col:
                         columns_to_select.append(priority_status_col)
+                    if supervisor_col:
+                        columns_to_select.append(supervisor_col)
 
                     agent_data = agent_df[columns_to_select].dropna(
                         subset=[agent_name_col, capacity_col]
@@ -7540,6 +7545,11 @@ def process_allocation_files_with_dates(
                                 priority_status = "Second"
                             # If empty/null or unknown, keep default "Second"
 
+                        # Get supervisor value
+                        agent_supervisor = ""
+                        if supervisor_col and pd.notna(row[supervisor_col]):
+                            agent_supervisor = str(row[supervisor_col]).strip()
+
                         agent_allocations.append(
                             {
                                 "id": agent_id,  # Unique identifier (ID column or name + index)
@@ -7549,6 +7559,7 @@ def process_allocation_files_with_dates(
                                 "ntc_allocated": 0,  # Track number of NTC rows allocated to this agent (max 15)
                                 "ntbp_allocated": 0,  # Track number of NTBP rows allocated to this agent (max 15)
                                 "email": agent_email,
+                                "supervisor": agent_supervisor,  # Supervisor name
                                 "insurance_companies": insurance_companies,
                                 "insurance_needs_training": insurance_needs_training,
                                 "insurance_do_not_allocate": insurance_do_not_allocate,  # Insurance companies this agent should NOT be allocated
@@ -12727,9 +12738,14 @@ def process_allocation_files_with_dates(
                     if "Agent Name" not in processed_df.columns:
                         processed_df["Agent Name"] = ""
 
-                    # Set agent name for each allocated row
+                    # Initialize Supervisor column if it doesn't exist
+                    if "Supervisor" not in processed_df.columns:
+                        processed_df["Supervisor"] = ""
+
+                    # Set agent name and supervisor for each allocated row
                     for agent in agent_allocations:
                         agent_name = agent["name"]
+                        agent_supervisor = agent.get("supervisor", "")
                         row_indices = agent.get("row_indices", [])
                         if row_indices:
                             # Filter to only valid indices within the dataframe
@@ -12740,6 +12756,10 @@ def process_allocation_files_with_dates(
                                 # Set agent name for all rows allocated to this agent
                                 processed_df.loc[valid_indices, "Agent Name"] = (
                                     agent_name
+                                )
+                                # Set supervisor for all rows allocated to this agent
+                                processed_df.loc[valid_indices, "Supervisor"] = (
+                                    agent_supervisor
                                 )
 
                     # Calculate allocation statistics FIRST
@@ -14114,6 +14134,18 @@ def download_result():
                             df_copy[col] = pd.to_datetime(
                                 df_copy[col], errors="coerce"
                             ).dt.strftime("%m/%d/%Y")
+
+                    # Reorder columns to place Supervisor right after Agent Name
+                    if "Agent Name" in df_copy.columns and "Supervisor" in df_copy.columns:
+                        # Get the index of Agent Name column
+                        agent_name_idx = df_copy.columns.get_loc("Agent Name")
+                        # Remove Supervisor from its current position
+                        cols = df_copy.columns.tolist()
+                        cols.remove("Supervisor")
+                        # Insert Supervisor right after Agent Name
+                        cols.insert(agent_name_idx + 1, "Supervisor")
+                        # Reorder the dataframe
+                        df_copy = df_copy[cols]
 
                     df_copy.to_excel(writer, sheet_name=sheet_name, index=False)
 

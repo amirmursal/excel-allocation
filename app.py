@@ -7019,6 +7019,7 @@ def process_allocation_files_with_dates(
                 status_col = None
                 priority_status_col = None  # Priority Status column (First/Second)
                 supervisor_col = None  # Supervisor column
+                auditor_col = None  # Auditors column
                 for col in agent_df.columns:
                     col_lower = col.lower()
                     if "agent" in col_lower and "name" in col_lower:
@@ -7077,6 +7078,12 @@ def process_allocation_files_with_dates(
                         priority_status_col = col
                     elif col_lower == "supervisor" or ("supervisor" in col_lower and "name" in col_lower):
                         supervisor_col = col
+                    elif (
+                        col_lower == "auditor"
+                        or col_lower == "auditors"
+                        or ("auditor" in col_lower and "name" in col_lower)
+                    ):
+                        auditor_col = col
 
                 # Use CC column if available, otherwise fallback to counts_col
                 capacity_col = cc_col if cc_col else counts_col
@@ -7112,6 +7119,8 @@ def process_allocation_files_with_dates(
                         columns_to_select.append(priority_status_col)
                     if supervisor_col:
                         columns_to_select.append(supervisor_col)
+                    if auditor_col:
+                        columns_to_select.append(auditor_col)
 
                     agent_data = agent_df[columns_to_select].dropna(
                         subset=[agent_name_col, capacity_col]
@@ -7550,6 +7559,11 @@ def process_allocation_files_with_dates(
                         if supervisor_col and pd.notna(row[supervisor_col]):
                             agent_supervisor = str(row[supervisor_col]).strip()
 
+                        # Get auditors value
+                        agent_auditors = ""
+                        if auditor_col and pd.notna(row[auditor_col]):
+                            agent_auditors = str(row[auditor_col]).strip()
+
                         agent_allocations.append(
                             {
                                 "id": agent_id,  # Unique identifier (ID column or name + index)
@@ -7560,6 +7574,7 @@ def process_allocation_files_with_dates(
                                 "ntbp_allocated": 0,  # Track number of NTBP rows allocated to this agent (max 15)
                                 "email": agent_email,
                                 "supervisor": agent_supervisor,  # Supervisor name
+                                "auditors": agent_auditors,  # Auditors name(s)
                                 "insurance_companies": insurance_companies,
                                 "insurance_needs_training": insurance_needs_training,
                                 "insurance_do_not_allocate": insurance_do_not_allocate,  # Insurance companies this agent should NOT be allocated
@@ -12742,6 +12757,10 @@ def process_allocation_files_with_dates(
                     if "Supervisor" not in processed_df.columns:
                         processed_df["Supervisor"] = ""
 
+                    # Initialize Auditors column if it doesn't exist (kept blank by default)
+                    if "Auditors" not in processed_df.columns:
+                        processed_df["Auditors"] = ""
+
                     # Set agent name and supervisor for each allocated row
                     for agent in agent_allocations:
                         agent_name = agent["name"]
@@ -12760,6 +12779,10 @@ def process_allocation_files_with_dates(
                                 # Set supervisor for all rows allocated to this agent
                                 processed_df.loc[valid_indices, "Supervisor"] = (
                                     agent_supervisor
+                                )
+                                # Set auditors for all rows allocated to this agent (blank if not present)
+                                processed_df.loc[valid_indices, "Auditors"] = (
+                                    agent.get("auditors", "")
                                 )
 
                     # Calculate allocation statistics FIRST
@@ -14145,6 +14168,15 @@ def download_result():
                         # Insert Supervisor right after Agent Name
                         cols.insert(agent_name_idx + 1, "Supervisor")
                         # Reorder the dataframe
+                        df_copy = df_copy[cols]
+
+                    # Reorder columns to place Auditors right after Supervisor
+                    if "Supervisor" in df_copy.columns and "Auditors" in df_copy.columns:
+                        supervisor_idx = df_copy.columns.get_loc("Supervisor")
+                        cols = df_copy.columns.tolist()
+                        # Remove Auditors from its current position and insert after Supervisor
+                        cols.remove("Auditors")
+                        cols.insert(supervisor_idx + 1, "Auditors")
                         df_copy = df_copy[cols]
 
                     df_copy.to_excel(writer, sheet_name=sheet_name, index=False)

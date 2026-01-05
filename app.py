@@ -4526,6 +4526,7 @@ _insurance_name_mapping = None
 _insurance_name_mapping_loaded = False
 _formatted_insurance_names = set()  # Track formatted insurance names
 _formatted_insurance_details = []  # Track original -> formatted mappings
+_format_insurance_cache = {}  # Cache for format_insurance_company_name results
 
 # Insurance corrected list mappings (stored directly in code since file will be deleted)
 CORRECTED_LIST_MAPPINGS = {
@@ -4776,13 +4777,19 @@ def load_insurance_name_mapping():
 
 def format_insurance_company_name(insurance_text):
     """Format insurance company name for better allocation matching - uses Insurance Uniform Name.xlsx mapping first"""
-    global _formatted_insurance_names, _formatted_insurance_details
+    global _formatted_insurance_names, _formatted_insurance_details, _format_insurance_cache
 
     if pd.isna(insurance_text):
         return insurance_text
 
+    # PERFORMANCE: Check cache first to avoid redundant processing
+    cache_key = str(insurance_text).strip()
+    if cache_key in _format_insurance_cache:
+        return _format_insurance_cache[cache_key]
+
     insurance_str = clean_insurance_name(insurance_text)
     if not insurance_str:
+        _format_insurance_cache[cache_key] = insurance_text
         return insurance_text  # Return original if cleaning results in empty
 
     original_name = insurance_str  # Keep original for tracking
@@ -5325,7 +5332,12 @@ def format_insurance_company_name(insurance_text):
             )
 
     # Ensure final output is cleaned (remove any spaces/special chars before/after)
-    return clean_insurance_name(formatted) if formatted else formatted
+    result = clean_insurance_name(formatted) if formatted else formatted
+
+    # PERFORMANCE: Cache the result for future use
+    _format_insurance_cache[cache_key] = result
+
+    return result
 
 
 def print_formatted_insurance_companies():
@@ -6110,36 +6122,44 @@ def check_insurance_match(
 def can_agent_work_with_priority(agent, row_priority_status):
     """
     Centralized function to check if an agent can work with a specific priority status.
-    
+
     Args:
         agent: Agent dictionary containing 'priority_status' field
         row_priority_status: Priority status from data row ("First Priority", "Second Priority", "Third Priority")
-    
+
     Returns:
         True if agent can work with this priority, False otherwise
-    
+
     Rules:
         - Agent "First" → only "First Priority" rows
         - Agent "Second" → "Second Priority" or "Third Priority" rows
         - Agent empty/null → defaults to "Second" (can work on Second/Third Priority)
     """
     # Get agent's priority status capability
-    agent_priority_status = agent.get("priority_status", "Second")  # Default to "Second" if empty/null
-    
+    agent_priority_status = agent.get(
+        "priority_status", "Second"
+    )  # Default to "Second" if empty/null
+
     # Normalize agent priority status (case-insensitive)
-    agent_priority_upper = str(agent_priority_status).strip().upper() if agent_priority_status else "SECOND"
-    
+    agent_priority_upper = (
+        str(agent_priority_status).strip().upper()
+        if agent_priority_status
+        else "SECOND"
+    )
+
     # Normalize row priority status (case-insensitive)
-    row_priority_upper = str(row_priority_status).strip().upper() if row_priority_status else ""
-    
+    row_priority_upper = (
+        str(row_priority_status).strip().upper() if row_priority_status else ""
+    )
+
     # If agent is "First", can only work with "First Priority" rows
     if agent_priority_upper == "FIRST":
         return row_priority_upper == "FIRST PRIORITY"
-    
+
     # If agent is "Second" (or default), can work with "Second Priority" or "Third Priority" rows
     if agent_priority_upper == "SECOND":
         return row_priority_upper in ["SECOND PRIORITY", "THIRD PRIORITY"]
-    
+
     # Default: if agent priority status is unknown, default to "Second" behavior
     return row_priority_upper in ["SECOND PRIORITY", "THIRD PRIORITY"]
 
@@ -6618,10 +6638,10 @@ def process_allocation_files_with_dates(
     start_time = time.time()
     # Processing timeout (seconds); can be overridden via env var PROCESSING_TIMEOUT_SECONDS
     try:
-        timeout_seconds = int(os.environ.get("PROCESSING_TIMEOUT_SECONDS", "180"))
+        timeout_seconds = int(os.environ.get("PROCESSING_TIMEOUT_SECONDS", "600"))
     except Exception:
-        timeout_seconds = 180
-    
+        timeout_seconds = 600
+
     def check_timeout(step_name: str):
         """Raise a runtime error if processing exceeds allowed time"""
         elapsed = time.time() - start_time
@@ -6629,7 +6649,7 @@ def process_allocation_files_with_dates(
             raise RuntimeError(
                 f"Processing timed out during {step_name} after {elapsed:.2f}s (limit {timeout_seconds}s)."
             )
-    
+
     # Handle excluded agents parameter
     if excluded_agents is None:
         excluded_agents = []
@@ -7076,7 +7096,9 @@ def process_allocation_files_with_dates(
                         status_col = col
                     elif "priority" in col_lower and "status" in col_lower:
                         priority_status_col = col
-                    elif col_lower == "supervisor" or ("supervisor" in col_lower and "name" in col_lower):
+                    elif col_lower == "supervisor" or (
+                        "supervisor" in col_lower and "name" in col_lower
+                    ):
                         supervisor_col = col
                     elif (
                         col_lower == "auditor"
@@ -7547,7 +7569,9 @@ def process_allocation_files_with_dates(
                         # Get Priority Status capability (default to "Second" if empty/null)
                         priority_status = "Second"  # Default value
                         if priority_status_col and pd.notna(row[priority_status_col]):
-                            priority_status_raw = str(row[priority_status_col]).strip().upper()
+                            priority_status_raw = (
+                                str(row[priority_status_col]).strip().upper()
+                            )
                             if priority_status_raw == "FIRST":
                                 priority_status = "First"
                             elif priority_status_raw == "SECOND":
@@ -7609,36 +7633,51 @@ def process_allocation_files_with_dates(
                     if selected_shift:
                         selected_shift_int = int(selected_shift)
                         print(f"👥 Filtering agents for shift {selected_shift_int}...")
-                        
+
                         # Filter by shift group
                         shift_filtered_agents = [
-                            agent for agent in agent_allocations
-                            if agent.get('shift_group') == selected_shift_int
+                            agent
+                            for agent in agent_allocations
+                            if agent.get("shift_group") == selected_shift_int
                         ]
-                        
-                        print(f"   Found {len(shift_filtered_agents)} agents in shift {selected_shift_int} (from {len(agent_allocations)} total agents)")
-                        
+
+                        print(
+                            f"   Found {len(shift_filtered_agents)} agents in shift {selected_shift_int} (from {len(agent_allocations)} total agents)"
+                        )
+
                         # Exclude specified agents
                         if excluded_agents:
                             agent_allocations = [
-                                agent for agent in shift_filtered_agents
-                                if agent.get('id') not in excluded_agents
+                                agent
+                                for agent in shift_filtered_agents
+                                if agent.get("id") not in excluded_agents
                             ]
-                            print(f"   After excluding {len(excluded_agents)} agents: {len(agent_allocations)} agents remaining")
+                            print(
+                                f"   After excluding {len(excluded_agents)} agents: {len(agent_allocations)} agents remaining"
+                            )
                         else:
                             agent_allocations = shift_filtered_agents
-                        
+
                         # CRITICAL CHECK: Verify if shift has any agents with capacity
                         agents_with_available_capacity = [
-                            a for a in agent_allocations
+                            a
+                            for a in agent_allocations
                             if (a["capacity"] - a["allocated"]) > 0
                         ]
-                        print(f"   Shift {selected_shift_int} has {len(agents_with_available_capacity)} agents with available capacity")
+                        print(
+                            f"   Shift {selected_shift_int} has {len(agents_with_available_capacity)} agents with available capacity"
+                        )
                         if not agents_with_available_capacity:
-                            print(f"⚠️ WARNING: Shift {selected_shift_int} has NO agents with available capacity!")
-                            print(f"   Agent allocations will skip for this shift. Unallocated rows will remain unassigned.")
+                            print(
+                                f"⚠️ WARNING: Shift {selected_shift_int} has NO agents with available capacity!"
+                            )
+                            print(
+                                f"   Agent allocations will skip for this shift. Unallocated rows will remain unassigned."
+                            )
                     else:
-                        print(f"👥 No shift filter applied - using all {len(agent_allocations)} agents")
+                        print(
+                            f"👥 No shift filter applied - using all {len(agent_allocations)} agents"
+                        )
 
                     # Retroactive check: Determine assigned insurance company for "Single" preference agents
                     # based on their existing allocations (if any)
@@ -7914,19 +7953,25 @@ def process_allocation_files_with_dates(
                         if "Agent Name" not in processed_df.columns:
                             processed_df["Agent Name"] = ""
                         # Ensure Agent Name column is of object dtype to avoid FutureWarning
-                        processed_df["Agent Name"] = processed_df["Agent Name"].astype('object')
+                        processed_df["Agent Name"] = processed_df["Agent Name"].astype(
+                            "object"
+                        )
 
                         # CRITICAL SAFETY CHECK: If no agents available, skip allocation entirely
                         if not agent_allocations:
-                            print(f"⚠️ CRITICAL: No agents available for allocation (shift filtering may have removed all agents)")
-                            print(f"   Rows will remain unallocated in 'Agent Name' column")
+                            print(
+                                f"⚠️ CRITICAL: No agents available for allocation (shift filtering may have removed all agents)"
+                            )
+                            print(
+                                f"   Rows will remain unallocated in 'Agent Name' column"
+                            )
                             # Return early with unallocated data
                             elapsed_time = time.time() - start_time
                             return (
                                 f"⚠️ Processing completed but NO agents available for allocation. "
                                 f"Check shift selection and agent exclusions. "
                                 f"All rows remain unallocated. Elapsed: {elapsed_time:.2f}s",
-                                processed_df
+                                processed_df,
                             )
 
                         # PERFORMANCE FIX: Create set of allocated indices ONCE for O(1) lookup instead of O(n*m*k)
@@ -7960,25 +8005,34 @@ def process_allocation_files_with_dates(
 
                             # Exclude "Not to work" rows
                             ntbp_mask = ntbp_mask & ~not_to_work_mask
-                            
+
                             # PRIORITY STATUS FILTER: Filter out rows without Priority Status
                             priority_status_col_name = None
                             for col in processed_df.columns:
                                 if col.lower() == "priority status":
                                     priority_status_col_name = col
                                     break
-                            
+
                             if priority_status_col_name:
-                                priority_status_series = processed_df[priority_status_col_name].fillna("")
+                                priority_status_series = processed_df[
+                                    priority_status_col_name
+                                ].fillna("")
                                 priority_status_mask = (
                                     priority_status_series.astype(str).str.strip() != ""
                                 ) & (
-                                    priority_status_series.astype(str).str.strip().str.upper().isin([
-                                        "FIRST PRIORITY", "SECOND PRIORITY", "THIRD PRIORITY"
-                                    ])
+                                    priority_status_series.astype(str)
+                                    .str.strip()
+                                    .str.upper()
+                                    .isin(
+                                        [
+                                            "FIRST PRIORITY",
+                                            "SECOND PRIORITY",
+                                            "THIRD PRIORITY",
+                                        ]
+                                    )
                                 )
                                 ntbp_mask = ntbp_mask & priority_status_mask
-                            
+
                             all_ntbp_rows = processed_df.index[ntbp_mask].tolist()
 
                             print(
@@ -8072,19 +8126,30 @@ def process_allocation_files_with_dates(
                                             # PRIORITY STATUS CHECK: First filter - check if agent can work with this priority
                                             row_priority_status = None
                                             if priority_status_col_name and pd.notna(
-                                                processed_df.at[ntbp_row_idx, priority_status_col_name]
+                                                processed_df.at[
+                                                    ntbp_row_idx,
+                                                    priority_status_col_name,
+                                                ]
                                             ):
                                                 row_priority_status = str(
-                                                    processed_df.at[ntbp_row_idx, priority_status_col_name]
+                                                    processed_df.at[
+                                                        ntbp_row_idx,
+                                                        priority_status_col_name,
+                                                    ]
                                                 ).strip()
-                                            
+
                                             # Skip row if no Priority Status (should have been filtered earlier, but double-check)
-                                            if not row_priority_status or row_priority_status == "":
+                                            if (
+                                                not row_priority_status
+                                                or row_priority_status == ""
+                                            ):
                                                 attempts += 1
                                                 continue
-                                            
+
                                             # Check if agent can work with this priority
-                                            if not can_agent_work_with_priority(agent, row_priority_status):
+                                            if not can_agent_work_with_priority(
+                                                agent, row_priority_status
+                                            ):
                                                 attempts += 1
                                                 continue
 
@@ -8162,21 +8227,35 @@ def process_allocation_files_with_dates(
                                                 for idx in assigned:
                                                     # PRIORITY STATUS CHECK: First filter - check if agent can work with this priority
                                                     row_priority_status = None
-                                                    if priority_status_col_name and pd.notna(
-                                                        processed_df.at[idx, priority_status_col_name]
+                                                    if (
+                                                        priority_status_col_name
+                                                        and pd.notna(
+                                                            processed_df.at[
+                                                                idx,
+                                                                priority_status_col_name,
+                                                            ]
+                                                        )
                                                     ):
                                                         row_priority_status = str(
-                                                            processed_df.at[idx, priority_status_col_name]
+                                                            processed_df.at[
+                                                                idx,
+                                                                priority_status_col_name,
+                                                            ]
                                                         ).strip()
-                                                    
+
                                                     # Skip row if no Priority Status
-                                                    if not row_priority_status or row_priority_status == "":
+                                                    if (
+                                                        not row_priority_status
+                                                        or row_priority_status == ""
+                                                    ):
                                                         continue
-                                                    
+
                                                     # Check if agent can work with this priority
-                                                    if not can_agent_work_with_priority(agent, row_priority_status):
+                                                    if not can_agent_work_with_priority(
+                                                        agent, row_priority_status
+                                                    ):
                                                         continue
-                                                    
+
                                                     if remark_col and pd.notna(
                                                         processed_df.at[idx, remark_col]
                                                     ):
@@ -8224,7 +8303,10 @@ def process_allocation_files_with_dates(
                                                 )
 
                         # Step 3.5: Global NTC Allocation - Allocate all NTC remark rows globally
-                        print(f"🧭 [Step 3.5] Starting Global NTC Allocation at {time.time() - start_time:.2f}s")
+                        step_3_5_start = time.time()
+                        print(
+                            f"🧭 [Step 3.5] Starting Global NTC Allocation at {time.time() - start_time:.2f}s"
+                        )
                         # Allocate NTC rows to agents with NTC in Allocation Preference column
                         # Valid Allocation Preference values: "Sec+NTC", "Sec+Mix+NTC", "Mix+NTC", "NTC"
                         # Use CC column for current capacity
@@ -8253,19 +8335,28 @@ def process_allocation_files_with_dates(
 
                             # Exclude "Not to work" rows
                             ntc_mask = ntc_mask & ~not_to_work_mask
-                            
+
                             # PRIORITY STATUS FILTER: Filter out rows without Priority Status
                             if priority_status_col_name:
-                                priority_status_series = processed_df[priority_status_col_name].fillna("")
+                                priority_status_series = processed_df[
+                                    priority_status_col_name
+                                ].fillna("")
                                 priority_status_mask = (
                                     priority_status_series.astype(str).str.strip() != ""
                                 ) & (
-                                    priority_status_series.astype(str).str.strip().str.upper().isin([
-                                        "FIRST PRIORITY", "SECOND PRIORITY", "THIRD PRIORITY"
-                                    ])
+                                    priority_status_series.astype(str)
+                                    .str.strip()
+                                    .str.upper()
+                                    .isin(
+                                        [
+                                            "FIRST PRIORITY",
+                                            "SECOND PRIORITY",
+                                            "THIRD PRIORITY",
+                                        ]
+                                    )
                                 )
                                 ntc_mask = ntc_mask & priority_status_mask
-                            
+
                             all_ntc_rows = processed_df.index[ntc_mask].tolist()
 
                             print(
@@ -8354,19 +8445,30 @@ def process_allocation_files_with_dates(
                                             # PRIORITY STATUS CHECK: First filter - check if agent can work with this priority
                                             row_priority_status = None
                                             if priority_status_col_name and pd.notna(
-                                                processed_df.at[ntc_row_idx, priority_status_col_name]
+                                                processed_df.at[
+                                                    ntc_row_idx,
+                                                    priority_status_col_name,
+                                                ]
                                             ):
                                                 row_priority_status = str(
-                                                    processed_df.at[ntc_row_idx, priority_status_col_name]
+                                                    processed_df.at[
+                                                        ntc_row_idx,
+                                                        priority_status_col_name,
+                                                    ]
                                                 ).strip()
-                                            
+
                                             # Skip row if no Priority Status (should have been filtered earlier, but double-check)
-                                            if not row_priority_status or row_priority_status == "":
+                                            if (
+                                                not row_priority_status
+                                                or row_priority_status == ""
+                                            ):
                                                 attempts += 1
                                                 continue
-                                            
+
                                             # Check if agent can work with this priority
-                                            if not can_agent_work_with_priority(agent, row_priority_status):
+                                            if not can_agent_work_with_priority(
+                                                agent, row_priority_status
+                                            ):
                                                 attempts += 1
                                                 continue
 
@@ -8442,21 +8544,35 @@ def process_allocation_files_with_dates(
                                                 for idx in assigned:
                                                     # PRIORITY STATUS CHECK: First filter - check if agent can work with this priority
                                                     row_priority_status = None
-                                                    if priority_status_col_name and pd.notna(
-                                                        processed_df.at[idx, priority_status_col_name]
+                                                    if (
+                                                        priority_status_col_name
+                                                        and pd.notna(
+                                                            processed_df.at[
+                                                                idx,
+                                                                priority_status_col_name,
+                                                            ]
+                                                        )
                                                     ):
                                                         row_priority_status = str(
-                                                            processed_df.at[idx, priority_status_col_name]
+                                                            processed_df.at[
+                                                                idx,
+                                                                priority_status_col_name,
+                                                            ]
                                                         ).strip()
-                                                    
+
                                                     # Skip row if no Priority Status
-                                                    if not row_priority_status or row_priority_status == "":
+                                                    if (
+                                                        not row_priority_status
+                                                        or row_priority_status == ""
+                                                    ):
                                                         continue
-                                                    
+
                                                     # Check if agent can work with this priority
-                                                    if not can_agent_work_with_priority(agent, row_priority_status):
+                                                    if not can_agent_work_with_priority(
+                                                        agent, row_priority_status
+                                                    ):
                                                         continue
-                                                    
+
                                                     if remark_col and pd.notna(
                                                         processed_df.at[idx, remark_col]
                                                     ):
@@ -8628,10 +8744,16 @@ def process_allocation_files_with_dates(
                                         else:
                                             break
 
-                        print(f"✅ [Step 3.5] Finished Global NTC Allocation at {time.time() - start_time:.2f}s")
+                        step_3_5_time = time.time() - step_3_5_start
+                        print(
+                            f"✅ [Step 3.5] Finished Global NTC Allocation at {time.time() - start_time:.2f}s (took {step_3_5_time:.2f}s)"
+                        )
 
                         # Step 3.6: Global Secondary Insurance Allocation - Allocate rows with secondary insurance to "Sec + X" agents
-                        print(f"🧭 [Step 3.6] Starting Global Secondary Insurance Allocation at {time.time() - start_time:.2f}s")
+                        step_3_6_start = time.time()
+                        print(
+                            f"🧭 [Step 3.6] Starting Global Secondary Insurance Allocation at {time.time() - start_time:.2f}s"
+                        )
                         # This should happen before other allocations so "Sec + X" agents get secondary insurance rows first
                         if (
                             secondary_insurance_col
@@ -8668,11 +8790,16 @@ def process_allocation_files_with_dates(
                                         processed_df.at[idx, priority_status_col_name]
                                     ):
                                         row_priority_status = str(
-                                            processed_df.at[idx, priority_status_col_name]
+                                            processed_df.at[
+                                                idx, priority_status_col_name
+                                            ]
                                         ).strip()
-                                    
+
                                     # Skip row if no Priority Status
-                                    if not row_priority_status or row_priority_status == "":
+                                    if (
+                                        not row_priority_status
+                                        or row_priority_status == ""
+                                    ):
                                         continue
 
                                     # Check if row has secondary insurance
@@ -8756,25 +8883,41 @@ def process_allocation_files_with_dates(
                                                     compatible_rows = []
                                                     for row_idx in carrier_rows:
                                                         row_priority_status = None
-                                                        if priority_status_col_name and pd.notna(
-                                                            processed_df.at[row_idx, priority_status_col_name]
+                                                        if (
+                                                            priority_status_col_name
+                                                            and pd.notna(
+                                                                processed_df.at[
+                                                                    row_idx,
+                                                                    priority_status_col_name,
+                                                                ]
+                                                            )
                                                         ):
                                                             row_priority_status = str(
-                                                                processed_df.at[row_idx, priority_status_col_name]
+                                                                processed_df.at[
+                                                                    row_idx,
+                                                                    priority_status_col_name,
+                                                                ]
                                                             ).strip()
-                                                        
+
                                                         # Skip row if no Priority Status
-                                                        if not row_priority_status or row_priority_status == "":
+                                                        if (
+                                                            not row_priority_status
+                                                            or row_priority_status == ""
+                                                        ):
                                                             continue
-                                                        
+
                                                         # Check if agent can work with this priority
-                                                        if can_agent_work_with_priority(a, row_priority_status):
-                                                            compatible_rows.append(row_idx)
-                                                    
+                                                        if can_agent_work_with_priority(
+                                                            a, row_priority_status
+                                                        ):
+                                                            compatible_rows.append(
+                                                                row_idx
+                                                            )
+
                                                     # Only add agent if there are compatible rows
                                                     if not compatible_rows:
                                                         continue
-                                                    
+
                                                     # Check if agent can work with the PRIMARY insurance company
                                                     can_work_with_primary = (
                                                         can_agent_work_with_insurance(
@@ -8836,21 +8979,37 @@ def process_allocation_files_with_dates(
                                                         for idx in slice_rows:
                                                             # PRIORITY STATUS CHECK: First filter - check if agent can work with this priority
                                                             row_priority_status = None
-                                                            if priority_status_col_name and pd.notna(
-                                                                processed_df.at[idx, priority_status_col_name]
+                                                            if (
+                                                                priority_status_col_name
+                                                                and pd.notna(
+                                                                    processed_df.at[
+                                                                        idx,
+                                                                        priority_status_col_name,
+                                                                    ]
+                                                                )
                                                             ):
                                                                 row_priority_status = str(
-                                                                    processed_df.at[idx, priority_status_col_name]
+                                                                    processed_df.at[
+                                                                        idx,
+                                                                        priority_status_col_name,
+                                                                    ]
                                                                 ).strip()
-                                                            
+
                                                             # Skip row if no Priority Status
-                                                            if not row_priority_status or row_priority_status == "":
+                                                            if (
+                                                                not row_priority_status
+                                                                or row_priority_status
+                                                                == ""
+                                                            ):
                                                                 continue
-                                                            
+
                                                             # Check if agent can work with this priority
-                                                            if not can_agent_work_with_priority(agent, row_priority_status):
+                                                            if not can_agent_work_with_priority(
+                                                                agent,
+                                                                row_priority_status,
+                                                            ):
                                                                 continue
-                                                            
+
                                                             if can_allocate_row_by_appointment_date(
                                                                 agent,
                                                                 idx,
@@ -8947,24 +9106,38 @@ def process_allocation_files_with_dates(
                                                             for i in ag["row_indices"]
                                                         ]:
                                                             continue
-                                                        
+
                                                         # PRIORITY STATUS CHECK: First filter - skip rows without Priority Status
                                                         row_priority_status = None
-                                                        if priority_status_col_name and pd.notna(
-                                                            processed_df.at[idx, priority_status_col_name]
+                                                        if (
+                                                            priority_status_col_name
+                                                            and pd.notna(
+                                                                processed_df.at[
+                                                                    idx,
+                                                                    priority_status_col_name,
+                                                                ]
+                                                            )
                                                         ):
                                                             row_priority_status = str(
-                                                                processed_df.at[idx, priority_status_col_name]
+                                                                processed_df.at[
+                                                                    idx,
+                                                                    priority_status_col_name,
+                                                                ]
                                                             ).strip()
-                                                        
+
                                                         # Skip row if no Priority Status
-                                                        if not row_priority_status or row_priority_status == "":
+                                                        if (
+                                                            not row_priority_status
+                                                            or row_priority_status == ""
+                                                        ):
                                                             continue
-                                                        
+
                                                         # Check if agent can work with this priority
-                                                        if not can_agent_work_with_priority(agent, row_priority_status):
+                                                        if not can_agent_work_with_priority(
+                                                            agent, row_priority_status
+                                                        ):
                                                             continue
-                                                        
+
                                                         # Skip rows with secondary insurance (already allocated)
                                                         if (
                                                             secondary_insurance_col
@@ -9062,7 +9235,9 @@ def process_allocation_files_with_dates(
                                                         and allocated_count
                                                         < len(same_insurance_rows)
                                                     ):
-                                                        check_timeout("Sec+Single same-insurance allocation loop")
+                                                        check_timeout(
+                                                            "Sec+Single same-insurance allocation loop"
+                                                        )
                                                         take = min(
                                                             remaining_capacity,
                                                             len(same_insurance_rows)
@@ -9135,21 +9310,35 @@ def process_allocation_files_with_dates(
                                             ]:
                                                 # PRIORITY STATUS CHECK: First filter - check if agent can work with this priority
                                                 row_priority_status = None
-                                                if priority_status_col_name and pd.notna(
-                                                    processed_df.at[row_idx, priority_status_col_name]
+                                                if (
+                                                    priority_status_col_name
+                                                    and pd.notna(
+                                                        processed_df.at[
+                                                            row_idx,
+                                                            priority_status_col_name,
+                                                        ]
+                                                    )
                                                 ):
                                                     row_priority_status = str(
-                                                        processed_df.at[row_idx, priority_status_col_name]
+                                                        processed_df.at[
+                                                            row_idx,
+                                                            priority_status_col_name,
+                                                        ]
                                                     ).strip()
-                                                
+
                                                 # Skip row if no Priority Status
-                                                if not row_priority_status or row_priority_status == "":
+                                                if (
+                                                    not row_priority_status
+                                                    or row_priority_status == ""
+                                                ):
                                                     continue
-                                                
+
                                                 # Check if agent can work with this priority
-                                                if not can_agent_work_with_priority(agent, row_priority_status):
+                                                if not can_agent_work_with_priority(
+                                                    agent, row_priority_status
+                                                ):
                                                     continue
-                                                
+
                                                 # Get primary insurance from "Dental Primary Ins Carr"
                                                 if insurance_carrier_col and pd.notna(
                                                     processed_df.at[
@@ -9284,24 +9473,38 @@ def process_allocation_files_with_dates(
                                                             for i in ag["row_indices"]
                                                         ]:
                                                             continue
-                                                        
+
                                                         # PRIORITY STATUS CHECK: First filter - skip rows without Priority Status
                                                         row_priority_status = None
-                                                        if priority_status_col_name and pd.notna(
-                                                            processed_df.at[idx, priority_status_col_name]
+                                                        if (
+                                                            priority_status_col_name
+                                                            and pd.notna(
+                                                                processed_df.at[
+                                                                    idx,
+                                                                    priority_status_col_name,
+                                                                ]
+                                                            )
                                                         ):
                                                             row_priority_status = str(
-                                                                processed_df.at[idx, priority_status_col_name]
+                                                                processed_df.at[
+                                                                    idx,
+                                                                    priority_status_col_name,
+                                                                ]
                                                             ).strip()
-                                                        
+
                                                         # Skip row if no Priority Status
-                                                        if not row_priority_status or row_priority_status == "":
+                                                        if (
+                                                            not row_priority_status
+                                                            or row_priority_status == ""
+                                                        ):
                                                             continue
-                                                        
+
                                                         # Check if agent can work with this priority
-                                                        if not can_agent_work_with_priority(agent, row_priority_status):
+                                                        if not can_agent_work_with_priority(
+                                                            agent, row_priority_status
+                                                        ):
                                                             continue
-                                                        
+
                                                         # Skip rows with secondary insurance (already allocated)
                                                         if (
                                                             secondary_insurance_col
@@ -10125,10 +10328,16 @@ def process_allocation_files_with_dates(
                                         else:
                                             break
 
-                        print(f"✅ [Step 3.6] Finished Global Secondary Insurance Allocation at {time.time() - start_time:.2f}s")
+                        step_3_6_time = time.time() - step_3_6_start
+                        print(
+                            f"✅ [Step 3.6] Finished Global Secondary Insurance Allocation at {time.time() - start_time:.2f}s (took {step_3_6_time:.2f}s)"
+                        )
 
                         # Step 3.7: Global Single Allocation - Allocate same insurance company rows to "Single" preference agents
-                        print(f"🧭 [Step 3.7] Starting Global Single Allocation at {time.time() - start_time:.2f}s")
+                        step_3_7_start = time.time()
+                        print(
+                            f"🧭 [Step 3.7] Starting Global Single Allocation at {time.time() - start_time:.2f}s"
+                        )
                         # This ensures agents with "Single" preference (not "Sec + Single") get same insurance company rows to fill their capacity
                         # Exclude PB preference agents (should only get NTBP rows in Step 2.5)
                         single_preference_agents = [
@@ -10186,18 +10395,27 @@ def process_allocation_files_with_dates(
                                         # PRIORITY STATUS CHECK: First filter - skip rows without Priority Status
                                         row_priority_status = None
                                         if priority_status_col_name and pd.notna(
-                                            processed_df.at[idx, priority_status_col_name]
+                                            processed_df.at[
+                                                idx, priority_status_col_name
+                                            ]
                                         ):
                                             row_priority_status = str(
-                                                processed_df.at[idx, priority_status_col_name]
+                                                processed_df.at[
+                                                    idx, priority_status_col_name
+                                                ]
                                             ).strip()
-                                        
+
                                         # Skip row if no Priority Status
-                                        if not row_priority_status or row_priority_status == "":
+                                        if (
+                                            not row_priority_status
+                                            or row_priority_status == ""
+                                        ):
                                             continue
-                                        
+
                                         # Check if agent can work with this priority
-                                        if not can_agent_work_with_priority(agent, row_priority_status):
+                                        if not can_agent_work_with_priority(
+                                            agent, row_priority_status
+                                        ):
                                             continue
 
                                         # Skip rows with secondary insurance (those go to "Sec + X" agents)
@@ -10319,18 +10537,27 @@ def process_allocation_files_with_dates(
                                         # PRIORITY STATUS CHECK: First filter - skip rows without Priority Status
                                         row_priority_status = None
                                         if priority_status_col_name and pd.notna(
-                                            processed_df.at[idx, priority_status_col_name]
+                                            processed_df.at[
+                                                idx, priority_status_col_name
+                                            ]
                                         ):
                                             row_priority_status = str(
-                                                processed_df.at[idx, priority_status_col_name]
+                                                processed_df.at[
+                                                    idx, priority_status_col_name
+                                                ]
                                             ).strip()
-                                        
+
                                         # Skip row if no Priority Status
-                                        if not row_priority_status or row_priority_status == "":
+                                        if (
+                                            not row_priority_status
+                                            or row_priority_status == ""
+                                        ):
                                             continue
-                                        
+
                                         # Check if agent can work with this priority
-                                        if not can_agent_work_with_priority(agent, row_priority_status):
+                                        if not can_agent_work_with_priority(
+                                            agent, row_priority_status
+                                        ):
                                             continue
 
                                         # Skip rows with secondary insurance (those go to "Sec + X" agents)
@@ -10397,18 +10624,27 @@ def process_allocation_files_with_dates(
                                             # PRIORITY STATUS CHECK: First filter - skip rows without Priority Status
                                             row_priority_status = None
                                             if priority_status_col_name and pd.notna(
-                                                processed_df.at[idx, priority_status_col_name]
+                                                processed_df.at[
+                                                    idx, priority_status_col_name
+                                                ]
                                             ):
                                                 row_priority_status = str(
-                                                    processed_df.at[idx, priority_status_col_name]
+                                                    processed_df.at[
+                                                        idx, priority_status_col_name
+                                                    ]
                                                 ).strip()
-                                            
+
                                             # Skip row if no Priority Status
-                                            if not row_priority_status or row_priority_status == "":
+                                            if (
+                                                not row_priority_status
+                                                or row_priority_status == ""
+                                            ):
                                                 continue
-                                            
+
                                             # Check if agent can work with this priority
-                                            if not can_agent_work_with_priority(agent, row_priority_status):
+                                            if not can_agent_work_with_priority(
+                                                agent, row_priority_status
+                                            ):
                                                 continue
 
                                             # Skip rows with secondary insurance (those go to "Sec + X" agents)
@@ -10517,7 +10753,9 @@ def process_allocation_files_with_dates(
                                             and allocated_count
                                             < len(filtered_same_insurance_rows)
                                         ):
-                                            check_timeout("Single same-insurance allocation loop")
+                                            check_timeout(
+                                                "Single same-insurance allocation loop"
+                                            )
                                             take = min(
                                                 remaining_capacity,
                                                 len(filtered_same_insurance_rows)
@@ -10546,10 +10784,16 @@ def process_allocation_files_with_dates(
                                             else:
                                                 break
 
-                        print(f"✅ [Step 3.7] Finished Global Single Allocation at {time.time() - start_time:.2f}s")
+                        step_3_7_time = time.time() - step_3_7_start
+                        print(
+                            f"✅ [Step 3.7] Finished Global Single Allocation at {time.time() - start_time:.2f}s (took {step_3_7_time:.2f}s)"
+                        )
 
                         # Step 3.8: Global Mix Allocation - Allocate multiple insurance company rows to "Mix" preference agents
-                        print(f"🧭 [Step 3.8] Starting Global Mix Allocation at {time.time() - start_time:.2f}s")
+                        step_3_8_start = time.time()
+                        print(
+                            f"🧭 [Step 3.8] Starting Global Mix Allocation at {time.time() - start_time:.2f}s"
+                        )
                         # Agents with "Mix" preference should get rows from multiple insurance companies (unlike "Single" which gets only one)
                         # Exclude "Sec + Mix" agents (handled in Step 3.6), "Mix + NTC" agents (handled in Step 3.5.5), and "PB" preference agents (should only get NTBP rows)
                         mix_preference_agents = [
@@ -10598,15 +10842,22 @@ def process_allocation_files_with_dates(
                                         processed_df.at[idx, priority_status_col_name]
                                     ):
                                         row_priority_status = str(
-                                            processed_df.at[idx, priority_status_col_name]
+                                            processed_df.at[
+                                                idx, priority_status_col_name
+                                            ]
                                         ).strip()
-                                    
+
                                     # Skip row if no Priority Status
-                                    if not row_priority_status or row_priority_status == "":
+                                    if (
+                                        not row_priority_status
+                                        or row_priority_status == ""
+                                    ):
                                         continue
-                                    
+
                                     # Check if agent can work with this priority
-                                    if not can_agent_work_with_priority(agent, row_priority_status):
+                                    if not can_agent_work_with_priority(
+                                        agent, row_priority_status
+                                    ):
                                         continue
 
                                     # Skip rows with secondary insurance (those go to "Sec + X" agents)
@@ -10693,7 +10944,9 @@ def process_allocation_files_with_dates(
                                         else:
                                             break
 
-                        print(f"✅ [Step 3.8] Finished Global Mix Allocation at {time.time() - start_time:.2f}s")
+                        print(
+                            f"✅ [Step 3.8] Finished Global Mix Allocation at {time.time() - start_time:.2f}s (took {time.time() - step_3_8_start:.2f}s)"
+                        )
 
                         # Step 3: REMOVED - First Priority allocation to senior agents
                         # Senior agents will ONLY get unmatched insurance companies (handled in Step 4)
@@ -10702,22 +10955,31 @@ def process_allocation_files_with_dates(
                         # Note: First/Second/Third Priority matched work will be allocated to non-seniors in Step 5
 
                         # Step 4: Allocate unmatched insurance companies to senior agents (after First Priority matched work)
+                        step_4_start = time.time()
+                        print(
+                            f"🧭 [Step 4] Starting unmatched insurance allocation at {time.time() - start_time:.2f}s"
+                        )
                         # Also include "Afreen Ansari" even if not marked as senior
                         # Check if we have unmatched insurance and (senior agents OR Afreen Ansari)
                         # SAFETY: Only proceed if we have agents with available capacity
                         agents_with_capacity = [
-                            a for a in agent_allocations
+                            a
+                            for a in agent_allocations
                             if (a["capacity"] - a["allocated"]) > 0
                         ]
                         if not agents_with_capacity:
-                            print(f"⚠️ [Step 4] No agents with available capacity - skipping unmatched insurance allocation")
-                        
+                            print(
+                                f"⚠️ [Step 4] No agents with available capacity - skipping unmatched insurance allocation"
+                            )
+
                         has_afreen_ansari = any(
                             a["name"] == "Afreen Ansari" for a in agent_allocations
                         )
-                        if unmatched_insurance_companies and (
-                            senior_agents or has_afreen_ansari
-                        ) and agents_with_capacity:
+                        if (
+                            unmatched_insurance_companies
+                            and (senior_agents or has_afreen_ansari)
+                            and agents_with_capacity
+                        ):
                             for (
                                 insurance_carrier,
                                 priority_data,
@@ -10769,17 +11031,29 @@ def process_allocation_files_with_dates(
                                             for row_idx in row_indices:
                                                 # PRIORITY STATUS CHECK: First filter - skip rows without Priority Status
                                                 row_priority_status = None
-                                                if priority_status_col_name and pd.notna(
-                                                    processed_df.at[row_idx, priority_status_col_name]
+                                                if (
+                                                    priority_status_col_name
+                                                    and pd.notna(
+                                                        processed_df.at[
+                                                            row_idx,
+                                                            priority_status_col_name,
+                                                        ]
+                                                    )
                                                 ):
                                                     row_priority_status = str(
-                                                        processed_df.at[row_idx, priority_status_col_name]
+                                                        processed_df.at[
+                                                            row_idx,
+                                                            priority_status_col_name,
+                                                        ]
                                                     ).strip()
-                                                
+
                                                 # Skip row if no Priority Status
-                                                if not row_priority_status or row_priority_status == "":
+                                                if (
+                                                    not row_priority_status
+                                                    or row_priority_status == ""
+                                                ):
                                                     continue
-                                                
+
                                                 row_remark = None
                                                 if pd.notna(
                                                     processed_df.at[row_idx, remark_col]
@@ -10911,19 +11185,34 @@ def process_allocation_files_with_dates(
 
                                                         # PRIORITY STATUS CHECK: First filter - check if agent can work with this priority
                                                         row_priority_status = None
-                                                        if priority_status_col_name and pd.notna(
-                                                            processed_df.at[actual_row_idx, priority_status_col_name]
+                                                        if (
+                                                            priority_status_col_name
+                                                            and pd.notna(
+                                                                processed_df.at[
+                                                                    actual_row_idx,
+                                                                    priority_status_col_name,
+                                                                ]
+                                                            )
                                                         ):
                                                             row_priority_status = str(
-                                                                processed_df.at[actual_row_idx, priority_status_col_name]
+                                                                processed_df.at[
+                                                                    actual_row_idx,
+                                                                    priority_status_col_name,
+                                                                ]
                                                             ).strip()
-                                                        
+
                                                         # Skip row if no Priority Status (should have been filtered earlier, but double-check)
-                                                        if not row_priority_status or row_priority_status == "":
+                                                        if (
+                                                            not row_priority_status
+                                                            or row_priority_status == ""
+                                                        ):
                                                             continue
-                                                        
+
                                                         # Check if agent can work with this priority
-                                                        if not can_agent_work_with_priority(senior_agent, row_priority_status):
+                                                        if not can_agent_work_with_priority(
+                                                            senior_agent,
+                                                            row_priority_status,
+                                                        ):
                                                             continue
 
                                                         # For agents with "Single" preference, only allow rows from their assigned insurance
@@ -11474,16 +11763,23 @@ def process_allocation_files_with_dates(
                                             # PRIORITY STATUS CHECK: First filter - skip rows without Priority Status
                                             row_priority_status = None
                                             if priority_status_col_name and pd.notna(
-                                                processed_df.at[idx, priority_status_col_name]
+                                                processed_df.at[
+                                                    idx, priority_status_col_name
+                                                ]
                                             ):
                                                 row_priority_status = str(
-                                                    processed_df.at[idx, priority_status_col_name]
+                                                    processed_df.at[
+                                                        idx, priority_status_col_name
+                                                    ]
                                                 ).strip()
-                                            
+
                                             # Skip row if no Priority Status
-                                            if not row_priority_status or row_priority_status == "":
+                                            if (
+                                                not row_priority_status
+                                                or row_priority_status == ""
+                                            ):
                                                 continue
-                                            
+
                                             if pd.notna(
                                                 processed_df.at[idx, remark_col]
                                             ):
@@ -11506,16 +11802,23 @@ def process_allocation_files_with_dates(
                                             # PRIORITY STATUS CHECK: First filter - skip rows without Priority Status
                                             row_priority_status = None
                                             if priority_status_col_name and pd.notna(
-                                                processed_df.at[idx, priority_status_col_name]
+                                                processed_df.at[
+                                                    idx, priority_status_col_name
+                                                ]
                                             ):
                                                 row_priority_status = str(
-                                                    processed_df.at[idx, priority_status_col_name]
+                                                    processed_df.at[
+                                                        idx, priority_status_col_name
+                                                    ]
                                                 ).strip()
-                                            
+
                                             # Skip row if no Priority Status
-                                            if not row_priority_status or row_priority_status == "":
+                                            if (
+                                                not row_priority_status
+                                                or row_priority_status == ""
+                                            ):
                                                 continue
-                                            
+
                                             filtered_indices.append(idx)
                                         unallocated_row_indices = filtered_indices
 
@@ -11525,12 +11828,15 @@ def process_allocation_files_with_dates(
                                     # CRITICAL FIX: Check if ANY agent has remaining capacity before attempting allocation
                                     # This prevents endless loops when all agents are exhausted
                                     agents_with_remaining_capacity = [
-                                        a for a in agent_allocations
+                                        a
+                                        for a in agent_allocations
                                         if (a["capacity"] - a["allocated"]) > 0
                                     ]
                                     if not agents_with_remaining_capacity:
                                         # All agents are at capacity - skip remaining rows
-                                        print(f"⚠️ [Step 5] No agents with remaining capacity - skipping remaining {len(unallocated_row_indices)} rows for {insurance_carrier}")
+                                        print(
+                                            f"⚠️ [Step 5] No agents with remaining capacity - skipping remaining {len(unallocated_row_indices)} rows for {insurance_carrier}"
+                                        )
                                         break
 
                                     # For First Priority and Unknown insurance, ONLY consider senior agents
@@ -11753,17 +12059,29 @@ def process_allocation_files_with_dates(
                                                 for row_idx in rows:
                                                     # PRIORITY STATUS CHECK: First filter - skip rows without Priority Status
                                                     row_priority_status = None
-                                                    if priority_status_col_name and pd.notna(
-                                                        processed_df.at[row_idx, priority_status_col_name]
+                                                    if (
+                                                        priority_status_col_name
+                                                        and pd.notna(
+                                                            processed_df.at[
+                                                                row_idx,
+                                                                priority_status_col_name,
+                                                            ]
+                                                        )
                                                     ):
                                                         row_priority_status = str(
-                                                            processed_df.at[row_idx, priority_status_col_name]
+                                                            processed_df.at[
+                                                                row_idx,
+                                                                priority_status_col_name,
+                                                            ]
                                                         ).strip()
-                                                    
+
                                                     # Skip row if no Priority Status (rows should have been filtered earlier, but double-check)
-                                                    if not row_priority_status or row_priority_status == "":
+                                                    if (
+                                                        not row_priority_status
+                                                        or row_priority_status == ""
+                                                    ):
                                                         continue
-                                                    
+
                                                     has_secondary = False
                                                     if pd.notna(
                                                         processed_df.at[
@@ -11798,17 +12116,29 @@ def process_allocation_files_with_dates(
                                                 for row_idx in rows:
                                                     # PRIORITY STATUS CHECK: First filter - skip rows without Priority Status
                                                     row_priority_status = None
-                                                    if priority_status_col_name and pd.notna(
-                                                        processed_df.at[row_idx, priority_status_col_name]
+                                                    if (
+                                                        priority_status_col_name
+                                                        and pd.notna(
+                                                            processed_df.at[
+                                                                row_idx,
+                                                                priority_status_col_name,
+                                                            ]
+                                                        )
                                                     ):
                                                         row_priority_status = str(
-                                                            processed_df.at[row_idx, priority_status_col_name]
+                                                            processed_df.at[
+                                                                row_idx,
+                                                                priority_status_col_name,
+                                                            ]
                                                         ).strip()
-                                                    
+
                                                     # Skip row if no Priority Status
-                                                    if not row_priority_status or row_priority_status == "":
+                                                    if (
+                                                        not row_priority_status
+                                                        or row_priority_status == ""
+                                                    ):
                                                         continue
-                                                    
+
                                                     filtered_rows.append(row_idx)
                                                 rows_without_secondary = filtered_rows
 
@@ -12143,22 +12473,30 @@ def process_allocation_files_with_dates(
                                                 # CRITICAL FIX: Check if ANY agent has remaining capacity
                                                 # This prevents endless loops when all agents are exhausted
                                                 agents_still_available = [
-                                                    a for a in agents
-                                                    if (a["capacity"] - a["allocated"]) > 0
+                                                    a
+                                                    for a in agents
+                                                    if (a["capacity"] - a["allocated"])
+                                                    > 0
                                                 ]
                                                 if not agents_still_available:
                                                     # All agents exhausted - exit Phase 2
-                                                    print(f"⚠️ [Phase 2] No agents with remaining capacity - skipping remaining {len(rows) - row_pos} rows")
+                                                    print(
+                                                        f"⚠️ [Phase 2] No agents with remaining capacity - skipping remaining {len(rows) - row_pos} rows"
+                                                    )
                                                 else:
                                                     phase2_agents = [
                                                         a
                                                         for a in agents
                                                         if a.get("assigned_insurance")
                                                         not in (None, carrier)
-                                                        and (a["capacity"] - a["allocated"])
+                                                        and (
+                                                            a["capacity"]
+                                                            - a["allocated"]
+                                                        )
                                                         > 0
                                                         and not a.get(
-                                                            "has_single_preference", False
+                                                            "has_single_preference",
+                                                            False,
                                                         )
                                                         and not a.get(
                                                             "has_sec_single_preference",
@@ -12199,9 +12537,9 @@ def process_allocation_files_with_dates(
                                                                     slice_rows,
                                                                     processed_df,
                                                                     remark_col,
-                                                                agent["name"],
+                                                                    agent["name"],
+                                                                )
                                                             )
-                                                        )
                                                         # Do NOT change assigned_insurance here (keep original primary)
                                                         agent_id = agent.get(
                                                             "id",
@@ -12322,6 +12660,10 @@ def process_allocation_files_with_dates(
                                     row_idx += actual_allocation
 
                     # Step 6: Final Fallback - Allocate ANY remaining unallocated rows to agents with matching capabilities
+                    step_6_start = time.time()
+                    print(
+                        f"🧭 [Step 6] Starting final fallback allocation at {time.time() - start_time:.2f}s"
+                    )
                     # This ensures that unallocated work matching agent capabilities gets allocated, regardless of allocation preference
                     if insurance_carrier_col:
                         # Find all unallocated rows
@@ -12346,11 +12688,11 @@ def process_allocation_files_with_dates(
                                     row_priority_status = str(
                                         processed_df.at[idx, priority_status_col_name]
                                     ).strip()
-                                
+
                                 # Skip row if no Priority Status
                                 if not row_priority_status or row_priority_status == "":
                                     continue
-                                
+
                                 # Skip rows with secondary insurance (those should go to Sec + X agents)
                                 if secondary_insurance_col and pd.notna(
                                     processed_df.at[idx, secondary_insurance_col]
@@ -12407,14 +12749,17 @@ def process_allocation_files_with_dates(
                                 # CRITICAL FIX: Check if ANY agent has remaining capacity
                                 # This prevents endless loops when all agents are exhausted
                                 agents_with_remaining_capacity = [
-                                    a for a in agent_allocations
+                                    a
+                                    for a in agent_allocations
                                     if (a["capacity"] - a["allocated"]) > 0
                                 ]
                                 if not agents_with_remaining_capacity:
                                     # All agents are at capacity - skip remaining unallocated rows
-                                    print(f"⚠️ [Step 6] No agents with remaining capacity - skipping remaining {len(unallocated_by_insurance)} insurance groups")
+                                    print(
+                                        f"⚠️ [Step 6] No agents with remaining capacity - skipping remaining {len(unallocated_by_insurance)} insurance groups"
+                                    )
                                     break
-                                
+
                                 # Find agents with matching insurance capabilities (except PB agents)
                                 # ✅ STRICT: Only agents with matching insurance are considered
                                 # ✅ PRIORITY: Separate junior/trainee and senior agents
@@ -12511,24 +12856,34 @@ def process_allocation_files_with_dates(
 
                                         if remaining_capacity > 0:
                                             agent = agent_with_capacity  # Use the agent we found
-                                            
+
                                             # PRIORITY STATUS CHECK: First filter - check if agent can work with this priority
                                             row_priority_status = None
                                             if priority_status_col_name and pd.notna(
-                                                processed_df.at[row_idx, priority_status_col_name]
+                                                processed_df.at[
+                                                    row_idx, priority_status_col_name
+                                                ]
                                             ):
                                                 row_priority_status = str(
-                                                    processed_df.at[row_idx, priority_status_col_name]
+                                                    processed_df.at[
+                                                        row_idx,
+                                                        priority_status_col_name,
+                                                    ]
                                                 ).strip()
-                                            
+
                                             # Skip row if no Priority Status (should have been filtered earlier, but double-check)
-                                            if not row_priority_status or row_priority_status == "":
+                                            if (
+                                                not row_priority_status
+                                                or row_priority_status == ""
+                                            ):
                                                 continue
-                                            
+
                                             # Check if agent can work with this priority
-                                            if not can_agent_work_with_priority(agent, row_priority_status):
+                                            if not can_agent_work_with_priority(
+                                                agent, row_priority_status
+                                            ):
                                                 continue
-                                            
+
                                             # Safety check: Verify this is not a "Not to work" row before allocating
                                             if remark_col and pd.notna(
                                                 processed_df.at[row_idx, remark_col]
@@ -12781,8 +13136,8 @@ def process_allocation_files_with_dates(
                                     agent_supervisor
                                 )
                                 # Set auditors for all rows allocated to this agent (blank if not present)
-                                processed_df.loc[valid_indices, "Auditors"] = (
-                                    agent.get("auditors", "")
+                                processed_df.loc[valid_indices, "Auditors"] = agent.get(
+                                    "auditors", ""
                                 )
 
                     # Calculate allocation statistics FIRST
@@ -13147,6 +13502,42 @@ def process_allocation_files_with_dates(
 
 💾 Ready to download the processed result file!"""
 
+        # Performance summary
+        total_processing_time = time.time() - start_time
+        print(f"\n{'='*60}")
+        print(f"📊 PERFORMANCE SUMMARY")
+        print(f"{'='*60}")
+        print(f"Total processing time: {total_processing_time:.2f}s")
+        if "step_3_5_time" in locals():
+            print(
+                f"  - Step 3.5 (NTC Allocation): {step_3_5_time:.2f}s ({step_3_5_time/total_processing_time*100:.1f}%)"
+            )
+        if "step_3_6_time" in locals():
+            print(
+                f"  - Step 3.6 (Secondary Insurance): {step_3_6_time:.2f}s ({step_3_6_time/total_processing_time*100:.1f}%)"
+            )
+        if "step_3_7_time" in locals():
+            print(
+                f"  - Step 3.7 (Single Allocation): {step_3_7_time:.2f}s ({step_3_7_time/total_processing_time*100:.1f}%)"
+            )
+        if "step_3_8_time" in locals():
+            print(
+                f"  - Step 3.8 (Mix Allocation): {step_3_8_time:.2f}s ({step_3_8_time/total_processing_time*100:.1f}%)"
+            )
+        if "step_4_time" in locals():
+            print(
+                f"  - Step 4 (Unmatched Insurance): {step_4_time:.2f}s ({step_4_time/total_processing_time*100:.1f}%)"
+            )
+        if "step_5_time" in locals():
+            print(
+                f"  - Step 5 (Matched Insurance): {step_5_time:.2f}s ({step_5_time/total_processing_time*100:.1f}%)"
+            )
+        if "step_6_time" in locals():
+            print(
+                f"  - Step 6 (Final Fallback): {step_6_time:.2f}s ({step_6_time/total_processing_time*100:.1f}%)"
+            )
+        print(f"{'='*60}\n")
+
         return result_message, processed_df
 
     except Exception as e:
@@ -13412,65 +13803,67 @@ def dashboard():
 def upload_email_staff_details():
     global email_staff_details, email_staff_filename
     global email_sent_agents
-    
+
     if "file" not in request.files:
         flash("No file provided", "error")
         return redirect("/?tab=email-allocation")
-    
+
     file = request.files["file"]
     if file.filename == "":
         flash("No file selected", "error")
         return redirect("/?tab=email-allocation")
-    
+
     try:
         # Save uploaded file temporarily
         filename = secure_filename(file.filename)
         file.save(filename)
-        
+
         # Load Excel file
         df = pd.read_excel(filename, sheet_name=0, parse_dates=False)
-        
+
         # Find Email id and Agent Name columns (case-insensitive)
         email_col = None
         agent_name_col = None
-        
+
         for col in df.columns:
             col_str = str(col).strip().lower()
             if "email" in col_str and "id" in col_str:
                 email_col = col
             elif "agent" in col_str and "name" in col_str:
                 agent_name_col = col
-        
+
         if not email_col:
             flash("Error: 'Email id' column not found in the file", "error")
             if os.path.exists(filename):
                 os.remove(filename)
             return redirect("/")
-        
+
         if not agent_name_col:
             flash("Error: 'Agent Name' column not found in the file", "error")
             if os.path.exists(filename):
                 os.remove(filename)
             return redirect("/")
-        
+
         # Reset email sent tracking when new staff details are uploaded
         email_sent_agents = set()
-        
+
         # Extract email and agent name data
         email_staff_details = []
         for idx, row in df.iterrows():
             email_id = row[email_col]
             agent_name = row[agent_name_col]
-            
+
             # Skip rows with missing data
             if pd.notna(email_id) and pd.notna(agent_name):
-                email_staff_details.append({
-                    "agent_name": str(agent_name).strip(),
-                    "email_id": str(email_id).strip()
-                })
-        
+                email_staff_details.append(
+                    {
+                        "agent_name": str(agent_name).strip(),
+                        "email_id": str(email_id).strip(),
+                    }
+                )
+
         email_staff_filename = filename
-        
+
         # If allocation file is already uploaded, filter staff details to match allocation agents
         if email_allocation_data is not None:
             # Find Agent Name column in allocation file
@@ -13480,7 +13873,7 @@ def upload_email_staff_details():
                 if "agent" in col_str and "name" in col_str:
                     allocation_agent_name_col = col
                     break
-            
+
             if allocation_agent_name_col:
                 # Extract unique agent names from allocation file
                 allocation_agent_names = set()
@@ -13488,25 +13881,35 @@ def upload_email_staff_details():
                     agent_name = row[allocation_agent_name_col]
                     if pd.notna(agent_name):
                         allocation_agent_names.add(str(agent_name).strip())
-                
+
                 # Filter staff details to only include agents present in allocation file
                 original_count = len(email_staff_details)
                 email_staff_details = [
-                    staff for staff in email_staff_details
+                    staff
+                    for staff in email_staff_details
                     if staff["agent_name"] in allocation_agent_names
                 ]
-                flash(f"✅ Staff details uploaded successfully! Loaded {original_count} staff members. Filtered to {len(email_staff_details)} matching agents from allocation file.", "success")
+                flash(
+                    f"✅ Staff details uploaded successfully! Loaded {original_count} staff members. Filtered to {len(email_staff_details)} matching agents from allocation file.",
+                    "success",
+                )
             else:
-                flash(f"✅ Staff details uploaded successfully! Loaded {len(email_staff_details)} staff members.", "success")
+                flash(
+                    f"✅ Staff details uploaded successfully! Loaded {len(email_staff_details)} staff members.",
+                    "success",
+                )
         else:
-            flash(f"✅ Staff details uploaded successfully! Loaded {len(email_staff_details)} staff members.", "success")
-        
+            flash(
+                f"✅ Staff details uploaded successfully! Loaded {len(email_staff_details)} staff members.",
+                "success",
+            )
+
         # Clean up temporary file
         if os.path.exists(filename):
             os.remove(filename)
-        
+
         return redirect("/?tab=email-allocation")
-        
+
     except Exception as e:
         flash(f"Error uploading file: {str(e)}", "error")
         if os.path.exists(filename):
@@ -13519,24 +13922,24 @@ def upload_email_staff_details():
 def upload_email_allocation():
     global email_allocation_data, email_allocation_filename, email_staff_details, email_allocation_agents_list
     global email_sent_agents
-    
+
     if "file" not in request.files:
         flash("No file provided", "error")
         return redirect("/?tab=email-allocation")
-    
+
     file = request.files["file"]
     if file.filename == "":
         flash("No file selected", "error")
         return redirect("/?tab=email-allocation")
-    
+
     try:
         # Save uploaded file temporarily
         filename = secure_filename(file.filename)
         file.save(filename)
-        
+
         # Load Excel file
         df = pd.read_excel(filename, sheet_name=0, parse_dates=False)
-        
+
         # Find Agent Name column (case-insensitive)
         agent_name_col = None
         for col in df.columns:
@@ -13544,26 +13947,28 @@ def upload_email_allocation():
             if "agent" in col_str and "name" in col_str:
                 agent_name_col = col
                 break
-        
+
         if not agent_name_col:
-            flash("Error: 'Agent Name' column not found in the allocation file", "error")
+            flash(
+                "Error: 'Agent Name' column not found in the allocation file", "error"
+            )
             if os.path.exists(filename):
                 os.remove(filename)
             return redirect("/?tab=email-allocation")
-        
+
         # Extract unique agent names from allocation file
         allocation_agent_names = set()
         for idx, row in df.iterrows():
             agent_name = row[agent_name_col]
             if pd.notna(agent_name):
                 allocation_agent_names.add(str(agent_name).strip())
-        
+
         # Reset email sent tracking when new allocation file is uploaded
         email_sent_agents = set()
-        
+
         email_allocation_data = df
         email_allocation_filename = filename
-        
+
         # Create a list of agents from allocation file for display
         # This will be used to show agents even if staff details aren't uploaded yet
         email_allocation_agents_list = []
@@ -13575,17 +13980,17 @@ def upload_email_allocation():
                     if staff["agent_name"] == agent_name:
                         email_id = staff["email_id"]
                         break
-            
-            email_allocation_agents_list.append({
-                "agent_name": agent_name,
-                "email_id": email_id
-            })
-        
+
+            email_allocation_agents_list.append(
+                {"agent_name": agent_name, "email_id": email_id}
+            )
+
         # Filter staff details to only include agents present in allocation file
         if email_staff_details:
             original_count = len(email_staff_details)
             email_staff_details = [
-                staff for staff in email_staff_details
+                staff
+                for staff in email_staff_details
                 if staff["agent_name"] in allocation_agent_names
             ]
             filtered_count = len(email_staff_details)
@@ -13595,19 +14000,25 @@ def upload_email_allocation():
                     if staff["agent_name"] == agent["agent_name"]:
                         agent["email_id"] = staff["email_id"]
                         break
-            flash(f"✅ Allocation file uploaded successfully! Found {len(allocation_agent_names)} agents. Filtered staff details from {original_count} to {filtered_count} matching agents.", "success")
+            flash(
+                f"✅ Allocation file uploaded successfully! Found {len(allocation_agent_names)} agents. Filtered staff details from {original_count} to {filtered_count} matching agents.",
+                "success",
+            )
         else:
-            flash(f"✅ Allocation file uploaded successfully! Found {len(allocation_agent_names)} agents. Upload staff details file to see email addresses.", "success")
-        
+            flash(
+                f"✅ Allocation file uploaded successfully! Found {len(allocation_agent_names)} agents. Upload staff details file to see email addresses.",
+                "success",
+            )
+
         # Clean up temporary file
         if os.path.exists(filename):
             os.remove(filename)
-        
+
         return redirect("/?tab=email-allocation")
-        
+
     except Exception as e:
         flash(f"Error uploading file: {str(e)}", "error")
-        if 'filename' in locals() and os.path.exists(filename):
+        if "filename" in locals() and os.path.exists(filename):
             os.remove(filename)
         return redirect("/?tab=email-allocation")
 
@@ -13619,20 +14030,20 @@ def send_email_to_agent():
     try:
         global email_allocation_data, email_allocation_filename
         global email_sent_agents
-        
+
         data = request.get_json()
         agent_name = data.get("agent_name")
         email_id = data.get("email_id")
-        
+
         if not agent_name:
             return jsonify({"success": False, "error": "Agent name is required"})
-        
+
         if not email_id:
             return jsonify({"success": False, "error": "Email ID is required"})
-        
+
         if email_allocation_data is None:
             return jsonify({"success": False, "error": "Allocation file not uploaded"})
-        
+
         # Find Agent Name column in allocation file
         agent_name_col = None
         for col in email_allocation_data.columns:
@@ -13640,26 +14051,37 @@ def send_email_to_agent():
             if "agent" in col_str and "name" in col_str:
                 agent_name_col = col
                 break
-        
+
         if not agent_name_col:
-            return jsonify({"success": False, "error": "Agent Name column not found in allocation file"})
-        
+            return jsonify(
+                {
+                    "success": False,
+                    "error": "Agent Name column not found in allocation file",
+                }
+            )
+
         # Filter rows for this agent
-        agent_rows = email_allocation_data[email_allocation_data[agent_name_col].astype(str).str.strip() == agent_name]
-        
+        agent_rows = email_allocation_data[
+            email_allocation_data[agent_name_col].astype(str).str.strip() == agent_name
+        ]
+
         if len(agent_rows) == 0:
-            return jsonify({"success": False, "error": f"No rows found for agent '{agent_name}'"})
-        
+            return jsonify(
+                {"success": False, "error": f"No rows found for agent '{agent_name}'"}
+            )
+
         # Create Excel file with agent's data
         temp_fd, temp_path = tempfile.mkstemp(suffix=".xlsx")
         try:
             with pd.ExcelWriter(temp_path, engine="openpyxl") as writer:
-                agent_rows.to_excel(writer, sheet_name=f"{agent_name}_Allocation", index=False)
-            
+                agent_rows.to_excel(
+                    writer, sheet_name=f"{agent_name}_Allocation", index=False
+                )
+
             # Read the Excel file as bytes
-            with open(temp_path, 'rb') as f:
+            with open(temp_path, "rb") as f:
                 excel_bytes = io.BytesIO(f.read())
-            
+
             # Prepare email content
             html_content = f"""
             <html>
@@ -13673,10 +14095,12 @@ def send_email_to_agent():
             </body>
             </html>
             """
-            
+
             # Send email
             today_date = datetime.now().strftime("%m/%d/%Y")
-            attachment_filename = f'{agent_name}_allocation_{datetime.now().strftime("%Y%m%d")}.xlsx'
+            attachment_filename = (
+                f'{agent_name}_allocation_{datetime.now().strftime("%Y%m%d")}.xlsx'
+            )
             success, message = send_email_with_resend(
                 to_email=email_id,
                 subject=f"Your Work Allocation - {agent_name} - {today_date}",
@@ -13684,19 +14108,24 @@ def send_email_to_agent():
                 attachment_data=excel_bytes,
                 attachment_filename=attachment_filename,
             )
-            
+
             if success:
                 # Track that email has been sent to this agent
                 email_sent_agents.add(agent_name)
-                return jsonify({"success": True, "message": f"Email sent successfully to {agent_name}"})
+                return jsonify(
+                    {
+                        "success": True,
+                        "message": f"Email sent successfully to {agent_name}",
+                    }
+                )
             else:
                 return jsonify({"success": False, "error": message})
-                
+
         finally:
             os.close(temp_fd)
             if os.path.exists(temp_path):
                 os.remove(temp_path)
-            
+
     except Exception as e:
         return jsonify({"success": False, "error": f"Error sending email: {str(e)}"})
 
@@ -13707,16 +14136,16 @@ def get_agent_allocation_data():
     """Get allocation data for a specific agent"""
     try:
         global email_allocation_data
-        
+
         data = request.get_json()
         agent_name = data.get("agent_name")
-        
+
         if not agent_name:
             return jsonify({"success": False, "error": "Agent name is required"})
-        
+
         if email_allocation_data is None:
             return jsonify({"success": False, "error": "Allocation file not uploaded"})
-        
+
         # Find Agent Name column in allocation file
         agent_name_col = None
         for col in email_allocation_data.columns:
@@ -13724,16 +14153,25 @@ def get_agent_allocation_data():
             if "agent" in col_str and "name" in col_str:
                 agent_name_col = col
                 break
-        
+
         if not agent_name_col:
-            return jsonify({"success": False, "error": "Agent Name column not found in allocation file"})
-        
+            return jsonify(
+                {
+                    "success": False,
+                    "error": "Agent Name column not found in allocation file",
+                }
+            )
+
         # Filter rows for this agent
-        agent_rows = email_allocation_data[email_allocation_data[agent_name_col].astype(str).str.strip() == agent_name].copy()
-        
+        agent_rows = email_allocation_data[
+            email_allocation_data[agent_name_col].astype(str).str.strip() == agent_name
+        ].copy()
+
         if len(agent_rows) == 0:
-            return jsonify({"success": False, "error": f"No rows found for agent '{agent_name}'"})
-        
+            return jsonify(
+                {"success": False, "error": f"No rows found for agent '{agent_name}'"}
+            )
+
         # Convert to dictionary format for JSON response
         columns = list(agent_rows.columns)
         rows = []
@@ -13747,17 +14185,21 @@ def get_agent_allocation_data():
                 else:
                     row_dict[col] = str(value)
             rows.append(row_dict)
-        
-        return jsonify({
-            "success": True,
-            "agent_name": agent_name,
-            "columns": columns,
-            "rows": rows,
-            "row_count": len(rows)
-        })
-        
+
+        return jsonify(
+            {
+                "success": True,
+                "agent_name": agent_name,
+                "columns": columns,
+                "rows": rows,
+                "row_count": len(rows),
+            }
+        )
+
     except Exception as e:
-        return jsonify({"success": False, "error": f"Error getting agent data: {str(e)}"})
+        return jsonify(
+            {"success": False, "error": f"Error getting agent data: {str(e)}"}
+        )
 
 
 @app.route("/download_agent_allocation_excel", methods=["POST"])
@@ -13766,16 +14208,19 @@ def download_agent_allocation_excel():
     """Download Excel file for a specific agent's allocation"""
     try:
         global email_allocation_data
-        
+
         data = request.get_json()
         agent_name = data.get("agent_name")
-        
+
         if not agent_name:
             return jsonify({"success": False, "error": "Agent name is required"}), 400
-        
+
         if email_allocation_data is None:
-            return jsonify({"success": False, "error": "Allocation file not uploaded"}), 400
-        
+            return (
+                jsonify({"success": False, "error": "Allocation file not uploaded"}),
+                400,
+            )
+
         # Find Agent Name column in allocation file
         agent_name_col = None
         for col in email_allocation_data.columns:
@@ -13783,35 +14228,60 @@ def download_agent_allocation_excel():
             if "agent" in col_str and "name" in col_str:
                 agent_name_col = col
                 break
-        
+
         if not agent_name_col:
-            return jsonify({"success": False, "error": "Agent Name column not found in allocation file"}), 400
-        
+            return (
+                jsonify(
+                    {
+                        "success": False,
+                        "error": "Agent Name column not found in allocation file",
+                    }
+                ),
+                400,
+            )
+
         # Filter rows for this agent
-        agent_rows = email_allocation_data[email_allocation_data[agent_name_col].astype(str).str.strip() == agent_name].copy()
-        
+        agent_rows = email_allocation_data[
+            email_allocation_data[agent_name_col].astype(str).str.strip() == agent_name
+        ].copy()
+
         if len(agent_rows) == 0:
-            return jsonify({"success": False, "error": f"No rows found for agent '{agent_name}'"}), 404
-        
+            return (
+                jsonify(
+                    {
+                        "success": False,
+                        "error": f"No rows found for agent '{agent_name}'",
+                    }
+                ),
+                404,
+            )
+
         # Create Excel file in memory
         excel_buffer = io.BytesIO()
         with pd.ExcelWriter(excel_buffer, engine="openpyxl") as writer:
-            agent_rows.to_excel(writer, sheet_name=f"{agent_name}_Allocation", index=False)
-        
+            agent_rows.to_excel(
+                writer, sheet_name=f"{agent_name}_Allocation", index=False
+            )
+
         excel_buffer.seek(0)
-        
+
         # Create filename
         filename = f'{agent_name}_allocation_{datetime.now().strftime("%Y%m%d")}.xlsx'
-        
+
         return send_file(
             excel_buffer,
-            mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             as_attachment=True,
-            download_name=filename
+            download_name=filename,
         )
-        
+
     except Exception as e:
-        return jsonify({"success": False, "error": f"Error creating Excel file: {str(e)}"}), 500
+        return (
+            jsonify(
+                {"success": False, "error": f"Error creating Excel file: {str(e)}"}
+            ),
+            500,
+        )
 
 
 @app.route("/upload_allocation", methods=["POST"])
@@ -13829,13 +14299,20 @@ def upload_allocation_file():
         return redirect("/")
 
     try:
+        import time
+
+        upload_start_time = time.time()
+
         # Save uploaded file temporarily
         filename = secure_filename(file.filename)
         file.save(filename)
+        print(f"⏱️ [Upload] File saved in {time.time() - upload_start_time:.2f}s")
 
         # Load Excel file
         # Use parse_dates=False to prevent automatic date parsing that differs between Windows and Mac
+        load_start = time.time()
         allocation_data = pd.read_excel(filename, sheet_name=None, parse_dates=False)
+        print(f"⏱️ [Upload] Excel file loaded in {time.time() - load_start:.2f}s")
 
         # Focus on "main" sheet if it exists, otherwise use all sheets
         sheets_to_process = {}
@@ -13846,6 +14323,7 @@ def upload_allocation_file():
 
         # Format insurance company names in "Insurance List" column for better allocation matching
         for sheet_name, df in sheets_to_process.items():
+            print(f"⏱️ [Upload] Processing sheet '{sheet_name}' with {len(df)} rows")
             # Find the Insurance List column (case-insensitive)
             insurance_working_col = None
             for col in df.columns:
@@ -13855,6 +14333,16 @@ def upload_allocation_file():
                     break
 
             if insurance_working_col:
+                # PERFORMANCE: Clear cache at start of upload to ensure fresh processing
+                global _format_insurance_cache
+                _format_insurance_cache.clear()
+
+                # Count non-null values for performance tracking
+                non_null_count = df[insurance_working_col].notna().sum()
+                print(
+                    f"⏱️ [Upload] Found {non_null_count} rows with insurance data in column '{insurance_working_col}'"
+                )
+
                 # Format each value in Insurance List column (which may contain multiple companies separated by ; or ,)
                 def format_insurance_list(value):
                     if pd.isna(value):
@@ -13889,13 +14377,23 @@ def upload_allocation_file():
                     return "; ".join(formatted_companies)
 
                 # First format the insurance names
+                format_start = time.time()
                 df[insurance_working_col] = df[insurance_working_col].apply(
                     format_insurance_list
                 )
+                format_time = time.time() - format_start
+                print(
+                    f"⏱️ [Upload] Formatting insurance names completed in {format_time:.2f}s (cache hits: {len(_format_insurance_cache)} unique names)"
+                )
 
                 # Then expand insurance groups (DD INS/INS and DD Toolkit/Toolkits/DD)
+                expand_start = time.time()
                 df[insurance_working_col] = df[insurance_working_col].apply(
                     expand_insurance_groups
+                )
+                expand_time = time.time() - expand_start
+                print(
+                    f"⏱️ [Upload] Expanding insurance groups completed in {expand_time:.2f}s"
                 )
 
                 if "main" in allocation_data:
@@ -13908,6 +14406,9 @@ def upload_allocation_file():
         # Update allocation_data to only include processed sheets
         if "main" in allocation_data:
             allocation_data = {"main": allocation_data["main"]}
+
+        total_upload_time = time.time() - upload_start_time
+        print(f"✅ [Upload] Total upload time: {total_upload_time:.2f}s")
 
         processing_result = f"✅ Allocation file uploaded successfully! Loaded {len(allocation_data)} sheet(s): {', '.join(list(allocation_data.keys()))}"
         flash(
@@ -14047,7 +14548,7 @@ def process_files():
         receive_dates = request.form.getlist("receive_dates")
         debug_count = request.form.get("debug_selected_count", "0")
         debug_count_second = request.form.get("debug_selected_count_second", "0")
-        
+
         # Get shift selection and excluded agents
         selected_shift = request.form.get("selected_shift")
         excluded_agents = request.form.getlist("excluded_agents")
@@ -14055,9 +14556,11 @@ def process_files():
         print(
             f"📅 [process_files] Selected dates - First: {len(appointment_dates)}, Second: {len(appointment_dates_second)}, Receive: {len(receive_dates)}"
         )
-        
+
         if selected_shift:
-            print(f"👥 [process_files] Selected shift: {selected_shift}, Excluded agents: {len(excluded_agents)}")
+            print(
+                f"👥 [process_files] Selected shift: {selected_shift}, Excluded agents: {len(excluded_agents)}"
+            )
 
         # Process the data file with selected dates and allocation data
         print(f"⚙️ [process_files] Calling process_allocation_files_with_dates...")
@@ -14159,7 +14662,10 @@ def download_result():
                             ).dt.strftime("%m/%d/%Y")
 
                     # Reorder columns to place Supervisor right after Agent Name
-                    if "Agent Name" in df_copy.columns and "Supervisor" in df_copy.columns:
+                    if (
+                        "Agent Name" in df_copy.columns
+                        and "Supervisor" in df_copy.columns
+                    ):
                         # Get the index of Agent Name column
                         agent_name_idx = df_copy.columns.get_loc("Agent Name")
                         # Remove Supervisor from its current position
@@ -14171,7 +14677,10 @@ def download_result():
                         df_copy = df_copy[cols]
 
                     # Reorder columns to place Auditors right after Supervisor
-                    if "Supervisor" in df_copy.columns and "Auditors" in df_copy.columns:
+                    if (
+                        "Supervisor" in df_copy.columns
+                        and "Auditors" in df_copy.columns
+                    ):
                         supervisor_idx = df_copy.columns.get_loc("Supervisor")
                         cols = df_copy.columns.tolist()
                         # Remove Auditors from its current position and insert after Supervisor
@@ -16684,8 +17193,8 @@ def get_shifts():
     try:
         # Get the first sheet from allocation file (staff details)
         staff_df = None
-        if 'main' in allocation_data:
-            staff_df = allocation_data['main']
+        if "main" in allocation_data:
+            staff_df = allocation_data["main"]
         elif len(allocation_data) > 0:
             staff_df = list(allocation_data.values())[0]
 
@@ -16695,26 +17204,26 @@ def get_shifts():
         # Find the Shift Group column
         shift_group_col = None
         for col in staff_df.columns:
-            if 'shift' in str(col).lower() and 'group' in str(col).lower():
+            if "shift" in str(col).lower() and "group" in str(col).lower():
                 shift_group_col = col
                 break
 
         if shift_group_col is None:
-            return jsonify({"error": "Shift Group column not found in staff details"}), 400
+            return (
+                jsonify({"error": "Shift Group column not found in staff details"}),
+                400,
+            )
 
         # Get unique shift values (1, 2, 3)
         unique_shifts = staff_df[shift_group_col].dropna().unique()
-        
+
         # Convert to integers and sort
         shifts = []
         shift_names = {1: "First Shift", 2: "Second Shift", 3: "Third Shift"}
-        
+
         for shift in sorted([int(float(s)) for s in unique_shifts if pd.notna(s)]):
             if shift in shift_names:
-                shifts.append({
-                    "value": shift,
-                    "label": shift_names[shift]
-                })
+                shifts.append({"value": shift, "label": shift_names[shift]})
 
         return jsonify({"shifts": shifts})
 
@@ -16731,17 +17240,17 @@ def get_agents_by_shift():
     if not allocation_data:
         return jsonify({"error": "No allocation file uploaded"}), 400
 
-    shift = request.args.get('shift')
+    shift = request.args.get("shift")
     if not shift:
         return jsonify({"error": "Shift parameter required"}), 400
 
     try:
         shift_value = int(shift)
-        
+
         # Get the first sheet from allocation file (staff details)
         staff_df = None
-        if 'main' in allocation_data:
-            staff_df = allocation_data['main']
+        if "main" in allocation_data:
+            staff_df = allocation_data["main"]
         elif len(allocation_data) > 0:
             staff_df = list(allocation_data.values())[0]
 
@@ -16753,21 +17262,24 @@ def get_agents_by_shift():
         agent_name_col = None
         status_col = None
         category_col = None
-        
+
         for col in staff_df.columns:
             col_lower = str(col).lower().strip()
-            if 'shift' in col_lower and 'group' in col_lower:
+            if "shift" in col_lower and "group" in col_lower:
                 shift_group_col = col
-            elif ('agent' in col_lower and 'name' in col_lower) or col_lower in ['name', 'agent']:
+            elif ("agent" in col_lower and "name" in col_lower) or col_lower in [
+                "name",
+                "agent",
+            ]:
                 agent_name_col = col
-            elif col_lower == 'status':
+            elif col_lower == "status":
                 status_col = col
-            elif col_lower == 'category':
+            elif col_lower == "category":
                 category_col = col
 
         if shift_group_col is None:
             return jsonify({"error": "Shift Group column not found"}), 400
-        
+
         if agent_name_col is None:
             return jsonify({"error": "Agent Name column not found"}), 400
 
@@ -16780,39 +17292,40 @@ def get_agents_by_shift():
         # Get agent names and IDs
         agents = []
         for idx, row in shift_agents.iterrows():
-            agent_name = str(row[agent_name_col]).strip() if pd.notna(row[agent_name_col]) else None
-            
+            agent_name = (
+                str(row[agent_name_col]).strip()
+                if pd.notna(row[agent_name_col])
+                else None
+            )
+
             # Skip if agent name is not valid
             if not agent_name:
                 continue
-            
+
             # Check Status column - exclude if "No Allocation"
             if status_col and pd.notna(row[status_col]):
                 status_value = str(row[status_col]).strip().lower()
-                if status_value == 'no allocation':
+                if status_value == "no allocation":
                     continue
-            
+
             # Check Category column - exclude if "Caller" or "Auditor"
             if category_col and pd.notna(row[category_col]):
                 category_value = str(row[category_col]).strip().lower()
-                if category_value in ['caller', 'auditor']:
+                if category_value in ["caller", "auditor"]:
                     continue
-            
+
             # Also check agent name directly for "auditor" or "caller"
-            if agent_name.lower() in ['auditor', 'caller']:
+            if agent_name.lower() in ["auditor", "caller"]:
                 continue
-                
+
             # Try to get agent ID if available
             agent_id = None
             for col in staff_df.columns:
-                if str(col).lower() == 'id':
+                if str(col).lower() == "id":
                     agent_id = str(row[col]).strip() if pd.notna(row[col]) else None
                     break
-            
-            agents.append({
-                "id": agent_id or f"{agent_name}_{idx}",
-                "name": agent_name
-            })
+
+            agents.append({"id": agent_id or f"{agent_name}_{idx}", "name": agent_name})
 
         return jsonify({"agents": agents})
 
@@ -18598,7 +19111,7 @@ def reset_app():
         data_filename = None
         processing_result = "🔄 Application reset successfully! All uploaded files and data have been cleared. All agent work files have been preserved."
         agent_allocations_data = None
-        
+
         # Reset email allocation variables
         email_staff_details = None
         email_staff_filename = None

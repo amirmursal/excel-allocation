@@ -6733,6 +6733,26 @@ def process_allocation_files_with_dates(
             set(appointment_dates_second) if appointment_dates_second else set()
         )
 
+        # Save original total rows count BEFORE any filtering
+        total_rows_original = len(processed_df)
+        
+        # Count ONLY "Not to work" rows from original dataframe BEFORE filtering
+        # Don't use should_skip_row_for_allocation as it includes NTC, NTBP, etc.
+        not_to_work_count_original = 0
+        if remark_col and remark_col in processed_df.columns:
+            for idx in processed_df.index:
+                if pd.notna(processed_df.at[idx, remark_col]):
+                    remark_val = str(processed_df.at[idx, remark_col]).strip().upper()
+                    remark_val_clean = remark_val.replace("-", " ").replace("_", " ").strip()
+                    # Check ONLY for "Not to work" (not NTC, NTBP, etc.)
+                    if (
+                        "NOT TO WORK" in remark_val
+                        or remark_val == "NOT TO WORK"
+                        or "NOTTOWORK" in remark_val.replace(" ", "")
+                        or remark_val_clean == "NOT TO WORK"
+                    ):
+                        not_to_work_count_original += 1
+
         # Filter out rows with "Need to allocate" in Agent Name column for allocation processing
         # But preserve them to include in the final file
         agent_name_col = None
@@ -6743,6 +6763,7 @@ def process_allocation_files_with_dates(
 
         # Save "Need to allocate" rows before filtering (to include in final file)
         need_to_allocate_rows = None
+        need_to_allocate_count = 0
         if agent_name_col and agent_name_col in processed_df.columns:
             # Create a mask to identify rows where Agent Name is "Need to allocate" (case-insensitive)
             need_to_allocate_mask = processed_df[agent_name_col].apply(
@@ -6750,6 +6771,7 @@ def process_allocation_files_with_dates(
             )
             if need_to_allocate_mask.any():
                 need_to_allocate_rows = processed_df[need_to_allocate_mask].copy()
+                need_to_allocate_count = len(need_to_allocate_rows)
 
             # Create a mask to exclude rows where Agent Name is "Need to allocate" for allocation processing
             mask = processed_df[agent_name_col].apply(
@@ -6757,7 +6779,7 @@ def process_allocation_files_with_dates(
             )
             processed_df = processed_df[mask].copy()
 
-        # Count statistics
+        # Count statistics (after filtering "Need to Allocate" rows)
         total_rows = len(processed_df)
         first_priority_count = 0
         second_priority_count = 0
@@ -7003,6 +7025,53 @@ def process_allocation_files_with_dates(
         else:
             print(f"⚠️ [Performance] No rows for third priority")
             third_priority_count = 0
+
+        # Filter out "Not to work" rows from priority counts
+        # Recalculate priority counts excluding ONLY "Not to work" rows (not NTC, NTBP, etc.)
+        if remark_col and remark_col in processed_df.columns:
+            # Helper function to check if row has "Not to work" in remarks
+            def is_not_to_work_row(idx):
+                if pd.notna(processed_df.at[idx, remark_col]):
+                    remark_val = str(processed_df.at[idx, remark_col]).strip().upper()
+                    remark_val_clean = remark_val.replace("-", " ").replace("_", " ").strip()
+                    return (
+                        "NOT TO WORK" in remark_val
+                        or remark_val == "NOT TO WORK"
+                        or "NOTTOWORK" in remark_val.replace(" ", "")
+                        or remark_val_clean == "NOT TO WORK"
+                    )
+                return False
+            
+            # Filter First Priority count - exclude "Not to work" rows
+            first_priority_indices_filtered = [
+                idx for idx in processed_df.index
+                if processed_df.at[idx, "Priority Status"] == "First Priority"
+                and not is_not_to_work_row(idx)
+            ]
+            first_priority_count = len(first_priority_indices_filtered)
+            
+            # Filter Second Priority count - exclude "Not to work" rows
+            second_priority_indices_filtered = [
+                idx for idx in processed_df.index
+                if processed_df.at[idx, "Priority Status"] == "Second Priority"
+                and not is_not_to_work_row(idx)
+            ]
+            second_priority_count = len(second_priority_indices_filtered)
+            
+            # Filter Third Priority count - exclude "Not to work" rows
+            third_priority_indices_filtered = [
+                idx for idx in processed_df.index
+                if processed_df.at[idx, "Priority Status"] == "Third Priority"
+                and not is_not_to_work_row(idx)
+            ]
+            third_priority_count = len(third_priority_indices_filtered)
+
+        # Initialize total_rows_excluding_not_to_work before allocation processing
+        # Calculate total_rows excluding "Not to work" rows and "Need to Allocate" rows
+        # Use original total rows count (before filtering) and subtract exclusions
+        total_rows_excluding_not_to_work = (
+            total_rows_original - need_to_allocate_count - not_to_work_count_original
+        )
 
         # Generate agent allocation summary if allocation_df is provided
         agent_summary = ""
@@ -13303,25 +13372,34 @@ def process_allocation_files_with_dates(
                     global agent_allocations_for_reminders
                     agent_allocations_for_reminders = agent_allocations
 
-                    # Total allocated is the count of unique row indices (excluding "Not to work" rows)
-                    total_allocated = len(all_allocated_indices)
+                    # Total allocated should match what's actually in the processed file
+                    # Count rows with non-empty Agent Name values directly from the DataFrame
+                    # This ensures the count matches what users see in the downloaded file
+                    if "Agent Name" in processed_df.columns:
+                        # Count rows where Agent Name is not empty/null
+                        total_allocated = processed_df["Agent Name"].notna().sum()
+                        # Also filter out empty strings
+                        total_allocated = len(
+                            processed_df[
+                                processed_df["Agent Name"].notna() 
+                                & (processed_df["Agent Name"].astype(str).str.strip() != "")
+                            ]
+                        )
+                    else:
+                        # Fallback to counting unique indices if Agent Name column doesn't exist
+                        total_allocated = len(all_allocated_indices)
+                    
                     agents_with_work = len(
                         [a for a in agent_allocations if a["allocated"] > 0]
                     )
 
-                    # Calculate total_rows excluding "Not to work" rows
-                    # This matches what we actually allocate (we skip "Not to work" rows)
-                    total_rows_excluding_not_to_work = total_rows
-                    if remark_col and remark_col in processed_df.columns:
-                        not_to_work_count = 0
-                        for idx in processed_df.index:
-                            if should_skip_row_for_allocation(
-                                idx, processed_df, remark_col
-                            ):
-                                not_to_work_count += 1
-                        total_rows_excluding_not_to_work = (
-                            total_rows - not_to_work_count
-                        )
+                    # Calculate total_rows excluding "Not to work" rows and "Need to Allocate" rows
+                    # Use original total rows count (before filtering) and subtract exclusions
+                    # Only exclude "Need to Allocate" rows if they exist
+                    # Calculate: Original Total - "Need to Allocate" (if exists) - "Not to work"
+                    total_rows_excluding_not_to_work = (
+                        total_rows_original - need_to_allocate_count - not_to_work_count_original
+                    )
 
                     # Get unmatched insurance companies info (if it exists from allocation process)
                     unmatched_info = ""
@@ -13487,7 +13565,7 @@ def process_allocation_files_with_dates(
         result_message = f"""✅ Priority processing completed successfully!
 
 📊 Processing Statistics:
-- Total rows processed: {total_rows}
+- Total rows processed: {total_rows_excluding_not_to_work}
 - First Priority: {first_priority_count} rows
 - Second Priority: {second_priority_count} rows
 - Third Priority: {third_priority_count} rows

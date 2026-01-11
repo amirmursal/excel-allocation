@@ -2038,13 +2038,20 @@ HTML_TEMPLATE = """
                     <!-- Agents Table -->
                     {% if email_allocation_agents_list %}
                     <div class="section" style="margin-top: 30px;">
-                        <h3>📋 Agents from Allocation File</h3>
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+                            <div>
+                                <h3 style="margin: 0;">📋 Agents from Allocation File</h3>
                         {% if email_allocation_filename %}
-                        <p style="color: #666; margin-bottom: 15px;">Allocation File: {{ email_allocation_filename }}</p>
+                                <p style="color: #666; margin-top: 5px; margin-bottom: 0;">Allocation File: {{ email_allocation_filename }}</p>
                         {% endif %}
                         {% if email_staff_filename %}
-                        <p style="color: #666; margin-bottom: 15px;">Staff Details File: {{ email_staff_filename }}</p>
+                                <p style="color: #666; margin-top: 5px; margin-bottom: 0;">Staff Details File: {{ email_staff_filename }}</p>
                         {% endif %}
+                            </div>
+                            <button type="button" id="send-all-btn" onclick="sendEmailToAllAgents()" style="background: linear-gradient(135deg, #e74c3c, #c0392b); color: white; border: none; padding: 12px 24px; border-radius: 5px; cursor: pointer; font-size: 14px; font-weight: 600; transition: transform 0.2s; box-shadow: 0 2px 4px rgba(0,0,0,0.2);">
+                                <i class="fas fa-paper-plane"></i> Send All
+                            </button>
+                        </div>
                         <div style="overflow-x: auto;">
                             <table style="width: 100%; border-collapse: collapse; background: white; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
                                 <thead>
@@ -2636,6 +2643,114 @@ HTML_TEMPLATE = """
                     buttonElement.style.opacity = '1';
                 }
                 statusDiv.innerHTML = '<div style="color: #dc3545; padding: 10px; background: #f8d7da; border-radius: 5px;"><i class="fas fa-exclamation-circle"></i> Error: ' + error.message + '</div>';
+            });
+        }
+        
+        function sendEmailToAllAgents() {
+            const sendAllBtn = document.getElementById('send-all-btn');
+            const statusDiv = document.getElementById('email-send-status');
+            
+            // Confirm before sending
+            if (!confirm('Are you sure you want to send emails to ALL agents? This may take a few minutes.')) {
+                return;
+            }
+            
+            // Disable button and show loading state
+            sendAllBtn.disabled = true;
+            sendAllBtn.style.cursor = 'not-allowed';
+            sendAllBtn.style.opacity = '0.6';
+            sendAllBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Sending...';
+            
+            statusDiv.innerHTML = '<div style="color: #007bff; padding: 10px; background: #e7f3ff; border-radius: 5px;"><i class="fas fa-spinner fa-spin"></i> Sending emails to all agents... This may take a few minutes. Please wait.</div>';
+            
+            fetch('/send_email_to_all_agents', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                }
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    // Show success message with summary
+                    statusDiv.innerHTML = '<div style="color: #28a745; padding: 15px; background: #d4edda; border-radius: 5px; margin-bottom: 10px;"><i class="fas fa-check-circle"></i> <strong>Bulk email sending completed!</strong><br>' + data.message + '</div>';
+                    
+                    // Show detailed results if available
+                    if (data.results) {
+                        let detailsHtml = '<div style="margin-top: 10px; padding: 10px; background: #f8f9fa; border-radius: 5px; font-size: 12px;">';
+                        
+                        if (data.results.success && data.results.success.length > 0) {
+                            detailsHtml += '<div style="color: #28a745; margin-bottom: 5px;"><strong>✓ Successfully sent (' + data.results.success.length + '):</strong></div>';
+                            data.results.success.forEach(function(item) {
+                                detailsHtml += '<div style="margin-left: 15px; margin-bottom: 2px;">• ' + item.agent_name + ' (' + item.email + ')</div>';
+                            });
+                        }
+                        
+                        if (data.results.failed && data.results.failed.length > 0) {
+                            detailsHtml += '<div style="color: #dc3545; margin-top: 10px; margin-bottom: 5px;"><strong>✗ Failed (' + data.results.failed.length + '):</strong></div>';
+                            data.results.failed.forEach(function(item) {
+                                detailsHtml += '<div style="margin-left: 15px; margin-bottom: 2px;">• ' + item.agent_name + ': ' + item.reason + '</div>';
+                            });
+                        }
+                        
+                        if (data.results.skipped && data.results.skipped.length > 0) {
+                            detailsHtml += '<div style="color: #ffc107; margin-top: 10px; margin-bottom: 5px;"><strong>⊘ Skipped (' + data.results.skipped.length + '):</strong></div>';
+                            data.results.skipped.forEach(function(item) {
+                                detailsHtml += '<div style="margin-left: 15px; margin-bottom: 2px;">• ' + item.agent_name + ': ' + item.reason + '</div>';
+                            });
+                        }
+                        
+                        detailsHtml += '</div>';
+                        statusDiv.innerHTML += detailsHtml;
+                    }
+                    
+                    // Show snackbar notification
+                    showSnackbar('Bulk email sending completed: ' + data.message);
+                    
+                    // Update all individual send buttons
+                    if (data.results && data.results.success) {
+                        data.results.success.forEach(function(item) {
+                            const agentId = item.agent_name.replace(/\s+/g, '_').replace(/'/g, '');
+                            const sendBtn = document.getElementById('send-btn-' + agentId);
+                            if (sendBtn) {
+                                sendBtn.disabled = true;
+                                sendBtn.style.background = '#95a5a6';
+                                sendBtn.style.cursor = 'not-allowed';
+                                sendBtn.style.opacity = '1';
+                                const sendBtnText = sendBtn.querySelector('.send-btn-text');
+                                if (sendBtnText) {
+                                    sendBtnText.textContent = 'Already sent';
+                                } else {
+                                    sendBtn.innerHTML = '<i class="fas fa-check"></i> Already sent';
+                                }
+                            }
+                        });
+                    }
+                    
+                    // Reload page after 3 seconds to update button states
+                    setTimeout(function() {
+                        window.location.reload();
+                    }, 3000);
+                } else {
+                    statusDiv.innerHTML = '<div style="color: #dc3545; padding: 10px; background: #f8d7da; border-radius: 5px;"><i class="fas fa-exclamation-circle"></i> Error: ' + (data.error || 'Failed to send emails') + '</div>';
+                    showSnackbar('Error: ' + (data.error || 'Failed to send emails'));
+                }
+                
+                // Re-enable button
+                sendAllBtn.disabled = false;
+                sendAllBtn.style.cursor = 'pointer';
+                sendAllBtn.style.opacity = '1';
+                sendAllBtn.innerHTML = '<i class="fas fa-paper-plane"></i> Send All';
+            })
+            .catch(error => {
+                statusDiv.innerHTML = '<div style="color: #dc3545; padding: 10px; background: #f8d7da; border-radius: 5px;"><i class="fas fa-exclamation-circle"></i> Error: ' + error.message + '</div>';
+                showSnackbar('Error: ' + error.message);
+                
+                // Re-enable button
+                sendAllBtn.disabled = false;
+                sendAllBtn.style.cursor = 'pointer';
+                sendAllBtn.style.opacity = '1';
+                sendAllBtn.innerHTML = '<i class="fas fa-paper-plane"></i> Send All';
             });
         }
         
@@ -6131,9 +6246,11 @@ def can_agent_work_with_priority(agent, row_priority_status):
         True if agent can work with this priority, False otherwise
 
     Rules:
-        - Agent "First" → only "First Priority" rows
-        - Agent "Second" → "Second Priority" or "Third Priority" rows
-        - Agent empty/null → defaults to "Second" (can work on Second/Third Priority)
+        - Agent "First" → can work with ALL priorities (First, Second, Third)
+          Note: First Priority rows should be allocated to First agents first before they get Second/Third Priority rows
+        - Agent "Second" → STRICT: can ONLY work with "Second Priority" or "Third Priority" rows
+          Note: Second agents MUST NEVER get "First Priority" rows
+        - Agent empty/null → defaults to "Second" (can work on Second/Third Priority only)
     """
     # Get agent's priority status capability
     agent_priority_status = agent.get(
@@ -6152,15 +6269,21 @@ def can_agent_work_with_priority(agent, row_priority_status):
         str(row_priority_status).strip().upper() if row_priority_status else ""
     )
 
-    # If agent is "First", can only work with "First Priority" rows
+    # If agent is "First", can work with ALL priorities (First, Second, Third)
+    # First Priority rows should be allocated to First agents first, but they can also get Second/Third Priority rows
     if agent_priority_upper == "FIRST":
-        return row_priority_upper == "FIRST PRIORITY"
+        return row_priority_upper in [
+            "FIRST PRIORITY",
+            "SECOND PRIORITY",
+            "THIRD PRIORITY",
+        ]
 
-    # If agent is "Second" (or default), can work with "Second Priority" or "Third Priority" rows
+    # If agent is "Second" (or default), STRICT: can ONLY work with "Second Priority" or "Third Priority" rows
+    # MUST NEVER get "First Priority" rows
     if agent_priority_upper == "SECOND":
         return row_priority_upper in ["SECOND PRIORITY", "THIRD PRIORITY"]
 
-    # Default: if agent priority status is unknown, default to "Second" behavior
+    # Default: if agent priority status is unknown, default to "Second" behavior (strict)
     return row_priority_upper in ["SECOND PRIORITY", "THIRD PRIORITY"]
 
 
@@ -6735,7 +6858,7 @@ def process_allocation_files_with_dates(
 
         # Save original total rows count BEFORE any filtering
         total_rows_original = len(processed_df)
-        
+
         # Count ONLY "Not to work" rows from original dataframe BEFORE filtering
         # Don't use should_skip_row_for_allocation as it includes NTC, NTBP, etc.
         not_to_work_count_original = 0
@@ -6743,7 +6866,9 @@ def process_allocation_files_with_dates(
             for idx in processed_df.index:
                 if pd.notna(processed_df.at[idx, remark_col]):
                     remark_val = str(processed_df.at[idx, remark_col]).strip().upper()
-                    remark_val_clean = remark_val.replace("-", " ").replace("_", " ").strip()
+                    remark_val_clean = (
+                        remark_val.replace("-", " ").replace("_", " ").strip()
+                    )
                     # Check ONLY for "Not to work" (not NTC, NTBP, etc.)
                     if (
                         "NOT TO WORK" in remark_val
@@ -7033,7 +7158,9 @@ def process_allocation_files_with_dates(
             def is_not_to_work_row(idx):
                 if pd.notna(processed_df.at[idx, remark_col]):
                     remark_val = str(processed_df.at[idx, remark_col]).strip().upper()
-                    remark_val_clean = remark_val.replace("-", " ").replace("_", " ").strip()
+                    remark_val_clean = (
+                        remark_val.replace("-", " ").replace("_", " ").strip()
+                    )
                     return (
                         "NOT TO WORK" in remark_val
                         or remark_val == "NOT TO WORK"
@@ -7041,26 +7168,29 @@ def process_allocation_files_with_dates(
                         or remark_val_clean == "NOT TO WORK"
                     )
                 return False
-            
+
             # Filter First Priority count - exclude "Not to work" rows
             first_priority_indices_filtered = [
-                idx for idx in processed_df.index
+                idx
+                for idx in processed_df.index
                 if processed_df.at[idx, "Priority Status"] == "First Priority"
                 and not is_not_to_work_row(idx)
             ]
             first_priority_count = len(first_priority_indices_filtered)
-            
+
             # Filter Second Priority count - exclude "Not to work" rows
             second_priority_indices_filtered = [
-                idx for idx in processed_df.index
+                idx
+                for idx in processed_df.index
                 if processed_df.at[idx, "Priority Status"] == "Second Priority"
                 and not is_not_to_work_row(idx)
             ]
             second_priority_count = len(second_priority_indices_filtered)
-            
+
             # Filter Third Priority count - exclude "Not to work" rows
             third_priority_indices_filtered = [
-                idx for idx in processed_df.index
+                idx
+                for idx in processed_df.index
                 if processed_df.at[idx, "Priority Status"] == "Third Priority"
                 and not is_not_to_work_row(idx)
             ]
@@ -7647,6 +7777,13 @@ def process_allocation_files_with_dates(
                                 priority_status = "Second"
                             # If empty/null or unknown, keep default "Second"
 
+                        # SPECIAL RULE: Force "Saba Khan" to always be "Second" priority (cannot get First Priority rows)
+                        if (
+                            agent_name
+                            and str(agent_name).strip().lower() == "saba khan"
+                        ):
+                            priority_status = "Second"
+
                         # Get supervisor value
                         agent_supervisor = ""
                         if supervisor_col and pd.notna(row[supervisor_col]):
@@ -8222,6 +8359,16 @@ def process_allocation_files_with_dates(
                                                 attempts += 1
                                                 continue
 
+                                            # CRITICAL SAFETY CHECK: Verify agent has PB preference before allocating NTBP row
+                                            if not agent.get(
+                                                "has_pb_preference", False
+                                            ):
+                                                print(
+                                                    f"⚠️ [Step 2.5] ERROR: Attempted to allocate NTBP row to non-PB agent '{agent.get('name', 'Unknown')}' - skipping"
+                                                )
+                                                attempts += 1
+                                                continue
+
                                             # Check appointment date limit before allocating
                                             if can_allocate_row_by_appointment_date(
                                                 agent,
@@ -8433,14 +8580,64 @@ def process_allocation_files_with_dates(
                             )
 
                         # Find agents with NTC in Allocation Preference column
-                        # Valid values: "Sec+NTC", "Sec+Mix+NTC", "Mix+NTC", "NTC"
+                        # STRICT: Only "Sec+NTC", "Sec+Mix+NTC", "Mix+NTC", or "NTC"
                         agents_with_ntc_preference = []
                         ntc_agent_names = []
                         for a in agent_allocations:
                             # Check has_ntc_preference flag (set when "NTC" is in Allocation Preference column)
                             if a.get("has_ntc_preference", False):
-                                agents_with_ntc_preference.append(a)
-                                ntc_agent_names.append(a.get("name", "Unknown"))
+                                # STRICT CHECK: Only allow "Sec+NTC", "Sec+Mix+NTC", "Mix+NTC", or "NTC"
+                                allocation_pref_raw = a.get(
+                                    "allocation_preference_raw", ""
+                                )
+                                if allocation_pref_raw:
+                                    allocation_pref_upper = (
+                                        str(allocation_pref_raw).strip().upper()
+                                    )
+                                    # Check if it's one of the allowed combinations
+                                    # "Sec+NTC" or "SEC+NTC" or "SEC + NTC" (with spaces)
+                                    # "Sec+Mix+NTC" or "SEC+MIX+NTC" or "SEC + MIX + NTC" (with spaces)
+                                    # "Mix+NTC" or "MIX+NTC" or "MIX + NTC" (with spaces)
+                                    # "NTC" (exact match)
+                                    is_valid_ntc_pref = False
+                                    if allocation_pref_upper == "NTC":
+                                        is_valid_ntc_pref = True
+                                    elif (
+                                        "SEC" in allocation_pref_upper
+                                        and "NTC" in allocation_pref_upper
+                                    ):
+                                        # Check if it's Sec+NTC or Sec+Mix+NTC (not Sec+Mix without NTC)
+                                        if "MIX" in allocation_pref_upper:
+                                            # Must be Sec+Mix+NTC
+                                            if (
+                                                "SEC" in allocation_pref_upper
+                                                and "MIX" in allocation_pref_upper
+                                                and "NTC" in allocation_pref_upper
+                                            ):
+                                                is_valid_ntc_pref = True
+                                        else:
+                                            # Must be Sec+NTC
+                                            if (
+                                                "SEC" in allocation_pref_upper
+                                                and "NTC" in allocation_pref_upper
+                                            ):
+                                                is_valid_ntc_pref = True
+                                    elif (
+                                        "MIX" in allocation_pref_upper
+                                        and "NTC" in allocation_pref_upper
+                                        and "SEC" not in allocation_pref_upper
+                                    ):
+                                        # Must be Mix+NTC (without Sec)
+                                        is_valid_ntc_pref = True
+
+                                    if is_valid_ntc_pref:
+                                        agents_with_ntc_preference.append(a)
+                                        ntc_agent_names.append(a.get("name", "Unknown"))
+                                else:
+                                    # If no raw preference stored, fall back to has_ntc_preference flag
+                                    # But this should not happen if allocation_preference_raw is properly stored
+                                    agents_with_ntc_preference.append(a)
+                                    ntc_agent_names.append(a.get("name", "Unknown"))
 
                         # Debug output for troubleshooting
                         if all_ntc_rows:
@@ -8538,6 +8735,60 @@ def process_allocation_files_with_dates(
                                             if not can_agent_work_with_priority(
                                                 agent, row_priority_status
                                             ):
+                                                attempts += 1
+                                                continue
+
+                                            # CRITICAL SAFETY CHECK: Verify agent has valid NTC preference before allocating NTC row
+                                            # Only allow "Sec+NTC", "Sec+Mix+NTC", "Mix+NTC", or "NTC"
+                                            allocation_pref_raw = agent.get(
+                                                "allocation_preference_raw", ""
+                                            )
+                                            is_valid_ntc_agent = False
+                                            if allocation_pref_raw:
+                                                allocation_pref_upper = (
+                                                    str(allocation_pref_raw)
+                                                    .strip()
+                                                    .upper()
+                                                )
+                                                if allocation_pref_upper == "NTC":
+                                                    is_valid_ntc_agent = True
+                                                elif (
+                                                    "SEC" in allocation_pref_upper
+                                                    and "NTC" in allocation_pref_upper
+                                                ):
+                                                    if "MIX" in allocation_pref_upper:
+                                                        # Must be Sec+Mix+NTC
+                                                        if (
+                                                            "SEC"
+                                                            in allocation_pref_upper
+                                                            and "MIX"
+                                                            in allocation_pref_upper
+                                                            and "NTC"
+                                                            in allocation_pref_upper
+                                                        ):
+                                                            is_valid_ntc_agent = True
+                                                    else:
+                                                        # Must be Sec+NTC
+                                                        if (
+                                                            "SEC"
+                                                            in allocation_pref_upper
+                                                            and "NTC"
+                                                            in allocation_pref_upper
+                                                        ):
+                                                            is_valid_ntc_agent = True
+                                                elif (
+                                                    "MIX" in allocation_pref_upper
+                                                    and "NTC" in allocation_pref_upper
+                                                    and "SEC"
+                                                    not in allocation_pref_upper
+                                                ):
+                                                    # Must be Mix+NTC (without Sec)
+                                                    is_valid_ntc_agent = True
+
+                                            if not is_valid_ntc_agent:
+                                                print(
+                                                    f"⚠️ [Step 3.5] ERROR: Attempted to allocate NTC row to invalid agent '{agent.get('name', 'Unknown')}' with preference '{allocation_pref_raw}' - skipping"
+                                                )
                                                 attempts += 1
                                                 continue
 
@@ -10733,7 +10984,7 @@ def process_allocation_files_with_dates(
                                                 ):
                                                     continue
 
-                                            # Skip rows with "Not to work" remark and NTC rows
+                                            # Skip rows with "Not to work" remark, NTBP rows, and NTC rows
                                             if remark_col and pd.notna(
                                                 processed_df.at[idx, remark_col]
                                             ):
@@ -10744,6 +10995,9 @@ def process_allocation_files_with_dates(
                                                     .strip()
                                                     .upper()
                                                 )
+                                                # Skip NTBP rows - they should only go to PB preference agents (Step 2.5)
+                                                if remark_val == "NTBP":
+                                                    continue
                                                 # Skip NTC rows - they should only go to NTC preference agents (Step 3.5)
                                                 if remark_val == "NTC":
                                                     continue
@@ -11064,10 +11318,14 @@ def process_allocation_files_with_dates(
 
                                         # Only senior agents can handle unmatched insurance
                                         # Also include "Afreen Ansari" even if not marked as senior
+                                        # CRITICAL: Exclude PB preference agents - they should ONLY get NTBP rows (allocated in Step 2.5)
                                         available_senior_agents = [
                                             a
                                             for a in senior_agents
                                             if (a["capacity"] - a["allocated"]) > 0
+                                            and not a.get(
+                                                "has_pb_preference", False
+                                            )  # Exclude PB preference agents
                                         ]
 
                                         # Also add "Afreen Ansari" if not already in the list and has capacity
@@ -11795,17 +12053,22 @@ def process_allocation_files_with_dates(
                                             continue
 
                         # Step 5: Allocate remaining matched insurance companies to capable agents (normal allocation)
+                        # PRIORITY-BASED ALLOCATION: Process priorities globally (First → Second → Third)
+                        # This ensures First Priority rows are allocated FIRST to fill First agents' capacity
+                        # before Second/Third Priority rows are allocated
                         # SAFETY: timeout checks in while-loops will prevent hangs
-                        for (
-                            insurance_carrier,
-                            priority_data,
-                        ) in matched_data_by_insurance_priority.items():
-                            # Process First Priority first (senior agents get priority)
-                            for priority in [
-                                "First Priority",
-                                "Second Priority",
-                                "Third Priority",
-                            ]:
+
+                        # Process priorities in order: First Priority → Second Priority → Third Priority
+                        for priority in [
+                            "First Priority",
+                            "Second Priority",
+                            "Third Priority",
+                        ]:
+                            # For each priority, loop through ALL insurance carriers
+                            for (
+                                insurance_carrier,
+                                priority_data,
+                            ) in matched_data_by_insurance_priority.items():
                                 if priority in priority_data:
                                     row_indices = priority_data[priority]
 
@@ -11902,19 +12165,31 @@ def process_allocation_files_with_dates(
                                         if (a["capacity"] - a["allocated"]) > 0
                                     ]
                                     if not agents_with_remaining_capacity:
-                                        # All agents are at capacity - skip remaining rows
+                                        # All agents are at capacity - skip remaining rows for this insurance carrier
+                                        # Continue to next insurance carrier for this priority
                                         print(
-                                            f"⚠️ [Step 5] No agents with remaining capacity - skipping remaining {len(unallocated_row_indices)} rows for {insurance_carrier}"
+                                            f"⚠️ [Step 5] No agents with remaining capacity - skipping remaining {len(unallocated_row_indices)} {priority} rows for {insurance_carrier}"
                                         )
-                                        break
+                                        continue  # Continue to next insurance carrier for this priority
 
-                                    # For First Priority and Unknown insurance, ONLY consider senior agents
-                                    # For Second/Third Priority, EXCLUDE senior agents (they should only get First Priority)
-                                    if (
-                                        priority == "First Priority"
-                                        or insurance_carrier == "Unknown"
-                                    ):
-                                        # First Priority and Unknown: ONLY senior agents
+                                    # For First Priority: ONLY consider "First" agents (priority_status="First")
+                                    # This ensures First Priority rows go to First agents FIRST before they get Second/Third Priority rows
+                                    # For Second/Third Priority: Consider both "First" agents (if they have capacity) and "Second" agents
+                                    # "Second" agents MUST NEVER get First Priority rows (strict rule enforced by can_agent_work_with_priority)
+                                    if priority == "First Priority":
+                                        # First Priority: ONLY "First" agents (priority_status="First")
+                                        agents_to_check = [
+                                            a
+                                            for a in agent_allocations
+                                            if a.get(
+                                                "priority_status", "Second"
+                                            ).upper()
+                                            == "FIRST"
+                                        ]
+                                        if not agents_to_check:
+                                            continue
+                                    elif insurance_carrier == "Unknown":
+                                        # Unknown insurance: Consider senior agents (legacy behavior)
                                         agents_to_check = [
                                             a
                                             for a in agent_allocations
@@ -11923,11 +12198,16 @@ def process_allocation_files_with_dates(
                                         if not agents_to_check:
                                             continue
                                     else:
-                                        # Second/Third Priority: EXCLUDE senior agents - they should only handle First Priority work
+                                        # Second/Third Priority: Consider "First" agents (if they have capacity) and "Second" agents
+                                        # "First" agents can work on Second/Third Priority after First Priority rows are allocated
+                                        # "Second" agents can ONLY work on Second/Third Priority (strict - enforced by can_agent_work_with_priority)
                                         agents_to_check = [
                                             a
                                             for a in agent_allocations
-                                            if not a["is_senior"]
+                                            if a.get(
+                                                "priority_status", "Second"
+                                            ).upper()
+                                            in ["FIRST", "SECOND"]
                                         ]
                                         if not agents_to_check:
                                             continue
@@ -12016,12 +12296,26 @@ def process_allocation_files_with_dates(
                                             capable_agents.append(agent)
 
                                     if capable_agents:
-                                        # For First Priority and Unknown, verify we only have seniors
-                                        if (
-                                            priority == "First Priority"
-                                            or insurance_carrier == "Unknown"
-                                        ):
-                                            # Double-check: filter to only seniors with capacity
+                                        # For First Priority, verify we only have "First" agents (priority_status="First")
+                                        # This ensures First Priority rows go to First agents FIRST
+                                        if priority == "First Priority":
+                                            # Double-check: filter to only "First" agents with capacity
+                                            available_first_agents = [
+                                                a
+                                                for a in capable_agents
+                                                if a.get(
+                                                    "priority_status", "Second"
+                                                ).upper()
+                                                == "FIRST"
+                                                and (a["capacity"] - a["allocated"]) > 0
+                                            ]
+                                            if available_first_agents:
+                                                capable_agents = available_first_agents
+                                            else:
+                                                # No First agent capacity available - skip allocation (keep unassigned)
+                                                continue
+                                        elif insurance_carrier == "Unknown":
+                                            # For Unknown insurance, verify we only have seniors (legacy behavior)
                                             available_senior = [
                                                 a
                                                 for a in capable_agents
@@ -12728,6 +13022,187 @@ def process_allocation_files_with_dates(
                                     )
                                     row_idx += actual_allocation
 
+                    # Step 5.5: Reshuffle First Priority rows to First agents
+                    # If "First" agents have Second/Third Priority rows and unallocated First Priority rows exist,
+                    # replace Second/Third Priority rows with First Priority rows
+                    print(
+                        f"🔄 [Step 5.5] Starting First Priority reshuffling at {time.time() - start_time:.2f}s"
+                    )
+
+                    # Find all First agents
+                    first_agents = [
+                        a
+                        for a in agent_allocations
+                        if a.get("priority_status", "Second").upper() == "FIRST"
+                    ]
+
+                    if first_agents and priority_status_col_name:
+                        # Find unallocated First Priority rows
+                        unallocated_first_priority_rows = []
+                        for idx in processed_df.index:
+                            # Skip already allocated rows
+                            if idx in [
+                                i for ag in agent_allocations for i in ag["row_indices"]
+                            ]:
+                                continue
+
+                            # Check if row is First Priority
+                            row_priority_status = None
+                            if pd.notna(processed_df.at[idx, priority_status_col_name]):
+                                row_priority_status = (
+                                    str(processed_df.at[idx, priority_status_col_name])
+                                    .strip()
+                                    .upper()
+                                )
+
+                            if row_priority_status == "FIRST PRIORITY":
+                                # Check if agent can work with this insurance company
+                                if insurance_carrier_col and pd.notna(
+                                    processed_df.at[idx, insurance_carrier_col]
+                                ):
+                                    row_insurance = str(
+                                        processed_df.at[idx, insurance_carrier_col]
+                                    ).strip()
+
+                                    # Check if any First agent can work with this insurance
+                                    for agent in first_agents:
+                                        if can_agent_work_with_insurance(
+                                            agent, row_insurance
+                                        ):
+                                            unallocated_first_priority_rows.append(idx)
+                                            break
+
+                        if unallocated_first_priority_rows:
+                            print(
+                                f"📋 [Step 5.5] Found {len(unallocated_first_priority_rows)} unallocated First Priority rows"
+                            )
+
+                            # For each First agent, check if they have Second/Third Priority rows
+                            for agent in first_agents:
+                                if not unallocated_first_priority_rows:
+                                    break
+
+                                # Find Second/Third Priority rows allocated to this agent
+                                agent_second_third_rows = []
+                                for row_idx in agent["row_indices"]:
+                                    if pd.notna(
+                                        processed_df.at[
+                                            row_idx, priority_status_col_name
+                                        ]
+                                    ):
+                                        row_priority = (
+                                            str(
+                                                processed_df.at[
+                                                    row_idx, priority_status_col_name
+                                                ]
+                                            )
+                                            .strip()
+                                            .upper()
+                                        )
+                                        if row_priority in [
+                                            "SECOND PRIORITY",
+                                            "THIRD PRIORITY",
+                                        ]:
+                                            agent_second_third_rows.append(row_idx)
+
+                                if (
+                                    agent_second_third_rows
+                                    and unallocated_first_priority_rows
+                                ):
+                                    # Try to replace Second/Third Priority rows with First Priority rows
+                                    rows_to_replace = min(
+                                        len(agent_second_third_rows),
+                                        len(unallocated_first_priority_rows),
+                                        agent[
+                                            "allocated"
+                                        ],  # Don't exceed current allocation
+                                    )
+
+                                    # Find matching First Priority rows for this agent
+                                    matching_first_rows = []
+                                    for (
+                                        first_row_idx
+                                    ) in unallocated_first_priority_rows[:]:
+                                        # Check if agent can work with this insurance
+                                        if insurance_carrier_col and pd.notna(
+                                            processed_df.at[
+                                                first_row_idx, insurance_carrier_col
+                                            ]
+                                        ):
+                                            row_insurance = str(
+                                                processed_df.at[
+                                                    first_row_idx, insurance_carrier_col
+                                                ]
+                                            ).strip()
+
+                                            if can_agent_work_with_insurance(
+                                                agent, row_insurance
+                                            ):
+                                                # Check appointment date limit
+                                                if (
+                                                    appointment_date_col
+                                                    and can_allocate_row_by_appointment_date(
+                                                        agent,
+                                                        first_row_idx,
+                                                        processed_df,
+                                                        appointment_date_col,
+                                                    )
+                                                ):
+                                                    matching_first_rows.append(
+                                                        first_row_idx
+                                                    )
+                                                    unallocated_first_priority_rows.remove(
+                                                        first_row_idx
+                                                    )
+
+                                                    if (
+                                                        len(matching_first_rows)
+                                                        >= rows_to_replace
+                                                    ):
+                                                        break
+                                                elif not appointment_date_col:
+                                                    # No appointment date column, proceed without date check
+                                                    matching_first_rows.append(
+                                                        first_row_idx
+                                                    )
+                                                    unallocated_first_priority_rows.remove(
+                                                        first_row_idx
+                                                    )
+
+                                                    if (
+                                                        len(matching_first_rows)
+                                                        >= rows_to_replace
+                                                    ):
+                                                        break
+
+                                    if matching_first_rows:
+                                        # Replace Second/Third Priority rows with First Priority rows
+                                        rows_to_remove = agent_second_third_rows[
+                                            : len(matching_first_rows)
+                                        ]
+
+                                        # Remove Second/Third Priority rows from agent
+                                        for row_idx in rows_to_remove:
+                                            agent["row_indices"].remove(row_idx)
+                                            agent["allocated"] -= 1
+                                            processed_df.at[row_idx, "Agent Name"] = ""
+
+                                        # Add First Priority rows to agent
+                                        for row_idx in matching_first_rows:
+                                            agent["row_indices"].append(row_idx)
+                                            agent["allocated"] += 1
+                                            processed_df.at[row_idx, "Agent Name"] = (
+                                                agent["name"]
+                                            )
+
+                                        print(
+                                            f"✅ [Step 5.5] Replaced {len(matching_first_rows)} Second/Third Priority rows with First Priority rows for agent '{agent['name']}'"
+                                        )
+
+                    print(
+                        f"✅ [Step 5.5] Finished First Priority reshuffling at {time.time() - start_time:.2f}s"
+                    )
+
                     # Step 6: Final Fallback - Allocate ANY remaining unallocated rows to agents with matching capabilities
                     step_6_start = time.time()
                     print(
@@ -13056,6 +13531,146 @@ def process_allocation_files_with_dates(
                                     carrier_groups.items(), key=lambda kv: kv[1]
                                 )[0]
                                 agent["assigned_insurance"] = dominant
+                    # CRITICAL VALIDATION: Ensure NTBP rows are ONLY allocated to PB preference agents
+                    # Remove any NTBP rows from non-PB agents
+                    if remark_col and remark_col in processed_df.columns:
+                        print(
+                            f"🔍 [Validation] Checking NTBP row allocations at {time.time() - start_time:.2f}s"
+                        )
+                        ntbp_rows_fixed = 0
+                        for agent in agent_allocations:
+                            # Check if agent has PB preference
+                            has_pb_pref = agent.get("has_pb_preference", False)
+
+                            if not has_pb_pref:
+                                # This agent should NOT have NTBP rows
+                                rows_to_remove = []
+                                for row_idx in agent.get("row_indices", []):
+                                    if row_idx < len(processed_df):
+                                        # Check if this row has NTBP remark
+                                        if pd.notna(
+                                            processed_df.at[row_idx, remark_col]
+                                        ):
+                                            remark_val = (
+                                                str(
+                                                    processed_df.at[row_idx, remark_col]
+                                                )
+                                                .strip()
+                                                .upper()
+                                            )
+                                            if remark_val == "NTBP":
+                                                rows_to_remove.append(row_idx)
+
+                                # Remove NTBP rows from this non-PB agent
+                                if rows_to_remove:
+                                    for row_idx in rows_to_remove:
+                                        if row_idx in agent["row_indices"]:
+                                            agent["row_indices"].remove(row_idx)
+                                            agent["allocated"] = max(
+                                                0, agent["allocated"] - 1
+                                            )
+                                            processed_df.at[row_idx, "Agent Name"] = ""
+                                            ntbp_rows_fixed += 1
+                                    print(
+                                        f"⚠️ [Validation] Removed {len(rows_to_remove)} NTBP row(s) from non-PB agent '{agent['name']}'"
+                                    )
+
+                        if ntbp_rows_fixed > 0:
+                            print(
+                                f"✅ [Validation] Fixed {ntbp_rows_fixed} NTBP row allocation(s) - removed from non-PB agents"
+                            )
+                        else:
+                            print(
+                                f"✅ [Validation] All NTBP rows are correctly allocated to PB preference agents"
+                            )
+
+                        # CRITICAL VALIDATION: Ensure NTC rows are ONLY allocated to valid NTC preference agents
+                        # Only allow "Sec+NTC", "Sec+Mix+NTC", "Mix+NTC", or "NTC"
+                        print(
+                            f"🔍 [Validation] Checking NTC row allocations at {time.time() - start_time:.2f}s"
+                        )
+                        ntc_rows_fixed = 0
+                        for agent in agent_allocations:
+                            # Check if agent has valid NTC preference
+                            allocation_pref_raw = agent.get(
+                                "allocation_preference_raw", ""
+                            )
+                            is_valid_ntc_agent = False
+                            if allocation_pref_raw:
+                                allocation_pref_upper = (
+                                    str(allocation_pref_raw).strip().upper()
+                                )
+                                if allocation_pref_upper == "NTC":
+                                    is_valid_ntc_agent = True
+                                elif (
+                                    "SEC" in allocation_pref_upper
+                                    and "NTC" in allocation_pref_upper
+                                ):
+                                    if "MIX" in allocation_pref_upper:
+                                        # Must be Sec+Mix+NTC
+                                        if (
+                                            "SEC" in allocation_pref_upper
+                                            and "MIX" in allocation_pref_upper
+                                            and "NTC" in allocation_pref_upper
+                                        ):
+                                            is_valid_ntc_agent = True
+                                    else:
+                                        # Must be Sec+NTC
+                                        if (
+                                            "SEC" in allocation_pref_upper
+                                            and "NTC" in allocation_pref_upper
+                                        ):
+                                            is_valid_ntc_agent = True
+                                elif (
+                                    "MIX" in allocation_pref_upper
+                                    and "NTC" in allocation_pref_upper
+                                    and "SEC" not in allocation_pref_upper
+                                ):
+                                    # Must be Mix+NTC (without Sec)
+                                    is_valid_ntc_agent = True
+
+                            if not is_valid_ntc_agent:
+                                # This agent should NOT have NTC rows
+                                rows_to_remove = []
+                                for row_idx in agent.get("row_indices", []):
+                                    if row_idx < len(processed_df):
+                                        # Check if this row has NTC remark
+                                        if pd.notna(
+                                            processed_df.at[row_idx, remark_col]
+                                        ):
+                                            remark_val = (
+                                                str(
+                                                    processed_df.at[row_idx, remark_col]
+                                                )
+                                                .strip()
+                                                .upper()
+                                            )
+                                            if remark_val == "NTC":
+                                                rows_to_remove.append(row_idx)
+
+                                # Remove NTC rows from this invalid agent
+                                if rows_to_remove:
+                                    for row_idx in rows_to_remove:
+                                        if row_idx in agent["row_indices"]:
+                                            agent["row_indices"].remove(row_idx)
+                                            agent["allocated"] = max(
+                                                0, agent["allocated"] - 1
+                                            )
+                                            processed_df.at[row_idx, "Agent Name"] = ""
+                                            ntc_rows_fixed += 1
+                                    print(
+                                        f"⚠️ [Validation] Removed {len(rows_to_remove)} NTC row(s) from invalid agent '{agent['name']}' (preference: '{allocation_pref_raw}')"
+                                    )
+
+                        if ntc_rows_fixed > 0:
+                            print(
+                                f"✅ [Validation] Fixed {ntc_rows_fixed} NTC row allocation(s) - removed from invalid agents"
+                            )
+                        else:
+                            print(
+                                f"✅ [Validation] All NTC rows are correctly allocated to valid NTC preference agents (Sec+NTC, Sec+Mix+NTC, Mix+NTC, or NTC)"
+                            )
+
                     # Sort agents by name for display
                     dedup_start_time = time.time()
                     print(
@@ -13381,14 +13996,17 @@ def process_allocation_files_with_dates(
                         # Also filter out empty strings
                         total_allocated = len(
                             processed_df[
-                                processed_df["Agent Name"].notna() 
-                                & (processed_df["Agent Name"].astype(str).str.strip() != "")
+                                processed_df["Agent Name"].notna()
+                                & (
+                                    processed_df["Agent Name"].astype(str).str.strip()
+                                    != ""
+                                )
                             ]
                         )
                     else:
                         # Fallback to counting unique indices if Agent Name column doesn't exist
                         total_allocated = len(all_allocated_indices)
-                    
+
                     agents_with_work = len(
                         [a for a in agent_allocations if a["allocated"] > 0]
                     )
@@ -13398,7 +14016,9 @@ def process_allocation_files_with_dates(
                     # Only exclude "Need to Allocate" rows if they exist
                     # Calculate: Original Total - "Need to Allocate" (if exists) - "Not to work"
                     total_rows_excluding_not_to_work = (
-                        total_rows_original - need_to_allocate_count - not_to_work_count_original
+                        total_rows_original
+                        - need_to_allocate_count
+                        - not_to_work_count_original
                     )
 
                     # Get unmatched insurance companies info (if it exists from allocation process)
@@ -14206,6 +14826,150 @@ def send_email_to_agent():
 
     except Exception as e:
         return jsonify({"success": False, "error": f"Error sending email: {str(e)}"})
+
+
+@app.route("/send_email_to_all_agents", methods=["POST"])
+@admin_required
+def send_email_to_all_agents():
+    """Send email to all agents from email allocation"""
+    try:
+        global email_allocation_data, email_allocation_filename
+        global email_allocation_agents_list, email_sent_agents
+
+        if email_allocation_data is None:
+            return jsonify({"success": False, "error": "Allocation file not uploaded"})
+
+        if not email_allocation_agents_list:
+            return jsonify(
+                {"success": False, "error": "No agents found in allocation file"}
+            )
+
+        # Find Agent Name column in allocation file
+        agent_name_col = None
+        for col in email_allocation_data.columns:
+            col_str = str(col).strip().lower()
+            if "agent" in col_str and "name" in col_str:
+                agent_name_col = col
+                break
+
+        if not agent_name_col:
+            return jsonify(
+                {
+                    "success": False,
+                    "error": "Agent Name column not found in allocation file",
+                }
+            )
+
+        results = {"success": [], "failed": [], "skipped": []}
+
+        today_date = datetime.now().strftime("%m/%d/%Y")
+
+        # Send email to each agent
+        for agent in email_allocation_agents_list:
+            agent_name = agent["agent_name"]
+            email_id = agent["email_id"]
+
+            # Skip if already sent
+            if agent_name in email_sent_agents:
+                results["skipped"].append(
+                    {"agent_name": agent_name, "reason": "Email already sent"}
+                )
+                continue
+
+            # Skip if no email ID
+            if not email_id:
+                results["skipped"].append(
+                    {"agent_name": agent_name, "reason": "No email ID found"}
+                )
+                continue
+
+            try:
+                # Filter rows for this agent
+                agent_rows = email_allocation_data[
+                    email_allocation_data[agent_name_col].astype(str).str.strip()
+                    == agent_name
+                ]
+
+                if len(agent_rows) == 0:
+                    results["failed"].append(
+                        {
+                            "agent_name": agent_name,
+                            "reason": f"No rows found for agent '{agent_name}'",
+                        }
+                    )
+                    continue
+
+                # Create Excel file with agent's data
+                temp_fd, temp_path = tempfile.mkstemp(suffix=".xlsx")
+                try:
+                    with pd.ExcelWriter(temp_path, engine="openpyxl") as writer:
+                        agent_rows.to_excel(
+                            writer, sheet_name=f"{agent_name}_Allocation", index=False
+                        )
+
+                    # Read the Excel file as bytes
+                    with open(temp_path, "rb") as f:
+                        excel_bytes = io.BytesIO(f.read())
+
+                    # Prepare email content
+                    html_content = f"""
+                    <html>
+                    <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
+                        <h2>Your Work Allocation - {agent_name}</h2>
+                        <p>Dear {agent_name},</p>
+                        <p>Your work allocation has been prepared and is attached to this email.</p>
+                        <p><strong>Total Rows:</strong> {len(agent_rows)}</p>
+                        <p>Please review the attached Excel file for detailed allocation information.</p>
+                        <p>Best regards,<br>Allocation System</p>
+                    </body>
+                    </html>
+                    """
+
+                    # Send email
+                    attachment_filename = f'{agent_name}_allocation_{datetime.now().strftime("%Y%m%d")}.xlsx'
+                    success, message = send_email_with_resend(
+                        to_email=email_id,
+                        subject=f"Your Work Allocation - {agent_name} - {today_date}",
+                        html_content=html_content,
+                        attachment_data=excel_bytes,
+                        attachment_filename=attachment_filename,
+                    )
+
+                    if success:
+                        # Track that email has been sent to this agent
+                        email_sent_agents.add(agent_name)
+                        results["success"].append(
+                            {"agent_name": agent_name, "email": email_id}
+                        )
+                    else:
+                        results["failed"].append(
+                            {"agent_name": agent_name, "reason": message}
+                        )
+
+                finally:
+                    os.close(temp_fd)
+                    if os.path.exists(temp_path):
+                        os.remove(temp_path)
+
+            except Exception as e:
+                results["failed"].append(
+                    {"agent_name": agent_name, "reason": f"Error: {str(e)}"}
+                )
+
+        # Prepare summary message
+        total_agents = len(email_allocation_agents_list)
+        success_count = len(results["success"])
+        failed_count = len(results["failed"])
+        skipped_count = len(results["skipped"])
+
+        summary_message = f"Sent: {success_count}, Failed: {failed_count}, Skipped: {skipped_count} out of {total_agents} agents"
+
+        return jsonify(
+            {"success": True, "message": summary_message, "results": results}
+        )
+
+    except Exception as e:
+        return jsonify({"success": False, "error": f"Error sending emails: {str(e)}"})
 
 
 @app.route("/get_agent_allocation_data", methods=["POST"])
@@ -16677,6 +17441,202 @@ def upload_status_file():
     return redirect(url_for("upload_work_file"))
 
 
+def calculate_summary_from_deduplicated_data(combined_df):
+    """
+    Calculate Summary sheet data from deduplicated combined dataframe.
+
+    Args:
+        combined_df: DataFrame with deduplicated agent data (must have "Agent Name" column)
+
+    Returns:
+        DataFrame with summary data per agent
+    """
+    if combined_df.empty:
+        return pd.DataFrame()
+
+    # Find required columns (case-insensitive)
+    agent_name_col = None
+    remark_col = None
+
+    for col in combined_df.columns:
+        col_lower = col.lower()
+        if col_lower == "agent name":
+            agent_name_col = col
+        elif col_lower in ["remark", "remarks"]:
+            remark_col = col
+
+    # If required columns not found, return empty DataFrame
+    if not agent_name_col or not remark_col:
+        return pd.DataFrame()
+
+    # Collect all unique remark statuses
+    all_remark_statuses = set()
+    agent_data = {}
+
+    # Group by agent name
+    for agent_name, agent_df in combined_df.groupby(agent_name_col):
+        agent_name_str = str(agent_name)
+
+        # Total assigned count
+        total_assigned_count = len(agent_df)
+
+        # Get remark column data
+        remark_data = agent_df[remark_col]
+
+        # Count empty/NaN remarks
+        empty_remarks_count = remark_data.isna().sum()
+
+        # Count completed (non-Workable remarks)
+        non_empty_remarks = remark_data.dropna()
+        completed_count = 0
+        if len(non_empty_remarks) > 0:
+            non_empty_remarks_str = non_empty_remarks.astype(str).str.lower()
+            completed_count = len(
+                non_empty_remarks_str[non_empty_remarks_str != "workable"]
+            )
+
+        # Count remarks by status
+        remarks_dict = {}
+        for remark in non_empty_remarks:
+            remark_normalized = str(remark).strip()
+            if remark_normalized:
+                remark_lower = remark_normalized.lower()
+                all_remark_statuses.add(remark_normalized)  # Keep original case
+
+                if remark_lower in remarks_dict:
+                    remarks_dict[remark_lower]["count"] += 1
+                else:
+                    remarks_dict[remark_lower] = {
+                        "count": 1,
+                        "display": remark_normalized,
+                    }
+
+        agent_data[agent_name_str] = {
+            "total_assigned_count": total_assigned_count,
+            "completed_count": completed_count,
+            "empty_remarks_count": empty_remarks_count,
+            "remarks_dict": remarks_dict,
+        }
+
+    # Add empty remarks as a status if needed
+    all_remark_statuses.add("(Empty/No Remark)")
+
+    # Sort remark statuses alphabetically
+    sorted_remark_statuses = sorted(all_remark_statuses)
+
+    # Create summary data
+    summary_data = []
+    for agent_name, data in agent_data.items():
+        row_data = {
+            "Agent": agent_name,
+            "Total Assigned Count": data["total_assigned_count"],
+            "Completed Count": data["completed_count"],
+            "Empty Remarks Count": data["empty_remarks_count"],
+        }
+
+        # Add count for each remark status column
+        for remark_status in sorted_remark_statuses:
+            if remark_status == "(Empty/No Remark)":
+                row_data[remark_status] = data["empty_remarks_count"]
+            else:
+                # Find matching remark (case-insensitive)
+                count = 0
+                for remark_lower, remark_info in data["remarks_dict"].items():
+                    if remark_info["display"] == remark_status:
+                        count = remark_info["count"]
+                        break
+                row_data[remark_status] = count
+
+        summary_data.append(row_data)
+
+    return pd.DataFrame(summary_data)
+
+
+def deduplicate_consolidated_data(combined_df):
+    """
+    Deduplicate consolidated agent data based on Patient ID + Dental Primary Ins Carr.
+
+    Logic:
+    - Group rows by Patient ID + Dental Primary Ins Carr
+    - If any row in a group has priority remark ("updated", "QCP", "ASST"), keep ONLY those priority rows
+    - If no row has priority remark, keep all rows (including empty remarks)
+    - If multiple rows have priority remarks, keep all of them
+
+    Args:
+        combined_df: DataFrame with all agent data combined
+
+    Returns:
+        DataFrame with deduplicated rows
+    """
+    if combined_df.empty:
+        return combined_df
+
+    # Find required columns (case-insensitive)
+    patient_id_col = None
+    insurance_col = None
+    remark_col = None
+
+    for col in combined_df.columns:
+        col_lower = col.lower()
+        if col_lower == "patient id":
+            patient_id_col = col
+        elif col_lower == "dental primary ins carr":
+            insurance_col = col
+        elif col_lower in ["remark", "remarks"]:
+            remark_col = col
+
+    # If required columns not found, return original dataframe
+    if not patient_id_col or not insurance_col or not remark_col:
+        return combined_df
+
+    # Priority remark values (case-insensitive)
+    priority_remarks = {"updated", "qcp", "asst"}
+
+    # Create a copy to avoid modifying original
+    df = combined_df.copy()
+
+    # Normalize remark column for comparison (handle NaN/empty)
+    df["_remark_normalized"] = df[remark_col].astype(str).str.strip().str.lower()
+    df["_remark_normalized"] = df["_remark_normalized"].replace(
+        ["nan", "none", ""], None
+    )
+
+    # Create grouping key
+    df["_group_key"] = (
+        df[patient_id_col].astype(str) + "|||" + df[insurance_col].astype(str)
+    )
+
+    # List to store indices to keep
+    indices_to_keep = []
+
+    # Process each group
+    for group_key, group_df in df.groupby("_group_key"):
+        group_indices = group_df.index.tolist()
+
+        # Check if any row has priority remark
+        has_priority = False
+        priority_indices = []
+
+        for idx in group_indices:
+            remark_val = df.loc[idx, "_remark_normalized"]
+            if remark_val and remark_val in priority_remarks:
+                has_priority = True
+                priority_indices.append(idx)
+
+        if has_priority:
+            # Keep only rows with priority remarks
+            indices_to_keep.extend(priority_indices)
+        else:
+            # Keep all rows (no priority remarks found)
+            indices_to_keep.extend(group_indices)
+
+    # Clean up temporary columns
+    df = df.drop(columns=["_remark_normalized", "_group_key"])
+
+    # Return deduplicated dataframe
+    return df.loc[indices_to_keep].reset_index(drop=True)
+
+
 @app.route("/consolidate_agent_files", methods=["POST"])
 @admin_required
 def consolidate_agent_files():
@@ -16703,209 +17663,7 @@ def consolidate_agent_files():
             return None
 
         with pd.ExcelWriter(excel_buffer, engine="openpyxl") as writer:
-            # First pass: Collect all unique remark statuses across all agents
-            all_remark_statuses = set()
-            agent_remarks_data = {}  # Store remarks data per agent
-
-            for work_file in work_files:
-                file_data = work_file.get_file_data()
-                agent_name = work_file.agent.name
-                remarks_dict = (
-                    {}
-                )  # Dictionary to store all remarks with counts for this agent
-
-                if file_data:
-                    if isinstance(file_data, dict):
-                        # Multiple sheets - process all sheets except Summary
-                        for sheet_name, sheet_data in file_data.items():
-                            # Skip Summary sheet
-                            if sheet_name.lower() == "summary":
-                                continue
-
-                            if isinstance(sheet_data, pd.DataFrame):
-                                # Get remark column
-                                remark_col = find_remark_column(sheet_data)
-
-                                if remark_col:
-                                    # Get all remarks (including NaN)
-                                    remark_data = sheet_data[remark_col]
-
-                                    # Count all non-empty remarks by status
-                                    non_empty_remarks = remark_data.dropna()
-                                    for remark in non_empty_remarks:
-                                        # Normalize remark (strip whitespace, handle case)
-                                        remark_normalized = str(remark).strip()
-                                        if remark_normalized:
-                                            remark_lower = remark_normalized.lower()
-                                            # Use original case for display, but normalize for counting
-                                            if remark_lower in remarks_dict:
-                                                remarks_dict[remark_lower] = {
-                                                    "count": remarks_dict[remark_lower][
-                                                        "count"
-                                                    ]
-                                                    + 1,
-                                                    "display": remarks_dict[
-                                                        remark_lower
-                                                    ][
-                                                        "display"
-                                                    ],  # Keep first seen case
-                                                }
-                                            else:
-                                                remarks_dict[remark_lower] = {
-                                                    "count": 1,
-                                                    "display": remark_normalized,  # Keep original case
-                                                }
-                    elif isinstance(file_data, pd.DataFrame):
-                        # Single DataFrame
-                        # Get remark column
-                        remark_col = find_remark_column(file_data)
-
-                        if remark_col:
-                            # Get all remarks (including NaN)
-                            remark_data = file_data[remark_col]
-
-                            # Count all non-empty remarks by status
-                            non_empty_remarks = remark_data.dropna()
-                            for remark in non_empty_remarks:
-                                # Normalize remark (strip whitespace, handle case)
-                                remark_normalized = str(remark).strip()
-                                if remark_normalized:
-                                    remark_lower = remark_normalized.lower()
-                                    # Use original case for display, but normalize for counting
-                                    if remark_lower in remarks_dict:
-                                        remarks_dict[remark_lower] = {
-                                            "count": remarks_dict[remark_lower]["count"]
-                                            + 1,
-                                            "display": remarks_dict[remark_lower][
-                                                "display"
-                                            ],  # Keep first seen case
-                                        }
-                                    else:
-                                        remarks_dict[remark_lower] = {
-                                            "count": 1,
-                                            "display": remark_normalized,  # Keep original case
-                                        }
-
-                # Store remarks data for this agent
-                agent_remarks_data[agent_name] = remarks_dict
-
-                # Collect all unique remark statuses (using display name)
-                for remark_info in remarks_dict.values():
-                    all_remark_statuses.add(remark_info["display"])
-
-            # Add empty remarks as a status if needed
-            all_remark_statuses.add("(Empty/No Remark)")
-
-            # Sort remark statuses alphabetically for consistent column order
-            sorted_remark_statuses = sorted(all_remark_statuses)
-
-            # Second pass: Create summary data with all remark statuses as columns
-            summary_data = []
-
-            for work_file in work_files:
-                file_data = work_file.get_file_data()
-                agent_name = work_file.agent.name
-                total_assigned_count = 0
-                completed_count = 0
-                empty_remarks_count = 0
-
-                # Calculate counts from file data
-                if file_data:
-                    if isinstance(file_data, dict):
-                        # Multiple sheets - count rows from all sheets except Summary
-                        for sheet_name, sheet_data in file_data.items():
-                            # Skip Summary sheet
-                            if sheet_name.lower() == "summary":
-                                continue
-
-                            if isinstance(sheet_data, pd.DataFrame):
-                                # Total assigned count = all rows (excluding header)
-                                total_assigned_count += len(sheet_data)
-
-                                # Get remark column
-                                remark_col = find_remark_column(sheet_data)
-
-                                if remark_col:
-                                    # Get all remarks (including NaN)
-                                    remark_data = sheet_data[remark_col]
-
-                                    # Count empty/NaN remarks
-                                    empty_remarks_count += remark_data.isna().sum()
-
-                                    # Count completed (non-Workable remarks)
-                                    non_empty_remarks = remark_data.dropna()
-                                    # Convert to string first to handle mixed types
-                                    if len(non_empty_remarks) > 0:
-                                        non_empty_remarks_str = (
-                                            non_empty_remarks.astype(str).str.lower()
-                                        )
-                                        completed_count += len(
-                                            non_empty_remarks_str[
-                                                non_empty_remarks_str != "workable"
-                                            ]
-                                        )
-                    elif isinstance(file_data, pd.DataFrame):
-                        # Single DataFrame
-                        # Total assigned count = all rows (excluding header)
-                        total_assigned_count = len(file_data)
-
-                        # Get remark column
-                        remark_col = find_remark_column(file_data)
-
-                        if remark_col:
-                            # Get all remarks (including NaN)
-                            remark_data = file_data[remark_col]
-
-                            # Count empty/NaN remarks
-                            empty_remarks_count = remark_data.isna().sum()
-
-                            # Count completed (non-Workable remarks)
-                            non_empty_remarks = remark_data.dropna()
-                            # Convert to string first to handle mixed types
-                            if len(non_empty_remarks) > 0:
-                                non_empty_remarks_str = non_empty_remarks.astype(
-                                    str
-                                ).str.lower()
-                                completed_count = len(
-                                    non_empty_remarks_str[
-                                        non_empty_remarks_str != "workable"
-                                    ]
-                                )
-                            else:
-                                completed_count = 0
-
-                # Create row data for this agent
-                row_data = {
-                    "Agent": agent_name,
-                    "Total Assigned Count": total_assigned_count,
-                    "Completed Count": completed_count,
-                    "Empty Remarks Count": empty_remarks_count,
-                }
-
-                # Get remarks data for this agent
-                agent_remarks = agent_remarks_data.get(agent_name, {})
-
-                # Add count for each remark status column
-                for remark_status in sorted_remark_statuses:
-                    if remark_status == "(Empty/No Remark)":
-                        # Use the empty_remarks_count
-                        row_data[remark_status] = empty_remarks_count
-                    else:
-                        # Find matching remark in agent's remarks (case-insensitive)
-                        count = 0
-                        for remark_lower, remark_info in agent_remarks.items():
-                            if remark_info["display"] == remark_status:
-                                count = remark_info["count"]
-                                break
-                        row_data[remark_status] = count
-
-                summary_data.append(row_data)
-
-            # Create summary DataFrame
-            summary_df = pd.DataFrame(summary_data)
-            summary_df.to_excel(writer, sheet_name="Summary", index=False)
-
-            # Combine all agent data into one sheet
+            # Combine all agent data into one sheet first
             all_agent_data = []
             for work_file in work_files:
                 file_data = work_file.get_file_data()
@@ -16928,6 +17686,14 @@ def consolidate_agent_files():
             # Create combined sheet with all agent data
             if all_agent_data:
                 combined_df = pd.concat(all_agent_data, ignore_index=True)
+
+                # Deduplicate rows based on Patient ID + Dental Primary Ins Carr with priority remark logic
+                combined_df = deduplicate_consolidated_data(combined_df)
+
+                # Calculate Summary from deduplicated data
+                summary_df = calculate_summary_from_deduplicated_data(combined_df)
+                if not summary_df.empty:
+                    summary_df.to_excel(writer, sheet_name="Summary", index=False)
 
                 # Format all date columns to MM/DD/YYYY using robust parser to avoid blanks
                 for col in combined_df.columns:
@@ -16960,6 +17726,17 @@ def consolidate_agent_files():
                 combined_df.to_excel(writer, sheet_name="All Agent Data", index=False)
             else:
                 # Fallback if no data found
+                empty_summary_df = pd.DataFrame(
+                    [
+                        {
+                            "Agent": "No agents",
+                            "Total Assigned Count": 0,
+                            "Completed Count": 0,
+                            "Empty Remarks Count": 0,
+                        }
+                    ]
+                )
+                empty_summary_df.to_excel(writer, sheet_name="Summary", index=False)
                 simple_df = pd.DataFrame(
                     [{"Message": "No data available from any agent"}]
                 )
@@ -18783,6 +19560,9 @@ def create_consolidated_data():
             # Create combined sheet with all agent data
             if all_agent_data:
                 combined_df = pd.concat(all_agent_data, ignore_index=True)
+
+                # Deduplicate rows based on Patient ID + Dental Primary Ins Carr with priority remark logic
+                combined_df = deduplicate_consolidated_data(combined_df)
 
                 # Format all date columns to MM/DD/YYYY format
                 for col in combined_df.columns:

@@ -14721,6 +14721,80 @@ def upload_email_allocation():
         return redirect("/?tab=email-allocation")
 
 
+def format_excel_with_priority_status(excel_path, sheet_name):
+    """
+    Format Excel file to color the "Priority Status" column cell red where value is "First Priority".
+    Only the "Priority Status" cell text will be colored red (#e74c3c), not the entire row.
+
+    Args:
+        excel_path: Path to the Excel file
+        sheet_name: Name of the sheet to format
+    """
+    try:
+        from openpyxl import load_workbook
+        from openpyxl.styles import Font
+
+        # Load the workbook
+        wb = load_workbook(excel_path)
+
+        if sheet_name not in wb.sheetnames:
+            return  # Sheet doesn't exist, skip formatting
+
+        ws = wb[sheet_name]
+
+        # Find the "Priority Status" column
+        priority_status_col = None
+        header_row = 1
+
+        # Check header row to find Priority Status column
+        # Iterate through all cells in the header row
+        for cell in ws[header_row]:
+            if cell.value:
+                cell_value_str = str(cell.value).strip().lower()
+                if "priority" in cell_value_str and "status" in cell_value_str:
+                    priority_status_col = cell.column
+                    break
+
+        if priority_status_col is None:
+            return  # Priority Status column not found, skip formatting
+
+        # Define formatting - only change text color to red, no background fill
+        red_font = Font(color="E74C3C")
+
+        # Format only the "Priority Status" column cell where value is "First Priority" (case-insensitive)
+        # Start from row 2 (skip header row)
+        for row_idx in range(2, ws.max_row + 1):
+            priority_cell = ws.cell(row=row_idx, column=priority_status_col)
+
+            if priority_cell.value:
+                priority_value = str(priority_cell.value).strip().upper()
+
+                # Check if it's "First Priority" (case-insensitive)
+                if priority_value == "FIRST PRIORITY":
+                    # Format only the Priority Status cell - change text color to red
+                    if priority_cell.font:
+                        # Preserve existing font properties, only change color
+                        priority_cell.font = Font(
+                            name=priority_cell.font.name,
+                            size=priority_cell.font.size,
+                            bold=priority_cell.font.bold,
+                            italic=priority_cell.font.italic,
+                            underline=priority_cell.font.underline,
+                            strike=priority_cell.font.strike,
+                            color="E74C3C",
+                        )
+                    else:
+                        # No existing font, just set color
+                        priority_cell.font = red_font
+
+        # Save the workbook
+        wb.save(excel_path)
+
+    except Exception as e:
+        print(f"Error formatting Excel file: {str(e)}")
+        # Continue even if formatting fails
+
+
 @app.route("/send_email_to_agent", methods=["POST"])
 @admin_required
 def send_email_to_agent():
@@ -14771,10 +14845,12 @@ def send_email_to_agent():
         # Create Excel file with agent's data
         temp_fd, temp_path = tempfile.mkstemp(suffix=".xlsx")
         try:
+            sheet_name = f"{agent_name}_Allocation"
             with pd.ExcelWriter(temp_path, engine="openpyxl") as writer:
-                agent_rows.to_excel(
-                    writer, sheet_name=f"{agent_name}_Allocation", index=False
-                )
+                agent_rows.to_excel(writer, sheet_name=sheet_name, index=False)
+
+            # Format Excel file to highlight "First Priority" rows
+            format_excel_with_priority_status(temp_path, sheet_name)
 
             # Read the Excel file as bytes
             with open(temp_path, "rb") as f:
@@ -14902,10 +14978,12 @@ def send_email_to_all_agents():
                 # Create Excel file with agent's data
                 temp_fd, temp_path = tempfile.mkstemp(suffix=".xlsx")
                 try:
+                    sheet_name = f"{agent_name}_Allocation"
                     with pd.ExcelWriter(temp_path, engine="openpyxl") as writer:
-                        agent_rows.to_excel(
-                            writer, sheet_name=f"{agent_name}_Allocation", index=False
-                        )
+                        agent_rows.to_excel(writer, sheet_name=sheet_name, index=False)
+
+                    # Format Excel file to highlight "First Priority" rows
+                    format_excel_with_priority_status(temp_path, sheet_name)
 
                     # Read the Excel file as bytes
                     with open(temp_path, "rb") as f:

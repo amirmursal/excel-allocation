@@ -396,6 +396,202 @@ class AgentWorkFile(db.Model):
     # Relationships
     agent = db.relationship("User", backref="work_files")
 
+
+class NTBPFile(db.Model):
+    """NTBP file model for storing NTBP uploads"""
+
+    __tablename__ = "ntbp_files"
+
+    id = db.Column(db.Integer, primary_key=True)
+    agent_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False)
+    filename = db.Column(db.String(255), nullable=False)
+    file_data = db.Column(db.Text)  # JSON string of processed data
+    upload_date = db.Column(db.DateTime, default=datetime.utcnow)
+    status = db.Column(
+        db.String(50), default="uploaded"
+    )  # uploaded, processed, consolidated
+    notes = db.Column(db.Text)  # Optional notes from agent
+
+    # Relationships
+    agent = db.relationship("User", backref="ntbp_files")
+
+    def set_file_data(self, data):
+        """Set file data as JSON string"""
+        if data is not None:
+            # Convert pandas DataFrames to JSON-serializable format
+            if isinstance(data, dict):
+                serializable_data = {}
+                for key, value in data.items():
+                    if isinstance(value, pd.DataFrame):
+                        df_records = value.to_dict("records")
+                        for record in df_records:
+                            for k, v in record.items():
+                                if hasattr(v, "isoformat"):
+                                    record[k] = v.isoformat()
+                        serializable_data[key] = df_records
+                    else:
+                        serializable_data[key] = value
+                self.file_data = json.dumps(serializable_data)
+            elif isinstance(data, pd.DataFrame):
+                df_records = data.to_dict("records")
+                for record in df_records:
+                    for k, v in record.items():
+                        if hasattr(v, "isoformat"):
+                            record[k] = v.isoformat()
+                self.file_data = json.dumps(df_records)
+            else:
+                self.file_data = json.dumps(data)
+        else:
+            self.file_data = None
+
+    def get_file_data(self):
+        """Get file data from JSON string"""
+        if self.file_data:
+            data = json.loads(self.file_data)
+            if isinstance(data, dict):
+                converted_data = {}
+                for key, value in data.items():
+                    if isinstance(value, list) and len(value) > 0:
+                        converted_data[key] = pd.DataFrame(value)
+                    else:
+                        converted_data[key] = value
+                return converted_data
+            elif isinstance(data, list):
+                return pd.DataFrame(data)
+            return data
+        return None
+
+
+class QCPFile(db.Model):
+    """QCP file model for storing QCP uploads"""
+
+    __tablename__ = "qcp_files"
+
+    id = db.Column(db.Integer, primary_key=True)
+    agent_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False)
+    filename = db.Column(db.String(255), nullable=False)
+    file_data = db.Column(db.Text)  # JSON string of processed data
+    upload_date = db.Column(db.DateTime, default=datetime.utcnow)
+    status = db.Column(
+        db.String(50), default="uploaded"
+    )  # uploaded, processed, consolidated
+    notes = db.Column(db.Text)  # Optional notes from agent
+
+    # Relationships
+    agent = db.relationship("User", backref="qcp_files")
+
+    def set_file_data(self, data):
+        """Set file data as JSON string"""
+        if data is not None:
+            # Convert pandas DataFrames to JSON-serializable format
+            if isinstance(data, dict):
+                serializable_data = {}
+                for key, value in data.items():
+                    if isinstance(value, pd.DataFrame):
+                        df_records = value.to_dict("records")
+                        for record in df_records:
+                            for k, v in record.items():
+                                if hasattr(v, "isoformat"):
+                                    record[k] = v.isoformat()
+                        serializable_data[key] = df_records
+                    else:
+                        serializable_data[key] = value
+                self.file_data = json.dumps(serializable_data)
+            elif isinstance(data, pd.DataFrame):
+                df_records = data.to_dict("records")
+                for record in df_records:
+                    for k, v in record.items():
+                        if hasattr(v, "isoformat"):
+                            record[k] = v.isoformat()
+                self.file_data = json.dumps(df_records)
+            else:
+                self.file_data = json.dumps(data)
+        else:
+            self.file_data = None
+
+    def get_file_data(self):
+        """Get file data from JSON string"""
+        if self.file_data:
+            data = json.loads(self.file_data)
+            if isinstance(data, dict):
+                converted_data = {}
+                for key, value in data.items():
+                    if isinstance(value, list) and len(value) > 0:
+                        converted_data[key] = pd.DataFrame(value)
+                    else:
+                        converted_data[key] = value
+                return converted_data
+            elif isinstance(data, list):
+                return pd.DataFrame(data)
+            return data
+        return None
+
+
+class DailyConsolidateFile(db.Model):
+    """Daily Consolidate file model for storing end-of-day work"""
+
+    __tablename__ = "daily_consolidate_files"
+
+    id = db.Column(db.Integer, primary_key=True)
+    agent_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False)
+    filename = db.Column(db.String(255), nullable=False)
+    file_data = db.Column(db.Text)  # JSON string of processed data
+    upload_date = db.Column(db.DateTime, default=datetime.utcnow)
+    status = db.Column(
+        db.String(50), default="uploaded"
+    )  # uploaded, processed, consolidated
+    shift_type = db.Column(db.String(20))  # day_shift, night_shift
+    notes = db.Column(db.Text)  # Optional notes from agent
+
+    # Relationships
+    agent = db.relationship("User", backref="daily_consolidate_files")
+
+    def set_file_data(self, data):
+        """Set file data as JSON string"""
+        if data is not None:
+            # Convert pandas DataFrames to JSON-serializable format
+            if isinstance(data, dict):
+                serializable_data = {}
+                for key, value in data.items():
+                    if isinstance(value, pd.DataFrame):
+                        df_records = value.to_dict("records")
+                        for record in df_records:
+                            for k, v in record.items():
+                                if hasattr(v, "isoformat"):
+                                    record[k] = v.isoformat()
+                        serializable_data[key] = df_records
+                    else:
+                        serializable_data[key] = value
+                self.file_data = json.dumps(serializable_data)
+            elif isinstance(data, pd.DataFrame):
+                df_records = data.to_dict("records")
+                for record in df_records:
+                    for k, v in record.items():
+                        if hasattr(v, "isoformat"):
+                            record[k] = v.isoformat()
+                self.file_data = json.dumps(df_records)
+            else:
+                self.file_data = json.dumps(data)
+        else:
+            self.file_data = None
+
+    def get_file_data(self):
+        """Get file data from JSON string"""
+        if self.file_data:
+            data = json.loads(self.file_data)
+            if isinstance(data, dict):
+                converted_data = {}
+                for key, value in data.items():
+                    if isinstance(value, list) and len(value) > 0:
+                        converted_data[key] = pd.DataFrame(value)
+                    else:
+                        converted_data[key] = value
+                return converted_data
+            elif isinstance(data, list):
+                return pd.DataFrame(data)
+            return data
+        return None
+
     def set_file_data(self, data):
         """Set file data as JSON string"""
         if data is not None:
@@ -455,6 +651,136 @@ class AgentWorkFile(db.Model):
         return None
 
 
+class DayShiftFile(db.Model):
+    """Day Shift file model for storing Day Shift uploads"""
+
+    __tablename__ = "day_shift_files"
+
+    id = db.Column(db.Integer, primary_key=True)
+    agent_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False)
+    filename = db.Column(db.String(255), nullable=False)
+    file_data = db.Column(db.Text)  # JSON string of processed data
+    upload_date = db.Column(db.DateTime, default=datetime.utcnow)
+    status = db.Column(
+        db.String(50), default="uploaded"
+    )  # uploaded, processed, consolidated
+    notes = db.Column(db.Text)  # Optional notes from agent
+
+    # Relationships
+    agent = db.relationship("User", backref="day_shift_files")
+
+    def set_file_data(self, data):
+        """Set file data as JSON string"""
+        if data is not None:
+            # Convert pandas DataFrames to JSON-serializable format
+            if isinstance(data, dict):
+                serializable_data = {}
+                for key, value in data.items():
+                    if isinstance(value, pd.DataFrame):
+                        df_records = value.to_dict("records")
+                        for record in df_records:
+                            for k, v in record.items():
+                                if hasattr(v, "isoformat"):
+                                    record[k] = v.isoformat()
+                        serializable_data[key] = df_records
+                    else:
+                        serializable_data[key] = value
+                self.file_data = json.dumps(serializable_data)
+            elif isinstance(data, pd.DataFrame):
+                df_records = data.to_dict("records")
+                for record in df_records:
+                    for k, v in record.items():
+                        if hasattr(v, "isoformat"):
+                            record[k] = v.isoformat()
+                self.file_data = json.dumps(df_records)
+            else:
+                self.file_data = json.dumps(data)
+        else:
+            self.file_data = None
+
+    def get_file_data(self):
+        """Get file data from JSON string"""
+        if self.file_data:
+            data = json.loads(self.file_data)
+            if isinstance(data, dict):
+                converted_data = {}
+                for key, value in data.items():
+                    if isinstance(value, list) and len(value) > 0:
+                        converted_data[key] = pd.DataFrame(value)
+                    else:
+                        converted_data[key] = value
+                return converted_data
+            elif isinstance(data, list):
+                return pd.DataFrame(data)
+            return data
+        return None
+
+
+class NightShiftFile(db.Model):
+    """Night Shift file model for storing Night Shift uploads"""
+
+    __tablename__ = "night_shift_files"
+
+    id = db.Column(db.Integer, primary_key=True)
+    agent_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False)
+    filename = db.Column(db.String(255), nullable=False)
+    file_data = db.Column(db.Text)  # JSON string of processed data
+    upload_date = db.Column(db.DateTime, default=datetime.utcnow)
+    status = db.Column(
+        db.String(50), default="uploaded"
+    )  # uploaded, processed, consolidated
+    notes = db.Column(db.Text)  # Optional notes from agent
+
+    # Relationships
+    agent = db.relationship("User", backref="night_shift_files")
+
+    def set_file_data(self, data):
+        """Set file data as JSON string"""
+        if data is not None:
+            # Convert pandas DataFrames to JSON-serializable format
+            if isinstance(data, dict):
+                serializable_data = {}
+                for key, value in data.items():
+                    if isinstance(value, pd.DataFrame):
+                        df_records = value.to_dict("records")
+                        for record in df_records:
+                            for k, v in record.items():
+                                if hasattr(v, "isoformat"):
+                                    record[k] = v.isoformat()
+                        serializable_data[key] = df_records
+                    else:
+                        serializable_data[key] = value
+                self.file_data = json.dumps(serializable_data)
+            elif isinstance(data, pd.DataFrame):
+                df_records = data.to_dict("records")
+                for record in df_records:
+                    for k, v in record.items():
+                        if hasattr(v, "isoformat"):
+                            record[k] = v.isoformat()
+                self.file_data = json.dumps(df_records)
+            else:
+                self.file_data = json.dumps(data)
+        else:
+            self.file_data = None
+
+    def get_file_data(self):
+        """Get file data from JSON string"""
+        if self.file_data:
+            data = json.loads(self.file_data)
+            if isinstance(data, dict):
+                converted_data = {}
+                for key, value in data.items():
+                    if isinstance(value, list) and len(value) > 0:
+                        converted_data[key] = pd.DataFrame(value)
+                    else:
+                        converted_data[key] = value
+                return converted_data
+            elif isinstance(data, list):
+                return pd.DataFrame(data)
+                return data
+        return None
+
+
 # Global variables to store session data (fallback for backward compatibility)
 allocation_data = None
 data_file_data = None
@@ -474,6 +800,19 @@ agent_allocations_data = None
 agent_insurance_agent_names = (
     None  # Store agent names for Agent Insurance sheet formatting
 )
+
+# Day Shift and Night Shift data storage (using global variables like allocation/data files)
+day_shift_allocation_data = None
+day_shift_allocation_filename = None
+day_shift_data_file_data = None
+day_shift_data_filename = None
+day_shift_processing_result = None
+
+night_shift_allocation_data = None
+night_shift_allocation_filename = None
+night_shift_data_file_data = None
+night_shift_data_filename = None
+night_shift_processing_result = None
 
 
 # Database helper functions
@@ -623,6 +962,112 @@ def get_all_agent_work_files():
     """Get all agent work files for consolidation (admin view)"""
     # Return all files regardless of status so admin can see all uploaded files
     return AgentWorkFile.query.order_by(AgentWorkFile.upload_date.desc()).all()
+
+
+def save_ntbp_file(agent_id, filename, file_data, notes=None):
+    """Save NTBP file to database"""
+    ntbp_file = NTBPFile(agent_id=agent_id, filename=filename, notes=notes)
+    ntbp_file.set_file_data(file_data)
+    db.session.add(ntbp_file)
+    db.session.commit()
+    return ntbp_file
+
+
+def get_ntbp_files(agent_id=None):
+    """Get NTBP files, optionally filtered by agent"""
+    if agent_id:
+        return (
+            NTBPFile.query.filter_by(agent_id=agent_id)
+            .order_by(NTBPFile.upload_date.desc())
+            .all()
+        )
+    return NTBPFile.query.order_by(NTBPFile.upload_date.desc()).all()
+
+
+def save_qcp_file(agent_id, filename, file_data, notes=None):
+    """Save QCP file to database"""
+    qcp_file = QCPFile(agent_id=agent_id, filename=filename, notes=notes)
+    qcp_file.set_file_data(file_data)
+    db.session.add(qcp_file)
+    db.session.commit()
+    return qcp_file
+
+
+def get_qcp_files(agent_id=None):
+    """Get QCP files, optionally filtered by agent"""
+    if agent_id:
+        return (
+            QCPFile.query.filter_by(agent_id=agent_id)
+            .order_by(QCPFile.upload_date.desc())
+            .all()
+        )
+    return QCPFile.query.order_by(QCPFile.upload_date.desc()).all()
+
+
+def save_daily_consolidate_file(
+    agent_id, filename, file_data, shift_type=None, notes=None
+):
+    """Save Daily Consolidate file to database"""
+    consolidate_file = DailyConsolidateFile(
+        agent_id=agent_id, filename=filename, shift_type=shift_type, notes=notes
+    )
+    consolidate_file.set_file_data(file_data)
+    db.session.add(consolidate_file)
+    db.session.commit()
+    return consolidate_file
+
+
+def get_daily_consolidate_files(agent_id=None):
+    """Get Daily Consolidate files, optionally filtered by agent"""
+    if agent_id:
+        return (
+            DailyConsolidateFile.query.filter_by(agent_id=agent_id)
+            .order_by(DailyConsolidateFile.upload_date.desc())
+            .all()
+        )
+    return DailyConsolidateFile.query.order_by(
+        DailyConsolidateFile.upload_date.desc()
+    ).all()
+
+
+def save_day_shift_file(agent_id, filename, file_data, notes=None):
+    """Save Day Shift file to database"""
+    day_shift_file = DayShiftFile(agent_id=agent_id, filename=filename, notes=notes)
+    day_shift_file.set_file_data(file_data)
+    db.session.add(day_shift_file)
+    db.session.commit()
+    return day_shift_file
+
+
+def get_day_shift_files(agent_id=None):
+    """Get Day Shift files, optionally filtered by agent"""
+    if agent_id:
+        return (
+            DayShiftFile.query.filter_by(agent_id=agent_id)
+            .order_by(DayShiftFile.upload_date.desc())
+            .all()
+        )
+    return DayShiftFile.query.order_by(DayShiftFile.upload_date.desc()).all()
+
+
+def save_night_shift_file(agent_id, filename, file_data, notes=None):
+    """Save Night Shift file to database"""
+    night_shift_file = NightShiftFile(agent_id=agent_id, filename=filename, notes=notes)
+    night_shift_file.set_file_data(file_data)
+    db.session.add(night_shift_file)
+    db.session.commit()
+    return night_shift_file
+
+
+def get_night_shift_files(agent_id=None):
+    """Get Night Shift files, optionally filtered by agent"""
+    if agent_id:
+        return (
+            NightShiftFile.query.filter_by(agent_id=agent_id)
+            .order_by(NightShiftFile.upload_date.desc())
+            .all()
+        )
+    return NightShiftFile.query.order_by(NightShiftFile.upload_date.desc()).all()
 
 
 # Template filter to convert datetime to IST
@@ -796,6 +1241,63 @@ def agent_required(f):
     return decorated_function
 
 
+def normal_agent_required(f):
+    """Decorator to ensure user is a normal agent (logged in via Google OAuth)"""
+
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        # Check for database session first
+        db_session_id = session.get("db_session_id")
+        user = None
+
+        if db_session_id:
+            db_session = get_user_session(db_session_id)
+            if db_session and not db_session.is_expired():
+                session_data = db_session.get_data()
+                user_id = session_data.get("user_id")
+                session.update(session_data)
+
+                # Get user from database to check auth_provider
+                if user_id:
+                    user = User.query.filter_by(email=user_id, is_active=True).first()
+                    if not user:
+                        user = User.query.filter_by(id=user_id, is_active=True).first()
+            else:
+                if db_session:
+                    delete_user_session(db_session_id)
+                session.clear()
+
+        # Fallback to Flask session
+        if not user:
+            if "user_id" not in session:
+                return redirect(url_for("login"))
+            user_id = session.get("user_id")
+            user = User.query.filter_by(email=user_id, is_active=True).first()
+            if not user:
+                user = User.query.filter_by(id=user_id, is_active=True).first()
+
+        # Check if user exists and is a normal agent (Google OAuth)
+        if not user:
+            flash("User not found. Please log in again.", "error")
+            return redirect(url_for("login"))
+
+        if user.role != "agent":
+            flash("Access denied. Agent privileges required.", "error")
+            return redirect(url_for("dashboard"))
+
+        # Check if user is logged in via Google OAuth (normal agent)
+        if not user.google_id and user.auth_provider != "google":
+            flash(
+                "Access denied. This section is only for agents logged in via Google.",
+                "error",
+            )
+            return redirect(url_for("dashboard"))
+
+        return f(*args, **kwargs)
+
+    return decorated_function
+
+
 # Email helper function using Resend
 def send_email_with_resend(
     to_email,
@@ -804,6 +1306,7 @@ def send_email_with_resend(
     text_content=None,
     attachment_data=None,
     attachment_filename=None,
+    attachments=None,
 ):
     """
     Send email using Resend API
@@ -813,8 +1316,9 @@ def send_email_with_resend(
         subject: Email subject
         html_content: HTML email content
         text_content: Plain text email content (optional)
-        attachment_data: BytesIO or bytes object for attachment (optional)
-        attachment_filename: Filename for attachment (optional)
+        attachment_data: BytesIO or bytes object for single attachment (optional, deprecated - use attachments)
+        attachment_filename: Filename for single attachment (optional, deprecated - use attachments)
+        attachments: List of dicts with 'filename' and 'data' (BytesIO or bytes) for multiple attachments (optional)
 
     Returns:
         tuple: (success: bool, message: str)
@@ -833,8 +1337,25 @@ def send_email_with_resend(
         if text_content:
             email_data["text"] = text_content
 
-        # Add attachment if provided
-        if attachment_data and attachment_filename:
+        # Handle multiple attachments (preferred method)
+        if attachments:
+            email_data["attachments"] = []
+            for att in attachments:
+                if isinstance(att, dict) and "filename" in att and "data" in att:
+                    # Convert BytesIO to bytes if needed
+                    if isinstance(att["data"], io.BytesIO):
+                        attachment_bytes = att["data"].getvalue()
+                    else:
+                        attachment_bytes = att["data"]
+                    # Encode to base64
+                    attachment_base64 = base64.b64encode(attachment_bytes).decode(
+                        "utf-8"
+                    )
+                    email_data["attachments"].append(
+                        {"filename": att["filename"], "content": attachment_base64}
+                    )
+        # Handle single attachment (backward compatibility)
+        elif attachment_data and attachment_filename:
             # Convert BytesIO to bytes if needed
             if isinstance(attachment_data, io.BytesIO):
                 attachment_bytes = attachment_data.getvalue()
@@ -2240,55 +2761,293 @@ HTML_TEMPLATE = """
                 
                 <!-- Agent Consolidation Tab -->
                 <div id="agent-consolidation-tab" class="admin-tab-content">
-                    <!-- Agent Files Consolidation -->
-                    {% if all_agent_work_files %}
                     <div class="section">
-                        <h3>📋 Agent Work Files Consolidation</h3>
+                        <h3>📋 Agent Consolidation</h3>
+                        
+                        <!-- Sub-tab Navigation -->
+                        <div style="display: flex; gap: 10px; margin-bottom: 20px; border-bottom: 2px solid #dee2e6; flex-wrap: wrap;">
+                            <button class="consolidation-subtab-btn active" onclick="switchConsolidationSubTab('day-shift')" id="subtab-day-shift-btn" style="padding: 12px 24px; border: none; background: #f8f9fa; color: #666; cursor: pointer; border-bottom: 3px solid transparent; transition: all 0.3s;">
+                                <i class="fas fa-sun"></i> Day Shift
+                            </button>
+                            <button class="consolidation-subtab-btn" onclick="switchConsolidationSubTab('night-shift')" id="subtab-night-shift-btn" style="padding: 12px 24px; border: none; background: #f8f9fa; color: #666; cursor: pointer; border-bottom: 3px solid transparent; transition: all 0.3s;">
+                                <i class="fas fa-moon"></i> Night Shift
+                            </button>
+                            <button class="consolidation-subtab-btn" onclick="switchConsolidationSubTab('ntbp')" id="subtab-ntbp-btn" style="padding: 12px 24px; border: none; background: #f8f9fa; color: #666; cursor: pointer; border-bottom: 3px solid transparent; transition: all 0.3s;">
+                                <i class="fas fa-ban"></i> NTBP
+                            </button>
+                            <button class="consolidation-subtab-btn" onclick="switchConsolidationSubTab('qcp')" id="subtab-qcp-btn" style="padding: 12px 24px; border: none; background: #f8f9fa; color: #666; cursor: pointer; border-bottom: 3px solid transparent; transition: all 0.3s;">
+                                <i class="fas fa-check-double"></i> QCP
+                            </button>
+                            <button class="consolidation-subtab-btn" onclick="switchConsolidationSubTab('daily-consolidate')" id="subtab-daily-consolidate-btn" style="padding: 12px 24px; border: none; background: #f8f9fa; color: #666; cursor: pointer; border-bottom: 3px solid transparent; transition: all 0.3s;">
+                                <i class="fas fa-calendar-day"></i> Daily Consolidate
+                            </button>
+                        </div>
+                        
+                        <!-- Day Shift Sub-tab -->
+                        <div id="consolidation-day-shift" class="consolidation-subtab-content">
+                            {% if day_shift_files %}
                         <div style="background: #f8f9fa; padding: 20px; border-radius: 10px; margin-bottom: 20px;">
-                            <h4>Available Agent Files:</h4>
-                            {% for work_file in all_agent_work_files %}
+                                <h4>Available Day Shift Files:</h4>
+                                {% for file in day_shift_files %}
                             <div style="border-bottom: {% if loop.last %}none{% else %}1px solid #dee2e6{% endif %}; padding: 10px 0; display: flex; justify-content: space-between; align-items: center;">
                                 <div style="flex: 1;">
-                                    <strong>{{ work_file.agent.name }}</strong> - {{ work_file.filename }}
+                                        <strong>{{ file.agent.name }}</strong> - {{ file.filename }}
                                     <br>
                                     <small style="color: #666;">
-                                        Uploaded: {{ (work_file.upload_date | to_ist).strftime('%Y-%m-%d %I:%M %p') }} IST
-                                        | Status: <span style="color: {% if work_file.status == 'uploaded' %}#28a745{% elif work_file.status == 'consolidated' %}#007bff{% else %}#6c757d{% endif %}">{{ work_file.status.title() }}</span>
+                                            Uploaded: {{ (file.upload_date | to_ist).strftime('%Y-%m-%d %I:%M %p') }} IST
+                                            | Status: <span style="color: {% if file.status == 'uploaded' %}#28a745{% elif file.status == 'consolidated' %}#007bff{% else %}#6c757d{% endif %}">{{ file.status.title() if file.status else 'Uploaded' }}</span>
                                     </small>
-                                    {% if work_file.notes %}
+                                        {% if file.notes %}
                                     <br>
-                                    <small style="color: #666;"><em>{{ work_file.notes }}</em></small>
+                                        <small style="color: #666;"><em>{{ file.notes }}</em></small>
                                     {% endif %}
                                 </div>
-                                <div style="margin-left: 15px;">
-                                    <a href="/download_agent_work_file/{{ work_file.id }}" class="process-btn" style="padding: 8px 16px; text-decoration: none; display: inline-block; background: linear-gradient(135deg, #007bff, #0056b3); color: white; border-radius: 5px; font-size: 14px;">
+                                <div style="margin-left: 15px; display: flex; gap: 8px;">
+                                        <a href="/download_day_shift_file/{{ file.id }}" class="process-btn" style="padding: 8px 16px; text-decoration: none; display: inline-block; background: linear-gradient(135deg, #007bff, #0056b3); color: white; border-radius: 5px; font-size: 14px;">
                                         <i class="fas fa-download"></i> Download
                                     </a>
+                                    <form action="/delete_day_shift_file/{{ file.id }}" method="post" style="margin: 0; display: inline-block;" onsubmit="return confirm('Are you sure you want to delete this file? This action cannot be undone.');">
+                                        <input type="hidden" name="subtab" value="day-shift">
+                                        <button type="submit" class="process-btn" style="padding: 8px 16px; background: linear-gradient(135deg, #dc3545, #c82333); color: white; border: none; border-radius: 5px; font-size: 14px; cursor: pointer;">
+                                            <i class="fas fa-trash-alt"></i> Delete
+                                        </button>
+                                    </form>
                                 </div>
                             </div>
                             {% endfor %}
                         </div>
                         <div style="display: flex; gap: 10px; flex-wrap: wrap;">
-                            <form action="/consolidate_agent_files" method="post" style="margin: 0;">
+                                <form action="/consolidate_day_shift_files" method="post" style="margin: 0;">
                                 <button type="submit" class="process-btn" style="background: linear-gradient(135deg, #28a745, #20c997);">
-                                    <i class="fas fa-compress-arrows-alt"></i> Consolidate All Agent Files
+                                        <i class="fas fa-compress-arrows-alt"></i> Consolidate All Day Shift Files
                                 </button>
                             </form>
-                            <form action="/clear_all_agent_files" method="post" style="margin: 0;" onsubmit="return confirm('Are you sure you want to delete all files? This action cannot be undone.');">
+                                <form action="/clear_day_shift_files" method="post" style="margin: 0;" onsubmit="return confirm('Are you sure you want to delete all Day Shift files? This action cannot be undone.');">
+                                    <input type="hidden" name="subtab" value="day-shift">
                                 <button type="submit" class="process-btn" style="background: linear-gradient(135deg, #dc3545, #c82333);">
                                     <i class="fas fa-trash-alt"></i> Clear all files
                                 </button>
                             </form>
                         </div>
+                            {% else %}
+                            <div style="background: #f8f9fa; padding: 20px; border-radius: 10px;">
+                                <p style="color: #666;">No Day Shift files uploaded yet.</p>
+                            </div>
+                            {% endif %}
+                        </div>
+                        
+                        <!-- Night Shift Sub-tab -->
+                        <div id="consolidation-night-shift" class="consolidation-subtab-content" style="display: none;">
+                            {% if night_shift_files %}
+                            <div style="background: #f8f9fa; padding: 20px; border-radius: 10px; margin-bottom: 20px;">
+                                <h4>Available Night Shift Files:</h4>
+                                {% for file in night_shift_files %}
+                                <div style="border-bottom: {% if loop.last %}none{% else %}1px solid #dee2e6{% endif %}; padding: 10px 0; display: flex; justify-content: space-between; align-items: center;">
+                                    <div style="flex: 1;">
+                                        <strong>{{ file.agent.name }}</strong> - {{ file.filename }}
+                                        <br>
+                                        <small style="color: #666;">
+                                            Uploaded: {{ (file.upload_date | to_ist).strftime('%Y-%m-%d %I:%M %p') }} IST
+                                            | Status: <span style="color: {% if file.status == 'uploaded' %}#28a745{% elif file.status == 'consolidated' %}#007bff{% else %}#6c757d{% endif %}">{{ file.status.title() if file.status else 'Uploaded' }}</span>
+                                        </small>
+                                        {% if file.notes %}
+                                        <br>
+                                        <small style="color: #666;"><em>{{ file.notes }}</em></small>
+                                    {% endif %}
+                                </div>
+                                    <div style="margin-left: 15px; display: flex; gap: 8px;">
+                                        <a href="/download_night_shift_file/{{ file.id }}" class="process-btn" style="padding: 8px 16px; text-decoration: none; display: inline-block; background: linear-gradient(135deg, #007bff, #0056b3); color: white; border-radius: 5px; font-size: 14px;">
+                                            <i class="fas fa-download"></i> Download
+                                        </a>
+                                        <form action="/delete_night_shift_file/{{ file.id }}" method="post" style="margin: 0; display: inline-block;" onsubmit="return confirm('Are you sure you want to delete this file? This action cannot be undone.');">
+                                            <input type="hidden" name="subtab" value="night-shift">
+                                            <button type="submit" class="process-btn" style="padding: 8px 16px; background: linear-gradient(135deg, #dc3545, #c82333); color: white; border: none; border-radius: 5px; font-size: 14px; cursor: pointer;">
+                                                <i class="fas fa-trash-alt"></i> Delete
+                                            </button>
+                                        </form>
+                                    </div>
+                            </div>
+                            {% endfor %}
+                        </div>
+                        <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+                                <form action="/consolidate_night_shift_files" method="post" style="margin: 0;">
+                                <button type="submit" class="process-btn" style="background: linear-gradient(135deg, #28a745, #20c997);">
+                                        <i class="fas fa-compress-arrows-alt"></i> Consolidate All Night Shift Files
+                                </button>
+                            </form>
+                                <form action="/clear_night_shift_files" method="post" style="margin: 0;" onsubmit="return confirm('Are you sure you want to delete all Night Shift files? This action cannot be undone.');">
+                                    <input type="hidden" name="subtab" value="night-shift">
+                                <button type="submit" class="process-btn" style="background: linear-gradient(135deg, #dc3545, #c82333);">
+                                    <i class="fas fa-trash-alt"></i> Clear all files
+                                </button>
+                            </form>
                     </div>
                     {% else %}
-                    <div class="section">
-                        <h3>📋 Agent Work Files</h3>
                         <div style="background: #f8f9fa; padding: 20px; border-radius: 10px;">
-                            <p style="color: #666;">No agent work files uploaded yet.</p>
+                                <p style="color: #666;">No Night Shift files uploaded yet.</p>
                         </div>
+                            {% endif %}
+                        </div>
+                        
+                        <!-- NTBP Sub-tab -->
+                        <div id="consolidation-ntbp" class="consolidation-subtab-content" style="display: none;">
+                            {% if ntbp_files %}
+                            <div style="background: #f8f9fa; padding: 20px; border-radius: 10px; margin-bottom: 20px;">
+                                <h4>Available NTBP Files:</h4>
+                                {% for file in ntbp_files %}
+                                <div style="border-bottom: {% if loop.last %}none{% else %}1px solid #dee2e6{% endif %}; padding: 10px 0; display: flex; justify-content: space-between; align-items: center;">
+                                    <div style="flex: 1;">
+                                        <strong>{{ file.agent.name }}</strong> - {{ file.filename }}
+                                        <br>
+                                        <small style="color: #666;">
+                                            Uploaded: {{ (file.upload_date | to_ist).strftime('%Y-%m-%d %I:%M %p') }} IST
+                                            | Status: <span style="color: {% if file.status == 'uploaded' %}#28a745{% elif file.status == 'consolidated' %}#007bff{% else %}#6c757d{% endif %}">{{ file.status.title() if file.status else 'Uploaded' }}</span>
+                                        </small>
+                                        {% if file.notes %}
+                                        <br>
+                                        <small style="color: #666;"><em>{{ file.notes }}</em></small>
+                                        {% endif %}
+                                    </div>
+                                    <div style="margin-left: 15px; display: flex; gap: 8px;">
+                                        <a href="/download_ntbp_file/{{ file.id }}" class="process-btn" style="padding: 8px 16px; text-decoration: none; display: inline-block; background: linear-gradient(135deg, #007bff, #0056b3); color: white; border-radius: 5px; font-size: 14px;">
+                                            <i class="fas fa-download"></i> Download
+                                        </a>
+                                        <form action="/delete_ntbp_file/{{ file.id }}" method="post" style="margin: 0; display: inline-block;" onsubmit="return confirm('Are you sure you want to delete this file? This action cannot be undone.');">
+                                            <input type="hidden" name="subtab" value="ntbp">
+                                            <button type="submit" class="process-btn" style="padding: 8px 16px; background: linear-gradient(135deg, #dc3545, #c82333); color: white; border: none; border-radius: 5px; font-size: 14px; cursor: pointer;">
+                                                <i class="fas fa-trash-alt"></i> Delete
+                                            </button>
+                                        </form>
+                                    </div>
+                                </div>
+                                {% endfor %}
+                            </div>
+                            <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+                                <form action="/consolidate_ntbp_files" method="post" style="margin: 0;">
+                                    <button type="submit" class="process-btn" style="background: linear-gradient(135deg, #28a745, #20c997);">
+                                        <i class="fas fa-compress-arrows-alt"></i> Consolidate All NTBP Files
+                                    </button>
+                                </form>
+                                <form action="/clear_ntbp_files" method="post" style="margin: 0;" onsubmit="return confirm('Are you sure you want to delete all NTBP files? This action cannot be undone.');">
+                                    <input type="hidden" name="subtab" value="ntbp">
+                                    <button type="submit" class="process-btn" style="background: linear-gradient(135deg, #dc3545, #c82333);">
+                                        <i class="fas fa-trash-alt"></i> Clear all files
+                                    </button>
+                                </form>
+                    </div>
+                    {% else %}
+                        <div style="background: #f8f9fa; padding: 20px; border-radius: 10px;">
+                                <p style="color: #666;">No NTBP files uploaded yet.</p>
                     </div>
                     {% endif %}
+                        </div>
+                        
+                        <!-- QCP Sub-tab -->
+                        <div id="consolidation-qcp" class="consolidation-subtab-content" style="display: none;">
+                            {% if qcp_files %}
+                            <div style="background: #f8f9fa; padding: 20px; border-radius: 10px; margin-bottom: 20px;">
+                                <h4>Available QCP Files:</h4>
+                                {% for file in qcp_files %}
+                                <div style="border-bottom: {% if loop.last %}none{% else %}1px solid #dee2e6{% endif %}; padding: 10px 0; display: flex; justify-content: space-between; align-items: center;">
+                                    <div style="flex: 1;">
+                                        <strong>{{ file.agent.name }}</strong> - {{ file.filename }}
+                                        <br>
+                                        <small style="color: #666;">
+                                            Uploaded: {{ (file.upload_date | to_ist).strftime('%Y-%m-%d %I:%M %p') }} IST
+                                            | Status: <span style="color: {% if file.status == 'uploaded' %}#28a745{% elif file.status == 'consolidated' %}#007bff{% else %}#6c757d{% endif %}">{{ file.status.title() if file.status else 'Uploaded' }}</span>
+                                        </small>
+                                        {% if file.notes %}
+                                        <br>
+                                        <small style="color: #666;"><em>{{ file.notes }}</em></small>
+                                        {% endif %}
+                                    </div>
+                                    <div style="margin-left: 15px; display: flex; gap: 8px;">
+                                        <a href="/download_qcp_file/{{ file.id }}" class="process-btn" style="padding: 8px 16px; text-decoration: none; display: inline-block; background: linear-gradient(135deg, #007bff, #0056b3); color: white; border-radius: 5px; font-size: 14px;">
+                                            <i class="fas fa-download"></i> Download
+                                        </a>
+                                        <form action="/delete_qcp_file/{{ file.id }}" method="post" style="margin: 0; display: inline-block;" onsubmit="return confirm('Are you sure you want to delete this file? This action cannot be undone.');">
+                                            <input type="hidden" name="subtab" value="qcp">
+                                            <button type="submit" class="process-btn" style="padding: 8px 16px; background: linear-gradient(135deg, #dc3545, #c82333); color: white; border: none; border-radius: 5px; font-size: 14px; cursor: pointer;">
+                                                <i class="fas fa-trash-alt"></i> Delete
+                                            </button>
+                                        </form>
+                                    </div>
+                                </div>
+                                {% endfor %}
+                            </div>
+                            <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+                                <form action="/consolidate_qcp_files" method="post" style="margin: 0;">
+                                    <button type="submit" class="process-btn" style="background: linear-gradient(135deg, #28a745, #20c997);">
+                                        <i class="fas fa-compress-arrows-alt"></i> Consolidate All QCP Files
+                                    </button>
+                                </form>
+                                <form action="/clear_qcp_files" method="post" style="margin: 0;" onsubmit="return confirm('Are you sure you want to delete all QCP files? This action cannot be undone.');">
+                                    <input type="hidden" name="subtab" value="qcp">
+                                    <button type="submit" class="process-btn" style="background: linear-gradient(135deg, #dc3545, #c82333);">
+                                        <i class="fas fa-trash-alt"></i> Clear all files
+                                    </button>
+                                </form>
+                            </div>
+                            {% else %}
+                            <div style="background: #f8f9fa; padding: 20px; border-radius: 10px;">
+                                <p style="color: #666;">No QCP files uploaded yet.</p>
+                    </div>
+                    {% endif %}
+                        </div>
+                        
+                        <!-- Daily Consolidate Sub-tab -->
+                        <div id="consolidation-daily-consolidate" class="consolidation-subtab-content" style="display: none;">
+                            {% if daily_consolidate_files %}
+                            <div style="background: #f8f9fa; padding: 20px; border-radius: 10px; margin-bottom: 20px;">
+                                <h4>Available Daily Consolidate Files:</h4>
+                                {% for file in daily_consolidate_files %}
+                                <div style="border-bottom: {% if loop.last %}none{% else %}1px solid #dee2e6{% endif %}; padding: 10px 0; display: flex; justify-content: space-between; align-items: center;">
+                                    <div style="flex: 1;">
+                                        <strong>{{ file.agent.name }}</strong> - {{ file.filename }}
+                                        <br>
+                                        <small style="color: #666;">
+                                            Uploaded: {{ (file.upload_date | to_ist).strftime('%Y-%m-%d %I:%M %p') }} IST
+                                            | Status: <span style="color: {% if file.status == 'uploaded' %}#28a745{% elif file.status == 'consolidated' %}#007bff{% else %}#6c757d{% endif %}">{{ file.status.title() if file.status else 'Uploaded' }}</span>
+                                        </small>
+                                        {% if file.notes %}
+                                        <br>
+                                        <small style="color: #666;"><em>{{ file.notes }}</em></small>
+                                        {% endif %}
+                                    </div>
+                                    <div style="margin-left: 15px; display: flex; gap: 8px;">
+                                        <a href="/download_daily_consolidate_file/{{ file.id }}" class="process-btn" style="padding: 8px 16px; text-decoration: none; display: inline-block; background: linear-gradient(135deg, #007bff, #0056b3); color: white; border-radius: 5px; font-size: 14px;">
+                                            <i class="fas fa-download"></i> Download
+                                        </a>
+                                        <form action="/delete_daily_consolidate_file/{{ file.id }}" method="post" style="margin: 0; display: inline-block;" onsubmit="return confirm('Are you sure you want to delete this file? This action cannot be undone.');">
+                                            <input type="hidden" name="subtab" value="daily-consolidate">
+                                            <button type="submit" class="process-btn" style="padding: 8px 16px; background: linear-gradient(135deg, #dc3545, #c82333); color: white; border: none; border-radius: 5px; font-size: 14px; cursor: pointer;">
+                                                <i class="fas fa-trash-alt"></i> Delete
+                                            </button>
+                                        </form>
+                                    </div>
+                                </div>
+                                {% endfor %}
+                            </div>
+                            <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+                                <form action="/consolidate_daily_consolidate_files" method="post" style="margin: 0;">
+                                    <button type="submit" class="process-btn" style="background: linear-gradient(135deg, #28a745, #20c997);">
+                                        <i class="fas fa-compress-arrows-alt"></i> Consolidate All Daily Consolidate Files
+                                    </button>
+                                </form>
+                                <form action="/clear_daily_consolidate_files" method="post" style="margin: 0;" onsubmit="return confirm('Are you sure you want to delete all Daily Consolidate files? This action cannot be undone.');">
+                                    <input type="hidden" name="subtab" value="daily-consolidate">
+                                    <button type="submit" class="process-btn" style="background: linear-gradient(135deg, #dc3545, #c82333);">
+                                        <i class="fas fa-trash-alt"></i> Clear all files
+                                    </button>
+                                </form>
+                            </div>
+                            {% else %}
+                            <div style="background: #f8f9fa; padding: 20px; border-radius: 10px;">
+                                <p style="color: #666;">No Daily Consolidate files uploaded yet.</p>
+                            </div>
+                            {% endif %}
+                        </div>
+                    </div>
                 </div>
                 
                 <!-- System Settings Tab -->
@@ -2370,6 +3129,42 @@ HTML_TEMPLATE = """
             document.getElementById(role + '-panel').classList.add('active');
         }
         
+        function switchConsolidationSubTab(subTabName) {
+            // Hide all sub-tab contents
+            const subTabContents = document.querySelectorAll('.consolidation-subtab-content');
+            subTabContents.forEach(content => {
+                content.style.display = 'none';
+            });
+            
+            // Remove active class from all sub-tab buttons
+            const subTabButtons = document.querySelectorAll('.consolidation-subtab-btn');
+            subTabButtons.forEach(btn => {
+                btn.classList.remove('active');
+                btn.style.borderBottom = '3px solid transparent';
+                btn.style.color = '#666';
+            });
+            
+            // Show selected sub-tab content
+            const selectedContent = document.getElementById('consolidation-' + subTabName);
+            if (selectedContent) {
+                selectedContent.style.display = 'block';
+            }
+            
+            // Activate selected sub-tab button
+            const selectedButton = document.getElementById('subtab-' + subTabName + '-btn');
+            if (selectedButton) {
+                selectedButton.classList.add('active');
+                selectedButton.style.borderBottom = '3px solid #667eea';
+                selectedButton.style.color = '#667eea';
+            }
+            
+            // Update URL with subtab parameter
+            const url = new URL(window.location);
+            url.searchParams.set('tab', 'agent-consolidation');
+            url.searchParams.set('subtab', subTabName);
+            window.history.pushState({}, '', url);
+        }
+        
         function switchAdminTab(tabName) {
             // Update tab button states
             document.querySelectorAll('.admin-tab-btn').forEach(btn => btn.classList.remove('active'));
@@ -2389,6 +3184,8 @@ HTML_TEMPLATE = """
         window.addEventListener('DOMContentLoaded', function() {
             const urlParams = new URLSearchParams(window.location.search);
             const tabParam = urlParams.get('tab');
+            const subtabParam = urlParams.get('subtab');
+            
             if (tabParam) {
                 // Find the button for this tab and activate it
                 const tabButtons = document.querySelectorAll('.admin-tab-btn');
@@ -2406,6 +3203,11 @@ HTML_TEMPLATE = """
                         }
                     }
                 });
+            }
+            
+            // Handle subtab parameter for Agent Consolidation tab
+            if (subtabParam && tabParam === 'agent-consolidation') {
+                switchConsolidationSubTab(subtabParam);
             }
         });
         
@@ -8633,11 +9435,6 @@ def process_allocation_files_with_dates(
                                     if is_valid_ntc_pref:
                                         agents_with_ntc_preference.append(a)
                                         ntc_agent_names.append(a.get("name", "Unknown"))
-                                else:
-                                    # If no raw preference stored, fall back to has_ntc_preference flag
-                                    # But this should not happen if allocation_preference_raw is properly stored
-                                    agents_with_ntc_preference.append(a)
-                                    ntc_agent_names.append(a.get("name", "Unknown"))
 
                         # Debug output for troubleshooting
                         if all_ntc_rows:
@@ -12071,8 +12868,6 @@ def process_allocation_files_with_dates(
                             ) in matched_data_by_insurance_priority.items():
                                 if priority in priority_data:
                                     row_indices = priority_data[priority]
-
-                                    # Filter out already allocated rows
                                     unallocated_row_indices = [
                                         idx
                                         for idx in row_indices
@@ -12519,7 +13314,10 @@ def process_allocation_files_with_dates(
                                                     ):
                                                         if a.get(
                                                             "assigned_insurance"
-                                                        ) in (None, carrier):
+                                                        ) in (
+                                                            None,
+                                                            carrier,
+                                                        ):
                                                             available_sec_agents.append(
                                                                 a
                                                             )
@@ -14262,8 +15060,18 @@ def index():
 
     # Load all agent work files for admin view
     all_agent_work_files = None
+    day_shift_files = None
+    night_shift_files = None
+    ntbp_files = None
+    qcp_files = None
+    daily_consolidate_files = None
     if user and user.role == "admin":
         all_agent_work_files = get_all_agent_work_files()
+        day_shift_files = get_day_shift_files()
+        night_shift_files = get_night_shift_files()
+        ntbp_files = get_ntbp_files()
+        qcp_files = get_qcp_files()
+        daily_consolidate_files = get_daily_consolidate_files()
 
     return render_template_string(
         HTML_TEMPLATE,
@@ -14276,6 +15084,11 @@ def index():
         agent_allocations_data=agent_allocations_data,
         agent_work_files=agent_work_files,
         all_agent_work_files=all_agent_work_files,
+        day_shift_files=day_shift_files,
+        night_shift_files=night_shift_files,
+        ntbp_files=ntbp_files,
+        qcp_files=qcp_files,
+        daily_consolidate_files=daily_consolidate_files,
         current_time=current_time,
         email_staff_details=email_staff_details,
         email_staff_filename=email_staff_filename,
@@ -14469,6 +15282,10 @@ def callback():
         # Set Flask session
         session["db_session_id"] = db_session.id
         session.update(session_data)
+
+        # Redirect normal agents (Google OAuth) to Day Shift view
+        if user.auth_provider == "google" and user.role == "agent":
+            return redirect(url_for("day_shift"))
 
         return redirect(url_for("dashboard"))
 
@@ -17956,6 +18773,348 @@ def clear_all_agent_files():
         return redirect("/")
 
 
+def consolidate_files_helper_to_buffer(
+    file_model, file_type_name, mark_consolidated=False
+):
+    """
+    Helper function to consolidate files from any file model and return Excel buffer
+
+    Args:
+        file_model: Database model class (DayShiftFile, NightShiftFile, etc.)
+        file_type_name: Display name for the file type
+        mark_consolidated: Whether to mark files as consolidated in database
+
+    Returns:
+        tuple: (excel_buffer: BytesIO or None, filename: str, file_count: int)
+    """
+    try:
+        work_files = file_model.query.order_by(file_model.upload_date.desc()).all()
+
+        if not work_files:
+            return None, None, 0
+
+        excel_buffer = io.BytesIO()
+
+        with pd.ExcelWriter(excel_buffer, engine="openpyxl") as writer:
+            all_agent_data = []
+            for work_file in work_files:
+                file_data = work_file.get_file_data()
+                if file_data:
+                    if isinstance(file_data, dict):
+                        for sheet_name, sheet_data in file_data.items():
+                            if sheet_name.lower() == "summary":
+                                continue
+                            if isinstance(sheet_data, pd.DataFrame):
+                                all_agent_data.append(sheet_data.copy())
+                    elif isinstance(file_data, pd.DataFrame):
+                        all_agent_data.append(file_data.copy())
+
+            if all_agent_data:
+                combined_df = pd.concat(all_agent_data, ignore_index=True)
+                combined_df = deduplicate_consolidated_data(combined_df)
+                summary_df = calculate_summary_from_deduplicated_data(combined_df)
+                if not summary_df.empty:
+                    summary_df.to_excel(writer, sheet_name="Summary", index=False)
+
+                for col in combined_df.columns:
+                    if "date" in col.lower():
+                        try:
+                            parsed_series = combined_df[col].apply(parse_excel_date)
+                            combined_df[col] = parsed_series.apply(
+                                lambda d: d.strftime("%m/%d/%Y") if d else ""
+                            )
+                        except Exception:
+                            pass
+
+                combined_df.to_excel(writer, sheet_name="All Agent Data", index=False)
+            else:
+                empty_summary_df = pd.DataFrame(
+                    [
+                        {
+                            "Agent": "No agents",
+                            "Total Assigned Count": 0,
+                            "Completed Count": 0,
+                            "Empty Remarks Count": 0,
+                        }
+                    ]
+                )
+                empty_summary_df.to_excel(writer, sheet_name="Summary", index=False)
+                simple_df = pd.DataFrame(
+                    [{"Message": "No data available from any agent"}]
+                )
+                simple_df.to_excel(writer, sheet_name="All Agent Data", index=False)
+
+        excel_buffer.seek(0)
+
+        # Mark files as consolidated if requested
+        if mark_consolidated:
+            for work_file in work_files:
+                work_file.status = "consolidated"
+            db.session.commit()
+
+        filename = f"consolidated_{file_type_name.lower().replace(' ', '_')}_files_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+        return excel_buffer, filename, len(work_files)
+    except Exception as e:
+        print(f"Error consolidating {file_type_name} files: {str(e)}")
+        return None, None, 0
+
+
+def consolidate_files_helper(file_model, file_type_name):
+    """Helper function to consolidate files from any file model (for web routes)"""
+    excel_buffer, filename, file_count = consolidate_files_helper_to_buffer(
+        file_model, file_type_name, mark_consolidated=True
+    )
+
+    if excel_buffer is None:
+        flash(f"No {file_type_name} files found to consolidate", "warning")
+        return redirect("/")
+
+    return send_file(
+        excel_buffer,
+        as_attachment=True,
+        download_name=filename,
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+
+
+@app.route("/consolidate_day_shift_files", methods=["POST"])
+@admin_required
+def consolidate_day_shift_files():
+    """Consolidate all Day Shift files"""
+    return consolidate_files_helper(DayShiftFile, "Day Shift")
+
+
+@app.route("/consolidate_night_shift_files", methods=["POST"])
+@admin_required
+def consolidate_night_shift_files():
+    """Consolidate all Night Shift files"""
+    return consolidate_files_helper(NightShiftFile, "Night Shift")
+
+
+@app.route("/consolidate_ntbp_files", methods=["POST"])
+@admin_required
+def consolidate_ntbp_files():
+    """Consolidate all NTBP files"""
+    return consolidate_files_helper(NTBPFile, "NTBP")
+
+
+@app.route("/consolidate_qcp_files", methods=["POST"])
+@admin_required
+def consolidate_qcp_files():
+    """Consolidate all QCP files"""
+    return consolidate_files_helper(QCPFile, "QCP")
+
+
+@app.route("/consolidate_daily_consolidate_files", methods=["POST"])
+@admin_required
+def consolidate_daily_consolidate_files():
+    """Consolidate all Daily Consolidate files"""
+    return consolidate_files_helper(DailyConsolidateFile, "Daily Consolidate")
+
+
+def download_file_helper(file_model, file_id, file_type_name):
+    """Helper function to download a single file from any file model"""
+    try:
+        work_file = file_model.query.get_or_404(file_id)
+        file_data = work_file.get_file_data()
+
+        if not file_data:
+            flash("File data not found", "error")
+            return redirect("/")
+
+        excel_buffer = io.BytesIO()
+        with pd.ExcelWriter(excel_buffer, engine="openpyxl") as writer:
+            if isinstance(file_data, dict):
+                for sheet_name, sheet_data in file_data.items():
+                    if isinstance(sheet_data, pd.DataFrame):
+                        sheet_data.to_excel(writer, sheet_name=sheet_name, index=False)
+            elif isinstance(file_data, pd.DataFrame):
+                file_data.to_excel(writer, sheet_name="Sheet1", index=False)
+            else:
+                pd.DataFrame([{"Message": "No data available"}]).to_excel(
+                    writer, sheet_name="Sheet1", index=False
+                )
+
+        excel_buffer.seek(0)
+        agent_name = work_file.agent.name.replace(" ", "_")
+        original_filename = (
+            work_file.filename.rsplit(".", 1)[0]
+            if "." in work_file.filename
+            else work_file.filename
+        )
+        download_filename = f"{agent_name}_{original_filename}_{work_file.upload_date.strftime('%Y%m%d')}.xlsx"
+
+        return send_file(
+            excel_buffer,
+            as_attachment=True,
+            download_name=download_filename,
+            mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+    except Exception as e:
+        flash(f"Error downloading file: {str(e)}", "error")
+        return redirect("/")
+
+
+@app.route("/download_day_shift_file/<int:file_id>", methods=["GET"])
+@admin_required
+def download_day_shift_file(file_id):
+    """Download a single Day Shift file"""
+    return download_file_helper(DayShiftFile, file_id, "Day Shift")
+
+
+@app.route("/download_night_shift_file/<int:file_id>", methods=["GET"])
+@admin_required
+def download_night_shift_file(file_id):
+    """Download a single Night Shift file"""
+    return download_file_helper(NightShiftFile, file_id, "Night Shift")
+
+
+@app.route("/download_ntbp_file/<int:file_id>", methods=["GET"])
+@admin_required
+def download_ntbp_file(file_id):
+    """Download a single NTBP file"""
+    return download_file_helper(NTBPFile, file_id, "NTBP")
+
+
+@app.route("/download_qcp_file/<int:file_id>", methods=["GET"])
+@admin_required
+def download_qcp_file(file_id):
+    """Download a single QCP file"""
+    return download_file_helper(QCPFile, file_id, "QCP")
+
+
+@app.route("/download_daily_consolidate_file/<int:file_id>", methods=["GET"])
+@admin_required
+def download_daily_consolidate_file(file_id):
+    """Download a single Daily Consolidate file"""
+    return download_file_helper(DailyConsolidateFile, file_id, "Daily Consolidate")
+
+
+def delete_file_helper(file_model, file_id, file_type_name, subtab=None):
+    """Helper function to delete a single file from any file model"""
+    try:
+        work_file = file_model.query.get_or_404(file_id)
+        filename = work_file.filename
+        db.session.delete(work_file)
+        db.session.commit()
+        flash(f"Successfully deleted {file_type_name} file: {filename}", "success")
+    except Exception as e:
+        flash(f"Error deleting {file_type_name} file: {str(e)}", "error")
+
+    # Redirect back to the same tab and subtab
+    redirect_url = "/?tab=agent-consolidation"
+    if subtab:
+        redirect_url += f"&subtab={subtab}"
+    return redirect(redirect_url)
+
+
+@app.route("/delete_day_shift_file/<int:file_id>", methods=["POST"])
+@admin_required
+def delete_day_shift_file(file_id):
+    """Delete a single Day Shift file"""
+    subtab = request.form.get("subtab", "day-shift")
+    return delete_file_helper(DayShiftFile, file_id, "Day Shift", subtab)
+
+
+@app.route("/delete_night_shift_file/<int:file_id>", methods=["POST"])
+@admin_required
+def delete_night_shift_file(file_id):
+    """Delete a single Night Shift file"""
+    subtab = request.form.get("subtab", "night-shift")
+    return delete_file_helper(NightShiftFile, file_id, "Night Shift", subtab)
+
+
+@app.route("/delete_ntbp_file/<int:file_id>", methods=["POST"])
+@admin_required
+def delete_ntbp_file(file_id):
+    """Delete a single NTBP file"""
+    subtab = request.form.get("subtab", "ntbp")
+    return delete_file_helper(NTBPFile, file_id, "NTBP", subtab)
+
+
+@app.route("/delete_qcp_file/<int:file_id>", methods=["POST"])
+@admin_required
+def delete_qcp_file(file_id):
+    """Delete a single QCP file"""
+    subtab = request.form.get("subtab", "qcp")
+    return delete_file_helper(QCPFile, file_id, "QCP", subtab)
+
+
+@app.route("/delete_daily_consolidate_file/<int:file_id>", methods=["POST"])
+@admin_required
+def delete_daily_consolidate_file(file_id):
+    """Delete a single Daily Consolidate file"""
+    subtab = request.form.get("subtab", "daily-consolidate")
+    return delete_file_helper(
+        DailyConsolidateFile, file_id, "Daily Consolidate", subtab
+    )
+
+
+def clear_files_helper(file_model, file_type_name, subtab=None):
+    """Helper function to clear all files from any file model"""
+    try:
+        all_files = file_model.query.all()
+        file_count = len(all_files)
+
+        if file_count > 0:
+            for work_file in all_files:
+                db.session.delete(work_file)
+            db.session.commit()
+            flash(
+                f"Successfully deleted {file_count} {file_type_name} file(s)", "success"
+            )
+        else:
+            flash(f"No {file_type_name} files to delete", "info")
+    except Exception as e:
+        flash(f"Error clearing {file_type_name} files: {str(e)}", "error")
+
+    # Redirect back to the same tab and subtab
+    redirect_url = "/?tab=agent-consolidation"
+    if subtab:
+        redirect_url += f"&subtab={subtab}"
+    return redirect(redirect_url)
+
+
+@app.route("/clear_day_shift_files", methods=["POST"])
+@admin_required
+def clear_day_shift_files():
+    """Clear all Day Shift files"""
+    subtab = request.form.get("subtab", "day-shift")
+    return clear_files_helper(DayShiftFile, "Day Shift", subtab)
+
+
+@app.route("/clear_night_shift_files", methods=["POST"])
+@admin_required
+def clear_night_shift_files():
+    """Clear all Night Shift files"""
+    subtab = request.form.get("subtab", "night-shift")
+    return clear_files_helper(NightShiftFile, "Night Shift", subtab)
+
+
+@app.route("/clear_ntbp_files", methods=["POST"])
+@admin_required
+def clear_ntbp_files():
+    """Clear all NTBP files"""
+    subtab = request.form.get("subtab", "ntbp")
+    return clear_files_helper(NTBPFile, "NTBP", subtab)
+
+
+@app.route("/clear_qcp_files", methods=["POST"])
+@admin_required
+def clear_qcp_files():
+    """Clear all QCP files"""
+    subtab = request.form.get("subtab", "qcp")
+    return clear_files_helper(QCPFile, "QCP", subtab)
+
+
+@app.route("/clear_daily_consolidate_files", methods=["POST"])
+@admin_required
+def clear_daily_consolidate_files():
+    """Clear all Daily Consolidate files"""
+    subtab = request.form.get("subtab", "daily-consolidate")
+    return clear_files_helper(DailyConsolidateFile, "Daily Consolidate", subtab)
+
+
 @app.route("/get_appointment_dates")
 @login_required
 def get_appointment_dates():
@@ -19700,6 +20859,101 @@ def cleanup_all_agent_files():
         return False, str(e)
 
 
+def daily_consolidate_all_subtabs_and_email():
+    """
+    Consolidate all 5 sub-tabs (Day Shift, Night Shift, NTBP, QCP, Daily Consolidate)
+    and send them in one email with 5 attachments at 7 AM daily.
+    """
+    # Safeguard: Track last execution date to prevent duplicate emails on the same day
+    if not hasattr(app, "_last_subtab_consolidation_date"):
+        app._last_subtab_consolidation_date = None
+
+    today = datetime.now().date()
+
+    # If we already ran today, skip to prevent duplicate emails
+    if app._last_subtab_consolidation_date == today:
+        print(
+            f"⚠️ Daily sub-tab consolidation already executed today ({today}). Skipping to prevent duplicate email."
+        )
+        return False, "Already executed today"
+
+    try:
+        with app.app_context():
+            # Consolidate all 5 sub-tabs
+            subtab_configs = [
+                (DayShiftFile, "Day Shift"),
+                (NightShiftFile, "Night Shift"),
+                (NTBPFile, "NTBP"),
+                (QCPFile, "QCP"),
+                (DailyConsolidateFile, "Daily Consolidate"),
+            ]
+
+            attachments = []
+            total_files_consolidated = 0
+            subtabs_with_data = []
+
+            for file_model, file_type_name in subtab_configs:
+                excel_buffer, filename, file_count = consolidate_files_helper_to_buffer(
+                    file_model, file_type_name, mark_consolidated=True
+                )
+
+                if excel_buffer is not None and filename:
+                    attachments.append({"filename": filename, "data": excel_buffer})
+                    total_files_consolidated += file_count
+                    subtabs_with_data.append(file_type_name)
+
+            # Only send email if we have at least one attachment
+            if attachments:
+                # Use env var for recipient, fallback to sandbox-allowed email for testing
+                to_email = os.environ.get("CONSOLIDATION_EMAIL", "amirmursal@gmail.com")
+                date_str = datetime.now().strftime("%Y-%m-%d")
+                time_str = datetime.now().strftime("%H:%M:%S")
+
+                subject = f"Daily Consolidated Files - All Sub-tabs - {date_str}"
+
+                # Create HTML content listing all sub-tabs
+                subtabs_list = (
+                    "<ul>"
+                    + "".join([f"<li>{st}</li>" for st in subtabs_with_data])
+                    + "</ul>"
+                )
+                html_content = f"""
+                <p>Please find attached consolidated files for all sub-tabs generated at {date_str} {time_str}.</p>
+                <p><strong>Consolidated Sub-tabs ({len(subtabs_with_data)}):</strong></p>
+                {subtabs_list}
+                <p>Total files consolidated: {total_files_consolidated}</p>
+                """
+
+                text_content = f"Daily consolidated files for all sub-tabs. Generated at {date_str} {time_str}. Total files consolidated: {total_files_consolidated}."
+
+                success, message = send_email_with_resend(
+                    to_email=to_email,
+                    subject=subject,
+                    html_content=html_content,
+                    text_content=text_content,
+                    attachments=attachments,
+                )
+
+                if success:
+                    # Mark as executed today
+                    app._last_subtab_consolidation_date = today
+                    print(
+                        f"✅ Daily sub-tab consolidation email sent to {to_email} with {len(attachments)} attachment(s)"
+                    )
+                    return True, len(attachments)
+                else:
+                    print(f"❌ Failed to send sub-tab consolidation email: {message}")
+                    return False, message
+            else:
+                print(f"⚠️ No files found in any sub-tab to consolidate")
+                return False, "No files to consolidate"
+
+    except Exception as e:
+        print(f"❌ Error in daily sub-tab consolidation: {str(e)}")
+        db.session.rollback()
+        return False, str(e)
+
+
 def daily_consolidate_and_cleanup():
     """Consolidate all agent files, email the consolidated workbook, then cleanup."""
     # Safeguard: Track last execution date to prevent duplicate emails on the same day
@@ -20067,6 +21321,822 @@ def reset_app():
         return redirect("/")
 
 
+# ============================================================================
+# Normal Agent Routes (Google OAuth users only)
+# ============================================================================
+
+# Agent Template with Sidebar Navigation
+AGENT_TEMPLATE_WITH_SIDEBAR = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ page_title }} - Excel Allocation System</title>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { 
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
+            background: #f5f5f5;
+            min-height: 100vh;
+            display: flex;
+        }
+        .sidebar {
+            width: 250px;
+            background: linear-gradient(180deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            min-height: 100vh;
+            position: fixed;
+            left: 0;
+            top: 0;
+            padding: 20px 0;
+            box-shadow: 2px 0 10px rgba(0,0,0,0.1);
+        }
+        .sidebar-header {
+            padding: 20px;
+            text-align: center;
+            border-bottom: 1px solid rgba(255,255,255,0.2);
+            margin-bottom: 20px;
+        }
+        .sidebar-header h3 {
+            font-size: 1.3em;
+            margin-bottom: 5px;
+            color: white;
+        }
+        .sidebar-menu {
+            list-style: none;
+        }
+        .sidebar-menu li {
+            margin: 5px 0;
+        }
+        .sidebar-menu a {
+            display: flex;
+            align-items: center;
+            padding: 15px 20px;
+            color: white;
+            text-decoration: none;
+            transition: all 0.3s;
+            border-left: 3px solid transparent;
+        }
+        .sidebar-menu a:hover {
+            background: rgba(255,255,255,0.1);
+            border-left-color: white;
+        }
+        .sidebar-menu a.active {
+            background: rgba(255,255,255,0.2);
+            border-left-color: white;
+            font-weight: bold;
+        }
+        .sidebar-menu a i {
+            margin-right: 12px;
+            width: 20px;
+            text-align: center;
+        }
+        .main-content {
+            margin-left: 250px;
+            flex: 1;
+            padding: 20px;
+        }
+        .header {
+            background: white;
+            padding: 20px 30px;
+            border-radius: 10px;
+            margin-bottom: 20px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .header h1 {
+            color: #333;
+            font-size: 1.8em;
+        }
+        .header .user-info {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+        }
+        .header .user-info span {
+            color: #666;
+        }
+        .header .logout-btn {
+            padding: 8px 20px;
+            background: #dc3545;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            text-decoration: none;
+            display: inline-block;
+        }
+        .header .logout-btn:hover {
+            background: #c82333;
+        }
+        .content-area {
+            background: white;
+            padding: 30px;
+            border-radius: 10px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+        }
+        .alert {
+            padding: 15px;
+            margin-bottom: 20px;
+            border-radius: 5px;
+        }
+        .alert-success {
+            background: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+        .alert-error {
+            background: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+        .alert-info {
+            background: #d1ecf1;
+            color: #0c5460;
+            border: 1px solid #bee5eb;
+        }
+    </style>
+    <script>
+        // Handle form submissions with AJAX for Day Shift, Night Shift, NTBP, QCP, and Daily Consolidate
+        document.addEventListener('DOMContentLoaded', function() {
+            const forms = ['day-shift-form', 'night-shift-form', 'ntbp-form', 'qcp-form', 'consolidate-form'];
+            forms.forEach(formId => {
+                const form = document.getElementById(formId);
+                if (form) {
+                    form.addEventListener('submit', function(e) {
+                        e.preventDefault();
+                        const formData = new FormData(form);
+                        const submitBtn = form.querySelector('button[type="submit"]');
+                        const originalText = submitBtn.innerHTML;
+                        submitBtn.disabled = true;
+                        submitBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Uploading...';
+                        
+                        fetch(form.action, {
+                            method: 'POST',
+                            body: formData
+                        })
+                        .then(response => response.json())
+                        .then(data => {
+                            // Find or create message container
+                            let messageContainer = document.getElementById('upload-message');
+                            if (!messageContainer) {
+                                messageContainer = document.createElement('div');
+                                messageContainer.id = 'upload-message';
+                                messageContainer.style.cssText = 'display: none; margin-top: 20px; padding: 15px; border-radius: 5px;';
+                                form.parentElement.insertBefore(messageContainer, form);
+                            }
+                            
+                            if (data.success) {
+                                // Show success message
+                                messageContainer.style.display = 'block';
+                                messageContainer.className = 'alert alert-success';
+                                messageContainer.innerHTML = '<i class="fas fa-check-circle"></i> ' + data.message;
+                                // Reset form
+                                form.reset();
+                                // Hide message after 5 seconds
+                                setTimeout(() => {
+                                    messageContainer.style.display = 'none';
+                                }, 5000);
+                            } else {
+                                // Show error message
+                                messageContainer.style.display = 'block';
+                                messageContainer.className = 'alert alert-error';
+                                messageContainer.innerHTML = '<i class="fas fa-exclamation-circle"></i> ' + data.message;
+                                // Hide message after 5 seconds
+                                setTimeout(() => {
+                                    messageContainer.style.display = 'none';
+                                }, 5000);
+                            }
+                            submitBtn.disabled = false;
+                            submitBtn.innerHTML = originalText;
+                        })
+                        .catch(error => {
+                            const alertDiv = document.createElement('div');
+                            alertDiv.className = 'alert alert-error';
+                            alertDiv.innerHTML = '<i class="fas fa-exclamation-circle"></i> Error: ' + error.message;
+                            form.parentElement.insertBefore(alertDiv, form);
+                            submitBtn.disabled = false;
+                            submitBtn.innerHTML = originalText;
+                        });
+                    });
+                }
+            });
+        });
+    </script>
+</head>
+<body>
+    <div class="sidebar">
+        <div class="sidebar-header">
+            <h3><i class="fas fa-file-excel"></i> Upload Work Agent Portal</h3>
+        </div>
+        <ul class="sidebar-menu">
+            <li><a href="/day-shift" class="{{ 'active' if current_page == 'day_shift' else '' }}">
+                <i class="fas fa-sun"></i> Day Shift
+            </a></li>
+            <li><a href="/night-shift" class="{{ 'active' if current_page == 'night_shift' else '' }}">
+                <i class="fas fa-moon"></i> Night Shift
+            </a></li>
+            <li><a href="/ntbp" class="{{ 'active' if current_page == 'ntbp' else '' }}">
+                <i class="fas fa-file-upload"></i> NTBP
+            </a></li>
+            <li><a href="/qcp" class="{{ 'active' if current_page == 'qcp' else '' }}">
+                <i class="fas fa-check-circle"></i> QCP
+            </a></li>
+            <li><a href="/daily-consolidate" class="{{ 'active' if current_page == 'daily_consolidate' else '' }}">
+                <i class="fas fa-archive"></i> Daily Consolidate
+            </a></li>
+        </ul>
+    </div>
+    
+    <div class="main-content">
+        <div class="header">
+            <h1>{{ page_title }}</h1>
+            <div class="user-info">
+                <span><i class="fas fa-user"></i> {{ user_name }}</span>
+                <a href="/logout" class="logout-btn">
+                    <i class="fas fa-sign-out-alt"></i> Logout
+                </a>
+            </div>
+        </div>
+        
+        {% with messages = get_flashed_messages(with_categories=true) %}
+            {% if messages %}
+                {% for category, message in messages %}
+                    <div class="alert alert-{{ category }}">{{ message }}</div>
+                {% endfor %}
+            {% endif %}
+        {% endwith %}
+        
+        <div class="content-area">
+            {{ content|safe }}
+        </div>
+    </div>
+</body>
+</html>
+"""
+
+
+@app.route("/day-shift")
+@normal_agent_required
+def day_shift():
+    """Day Shift view - Single file upload for normal agents"""
+    global day_shift_allocation_data, day_shift_allocation_filename
+
+    # Get current user
+    user_id = session.get("user_id")
+    user = User.query.filter_by(email=user_id, is_active=True).first()
+    if not user:
+        user = User.query.filter_by(id=user_id, is_active=True).first()
+
+    user_name = user.name if user else "Agent"
+    # Get user's Day Shift files (stored in global variable for now)
+    # In future, this could be stored in database like NTBP/QCP
+
+    # Create content for Day Shift view
+    file_status = ""
+    if day_shift_allocation_filename:
+        file_status = f'<p style="margin-top: 15px; color: #28a745;"><i class="fas fa-check"></i> {day_shift_allocation_filename}</p>'
+
+    content = (
+        """
+    <h2>Day Shift File Upload</h2>
+    <p>Upload your Day Shift Work file.</p>
+    
+    <div style="border: 2px dashed #ddd; padding: 30px; border-radius: 10px; text-align: center; margin-top: 30px; max-width: 500px;">
+        <form action="/upload_day_shift" method="post" enctype="multipart/form-data" id="day-shift-form">
+            <input type="file" name="file" accept=".xlsx,.xls" required style="margin-bottom: 15px; width: 100%; padding: 10px;">
+            <button type="submit" style="padding: 10px 20px; background: #667eea; color: white; border: none; border-radius: 5px; cursor: pointer;">
+                <i class="fas fa-upload"></i> Upload Day Shift File
+            </button>
+        </form>
+    </div>
+    """
+        + file_status
+    )
+
+    return render_template_string(
+        AGENT_TEMPLATE_WITH_SIDEBAR,
+        page_title="Day Shift",
+        current_page="day_shift",
+        user_name=user_name,
+        content=content,
+    )
+
+
+@app.route("/night-shift")
+@normal_agent_required
+def night_shift():
+    """Night Shift view - Single file upload for night shift agents"""
+    global night_shift_allocation_data, night_shift_allocation_filename
+
+    # Get current user
+    user_id = session.get("user_id")
+    user = User.query.filter_by(email=user_id, is_active=True).first()
+    if not user:
+        user = User.query.filter_by(id=user_id, is_active=True).first()
+
+    user_name = user.name if user else "Agent"
+    # Get user's Night Shift files (stored in global variable for now)
+    # In future, this could be stored in database like NTBP/QCP
+
+    # Create content for Night Shift view
+    file_status = ""
+    if night_shift_allocation_filename:
+        file_status = f'<p style="margin-top: 15px; color: #28a745;"><i class="fas fa-check"></i> {night_shift_allocation_filename}</p>'
+
+    content = (
+        """
+    <h2>Night Shift File Upload</h2>
+    <p>Upload your Night Shift Work file.</p>
+    
+    <div style="border: 2px dashed #ddd; padding: 30px; border-radius: 10px; text-align: center; margin-top: 30px; max-width: 500px;">
+        <form action="/upload_night_shift" method="post" enctype="multipart/form-data" id="night-shift-form">
+            <input type="file" name="file" accept=".xlsx,.xls" required style="margin-bottom: 15px; width: 100%; padding: 10px;">
+            <button type="submit" style="padding: 10px 20px; background: #667eea; color: white; border: none; border-radius: 5px; cursor: pointer;">
+                <i class="fas fa-upload"></i> Upload Night Shift File
+            </button>
+        </form>
+    </div>
+    """
+        + file_status
+    )
+
+    return render_template_string(
+        AGENT_TEMPLATE_WITH_SIDEBAR,
+        page_title="Night Shift",
+        current_page="night_shift",
+        user_name=user_name,
+        content=content,
+    )
+
+
+@app.route("/ntbp")
+@normal_agent_required
+def ntbp():
+    """NTBP view - Upload files with NTBP remarks only"""
+    # Get current user
+    user_id = session.get("user_id")
+    user = User.query.filter_by(email=user_id, is_active=True).first()
+    if not user:
+        user = User.query.filter_by(id=user_id, is_active=True).first()
+
+    user_name = user.name if user else "Agent"
+    # Get user's NTBP files
+    ntbp_files = get_ntbp_files(user.id) if user else []
+
+    # Create content for NTBP view
+    files_list = ""
+    if ntbp_files:
+        files_list = "<h3 style='margin-top: 30px;'>Uploaded Files</h3><ul style='list-style: none; padding: 0;'>"
+        for file in ntbp_files:
+            upload_date = (
+                file.upload_date.strftime("%Y-%m-%d %H:%M:%S")
+                if file.upload_date
+                else "Unknown"
+            )
+            files_list += f"<li style='padding: 10px; background: #f8f9fa; margin: 5px 0; border-radius: 5px;'><i class='fas fa-file-excel'></i> {file.filename} - {upload_date}</li>"
+        files_list += "</ul>"
+
+    content = (
+        """
+    <h2>NTBP File Upload</h2>
+    <p>Upload your NTBP work file.</p>
+    
+    <div style="border: 2px dashed #ddd; padding: 30px; border-radius: 10px; text-align: center; margin-top: 30px; max-width: 500px;">
+        <form action="/upload_ntbp" method="post" enctype="multipart/form-data" id="ntbp-form">
+            <input type="file" name="file" accept=".xlsx,.xls" required style="margin-bottom: 15px; width: 100%; padding: 10px;">
+            <button type="submit" style="padding: 10px 20px; background: #667eea; color: white; border: none; border-radius: 5px; cursor: pointer;">
+                <i class="fas fa-upload"></i> Upload NTBP File
+            </button>
+        </form>
+    </div>
+    """
+        + files_list
+    )
+
+    return render_template_string(
+        AGENT_TEMPLATE_WITH_SIDEBAR,
+        page_title="NTBP",
+        current_page="ntbp",
+        user_name=user_name,
+        content=content,
+    )
+
+
+@app.route("/qcp")
+@normal_agent_required
+def qcp():
+    """QCP view - Upload files with QCP remarks only"""
+    # Get current user
+    user_id = session.get("user_id")
+    user = User.query.filter_by(email=user_id, is_active=True).first()
+    if not user:
+        user = User.query.filter_by(id=user_id, is_active=True).first()
+
+    user_name = user.name if user else "Agent"
+
+    content = """
+    <h2>QCP File Upload</h2>
+    <p>Upload your QCP work file.</p>
+    
+    <div style="border: 2px dashed #ddd; padding: 30px; border-radius: 10px; text-align: center; margin-top: 30px; max-width: 500px;">
+        <form action="/upload_qcp" method="post" enctype="multipart/form-data" id="qcp-form">
+            <input type="file" name="file" accept=".xlsx,.xls" required style="margin-bottom: 15px; width: 100%; padding: 10px;">
+            <button type="submit" style="padding: 10px 20px; background: #667eea; color: white; border: none; border-radius: 5px; cursor: pointer;">
+                <i class="fas fa-upload"></i> Upload QCP File
+            </button>
+        </form>
+    </div>
+    """
+
+    return render_template_string(
+        AGENT_TEMPLATE_WITH_SIDEBAR,
+        page_title="QCP",
+        current_page="qcp",
+        user_name=user_name,
+        content=content,
+    )
+
+
+@app.route("/daily-consolidate")
+@normal_agent_required
+def daily_consolidate():
+    """Daily Consolidate view - Upload end-of-day work files"""
+    # Get current user
+    user_id = session.get("user_id")
+    user = User.query.filter_by(email=user_id, is_active=True).first()
+    if not user:
+        user = User.query.filter_by(id=user_id, is_active=True).first()
+
+    user_name = user.name if user else "Agent"
+
+    content = """
+    <h2>Daily Consolidate File Upload</h2>
+    <p>Upload your end-of-day work file. This file will be stored for admin consolidation at the end of the day.</p>
+    <p style="color: #666; font-size: 0.9em; margin-top: 10px;"><em>Note: Uploading a new file will replace your previous upload.</em></p>
+    
+    <div id="upload-message" style="display: none; margin-top: 20px; padding: 15px; border-radius: 5px;"></div>
+    
+    <div style="border: 2px dashed #ddd; padding: 30px; border-radius: 10px; text-align: center; margin-top: 30px; max-width: 500px;">
+        <form action="/upload_daily_consolidate" method="post" enctype="multipart/form-data" id="consolidate-form">
+            <input type="file" name="file" accept=".xlsx,.xls" required style="margin-bottom: 15px; width: 100%; padding: 10px;">
+            <button type="submit" id="consolidate-upload-btn" style="padding: 10px 20px; background: #667eea; color: white; border: none; border-radius: 5px; cursor: pointer;">
+                <i class="fas fa-upload"></i> Upload Daily Consolidate File
+            </button>
+        </form>
+    </div>
+    """
+
+    return render_template_string(
+        AGENT_TEMPLATE_WITH_SIDEBAR,
+        page_title="Daily Consolidate",
+        current_page="daily_consolidate",
+        user_name=user_name,
+        content=content,
+    )
+
+
+@app.route("/upload_day_shift", methods=["POST"])
+@normal_agent_required
+def upload_day_shift():
+    """Upload Day Shift file"""
+
+    if "file" not in request.files:
+        return jsonify({"success": False, "message": "No file provided"}), 400
+
+    file = request.files["file"]
+    if file.filename == "":
+        return jsonify({"success": False, "message": "No file selected"}), 400
+
+    try:
+        # Get current agent
+        user_id = session.get("user_id")
+        user = User.query.filter_by(email=user_id, is_active=True).first()
+        if not user:
+            user = User.query.filter_by(id=user_id, is_active=True).first()
+
+        if not user:
+            return jsonify({"success": False, "message": "User not found"}), 400
+
+        # Save uploaded file temporarily
+        filename = secure_filename(file.filename)
+        file.save(filename)
+
+        # Load Excel file
+        try:
+            file_data = pd.read_excel(filename, sheet_name=None, parse_dates=False)
+
+            # Get notes if provided
+            notes = request.form.get("notes", "")
+
+            # Clear all existing Day Shift files for this agent before saving new one (override behavior)
+            existing_files = DayShiftFile.query.filter_by(agent_id=user.id).all()
+            for existing_file in existing_files:
+                db.session.delete(existing_file)
+            db.session.commit()
+
+            # Save to database
+            save_day_shift_file(
+                agent_id=user.id, filename=filename, file_data=file_data, notes=notes
+            )
+
+            # Clean up uploaded file
+            if os.path.exists(filename):
+                os.remove(filename)
+
+            return jsonify(
+                {
+                    "success": True,
+                    "message": f"Day Shift file '{filename}' uploaded successfully",
+                }
+            )
+
+        except Exception as e:
+            # Clean up uploaded file
+            if os.path.exists(filename):
+                os.remove(filename)
+            raise
+
+    except Exception as e:
+        return (
+            jsonify({"success": False, "message": f"Error uploading file: {str(e)}"}),
+            500,
+        )
+
+
+@app.route("/upload_night_shift", methods=["POST"])
+@normal_agent_required
+def upload_night_shift():
+    """Upload Night Shift file"""
+
+    if "file" not in request.files:
+        return jsonify({"success": False, "message": "No file provided"}), 400
+
+    file = request.files["file"]
+    if file.filename == "":
+        return jsonify({"success": False, "message": "No file selected"}), 400
+
+    try:
+        # Get current agent
+        user_id = session.get("user_id")
+        user = User.query.filter_by(email=user_id, is_active=True).first()
+        if not user:
+            user = User.query.filter_by(id=user_id, is_active=True).first()
+
+        if not user:
+            return jsonify({"success": False, "message": "User not found"}), 400
+
+        # Save uploaded file temporarily
+        filename = secure_filename(file.filename)
+        file.save(filename)
+
+        # Load Excel file
+        try:
+            file_data = pd.read_excel(filename, sheet_name=None, parse_dates=False)
+
+            # Get notes if provided
+            notes = request.form.get("notes", "")
+
+            # Clear all existing Night Shift files for this agent before saving new one (override behavior)
+            existing_files = NightShiftFile.query.filter_by(agent_id=user.id).all()
+            for existing_file in existing_files:
+                db.session.delete(existing_file)
+            db.session.commit()
+
+            # Save to database
+            save_night_shift_file(
+                agent_id=user.id, filename=filename, file_data=file_data, notes=notes
+            )
+
+            # Clean up uploaded file
+            if os.path.exists(filename):
+                os.remove(filename)
+
+            return jsonify(
+                {
+                    "success": True,
+                    "message": f"Night Shift file '{filename}' uploaded successfully",
+                }
+            )
+
+        except Exception as e:
+            # Clean up uploaded file
+            if os.path.exists(filename):
+                os.remove(filename)
+            raise
+
+    except Exception as e:
+        return (
+            jsonify({"success": False, "message": f"Error uploading file: {str(e)}"}),
+            500,
+        )
+
+
+@app.route("/upload_ntbp", methods=["POST"])
+@normal_agent_required
+def upload_ntbp():
+    """Upload NTBP file"""
+    if "file" not in request.files:
+        return jsonify({"success": False, "message": "No file provided"}), 400
+
+    file = request.files["file"]
+    if file.filename == "":
+        return jsonify({"success": False, "message": "No file selected"}), 400
+
+    try:
+        # Get current agent
+        user_id = session.get("user_id")
+        user = User.query.filter_by(email=user_id, is_active=True).first()
+        if not user:
+            user = User.query.filter_by(id=user_id, is_active=True).first()
+
+        if not user:
+            return jsonify({"success": False, "message": "User not found"}), 400
+
+        # Save uploaded file temporarily
+        filename = secure_filename(file.filename)
+        file.save(filename)
+
+        # Load Excel file
+        try:
+            file_data = pd.read_excel(filename, sheet_name=None, parse_dates=False)
+
+            # Clear all existing NTBP files for this agent before saving new one (override behavior)
+            existing_files = NTBPFile.query.filter_by(agent_id=user.id).all()
+            for existing_file in existing_files:
+                db.session.delete(existing_file)
+            db.session.commit()
+
+            # Save to database
+            ntbp_file = save_ntbp_file(
+                agent_id=user.id, filename=filename, file_data=file_data, notes=None
+            )
+
+            # Clean up uploaded file
+            if os.path.exists(filename):
+                os.remove(filename)
+
+            return jsonify(
+                {
+                    "success": True,
+                    "message": f"NTBP file '{filename}' uploaded successfully",
+                    "file_id": ntbp_file.id,
+                }
+            )
+
+        except Exception as e:
+            # Clean up uploaded file
+            if os.path.exists(filename):
+                os.remove(filename)
+            raise
+
+    except Exception as e:
+        return (
+            jsonify({"success": False, "message": f"Error uploading file: {str(e)}"}),
+            500,
+        )
+
+
+@app.route("/upload_qcp", methods=["POST"])
+@normal_agent_required
+def upload_qcp():
+    """Upload QCP file"""
+    if "file" not in request.files:
+        return jsonify({"success": False, "message": "No file provided"}), 400
+
+    file = request.files["file"]
+    if file.filename == "":
+        return jsonify({"success": False, "message": "No file selected"}), 400
+
+    try:
+        # Get current agent
+        user_id = session.get("user_id")
+        user = User.query.filter_by(email=user_id, is_active=True).first()
+        if not user:
+            user = User.query.filter_by(id=user_id, is_active=True).first()
+
+        if not user:
+            return jsonify({"success": False, "message": "User not found"}), 400
+
+        # Save uploaded file temporarily
+        filename = secure_filename(file.filename)
+        file.save(filename)
+
+        # Load Excel file
+        try:
+            file_data = pd.read_excel(filename, sheet_name=None, parse_dates=False)
+
+            # Clear all existing QCP files for this agent before saving new one (override behavior)
+            existing_files = QCPFile.query.filter_by(agent_id=user.id).all()
+            for existing_file in existing_files:
+                db.session.delete(existing_file)
+            db.session.commit()
+
+            # Save to database
+            qcp_file = save_qcp_file(
+                agent_id=user.id, filename=filename, file_data=file_data, notes=None
+            )
+
+            # Clean up uploaded file
+            if os.path.exists(filename):
+                os.remove(filename)
+
+            return jsonify(
+                {
+                    "success": True,
+                    "message": f"QCP file '{filename}' uploaded successfully",
+                    "file_id": qcp_file.id,
+                }
+            )
+
+        except Exception as e:
+            # Clean up uploaded file
+            if os.path.exists(filename):
+                os.remove(filename)
+            raise
+
+    except Exception as e:
+        return (
+            jsonify({"success": False, "message": f"Error uploading file: {str(e)}"}),
+            500,
+        )
+
+
+@app.route("/upload_daily_consolidate", methods=["POST"])
+@normal_agent_required
+def upload_daily_consolidate():
+    """Upload Daily Consolidate file"""
+    if "file" not in request.files:
+        return jsonify({"success": False, "message": "No file provided"}), 400
+
+    file = request.files["file"]
+    if file.filename == "":
+        return jsonify({"success": False, "message": "No file selected"}), 400
+
+    try:
+        # Get current agent
+        user_id = session.get("user_id")
+        user = User.query.filter_by(email=user_id, is_active=True).first()
+        if not user:
+            user = User.query.filter_by(id=user_id, is_active=True).first()
+
+        if not user:
+            return jsonify({"success": False, "message": "User not found"}), 400
+
+        # Save uploaded file temporarily
+        filename = secure_filename(file.filename)
+        file.save(filename)
+
+        # Load Excel file
+        try:
+            file_data = pd.read_excel(filename, sheet_name=None, parse_dates=False)
+
+            # Clear all existing Daily Consolidate files for this agent before saving new one (override behavior)
+            existing_files = DailyConsolidateFile.query.filter_by(
+                agent_id=user.id
+            ).all()
+            for existing_file in existing_files:
+                db.session.delete(existing_file)
+            db.session.commit()
+
+            # Save new file to database
+            consolidate_file = save_daily_consolidate_file(
+                agent_id=user.id,
+                filename=filename,
+                file_data=file_data,
+                shift_type=None,
+                notes=None,
+            )
+
+            # Clean up uploaded file
+            if os.path.exists(filename):
+                os.remove(filename)
+
+            return jsonify(
+                {
+                    "success": True,
+                    "message": f"Daily Consolidate file '{filename}' uploaded successfully",
+                    "file_id": consolidate_file.id,
+                }
+            )
+
+        except Exception as e:
+            # Clean up uploaded file
+            if os.path.exists(filename):
+                os.remove(filename)
+            raise
+
+    except Exception as e:
+        return (
+            jsonify({"success": False, "message": f"Error uploading file: {str(e)}"}),
+            500,
+        )
+
+
 if __name__ == "__main__":
     import os
     import threading
@@ -20129,6 +22199,18 @@ if __name__ == "__main__":
         cleanup_hour = int(os.environ.get("CLEANUP_HOUR", "7"))  # 7 AM
         cleanup_minute = int(os.environ.get("CLEANUP_MINUTE", "0"))
 
+        # Daily consolidation for all sub-tabs (Day Shift, Night Shift, NTBP, QCP, Daily Consolidate)
+        scheduler.add_job(
+            func=lambda: daily_consolidate_all_subtabs_and_email(),
+            trigger=CronTrigger(
+                hour=cleanup_hour, minute=cleanup_minute, timezone=cleanup_timezone
+            ),
+            id="daily_subtab_consolidation",
+            name=f"Daily sub-tab consolidation email at {cleanup_hour:02d}:{cleanup_minute:02d} {cleanup_timezone_str}",
+            replace_existing=True,
+        )
+
+        # Old consolidation for AgentWorkFile (keeping for backward compatibility)
         scheduler.add_job(
             func=lambda: daily_consolidate_and_cleanup(),
             trigger=CronTrigger(
@@ -20147,7 +22229,10 @@ if __name__ == "__main__":
         )
         utc_time = local_time.astimezone(pytz.UTC)
         print(
-            f"✅ Cleanup scheduler started - runs every day at {cleanup_hour:02d}:{cleanup_minute:02d} {cleanup_timezone_str} (UTC: {utc_time.strftime('%H:%M')})"
+            f"✅ Sub-tab consolidation scheduler started - runs every day at {cleanup_hour:02d}:{cleanup_minute:02d} {cleanup_timezone_str} (UTC: {utc_time.strftime('%H:%M')})"
+        )
+        print(
+            f"✅ Old consolidation scheduler started - runs every day at {cleanup_hour:02d}:{cleanup_minute:02d} {cleanup_timezone_str} (UTC: {utc_time.strftime('%H:%M')})"
         )
     else:
         # In reloader process, don't start scheduler

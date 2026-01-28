@@ -22074,6 +22074,8 @@ def daily_consolidate_all_subtabs_and_email():
     Consolidate all 5 sub-tabs (Day Shift, Night Shift, NTBP, QCP, Daily Consolidate)
     and send them in one email with 5 attachments at 7 AM daily.
     """
+    print(f"🔔 Daily consolidation job triggered at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    
     # Safeguard: Track last execution date to prevent duplicate emails on the same day
     if not hasattr(app, "_last_subtab_consolidation_date"):
         app._last_subtab_consolidation_date = None
@@ -22150,7 +22152,34 @@ def daily_consolidate_all_subtabs_and_email():
                     print(
                         f"✅ Daily sub-tab consolidation email sent to {to_email} with {len(attachments)} attachment(s)"
                     )
-                    return True, len(attachments)
+                    
+                    # Perform cleanup after successful email (delete all files from all sub-tabs)
+                    cleanup_configs = [
+                        (DayShiftFile, "Day Shift"),
+                        (NightShiftFile, "Night Shift"),
+                        (NTBPFile, "NTBP"),
+                        (QCPFile, "QCP"),
+                        (DailyConsolidateFile, "Daily Consolidate"),
+                    ]
+
+                    total_deleted = 0
+                    for file_model, file_type_name in cleanup_configs:
+                        files_to_delete = file_model.query.all()
+                        deleted_count = len(files_to_delete)
+                        for work_file in files_to_delete:
+                            db.session.delete(work_file)
+                        total_deleted += deleted_count
+                        if deleted_count > 0:
+                            print(
+                                f"✅ Cleanup: Deleted {deleted_count} {file_type_name} file(s)"
+                            )
+
+                    db.session.commit()
+                    print(
+                        f"✅ Daily sub-tab consolidation + cleanup complete. Deleted {total_deleted} total file(s)."
+                    )
+                    
+                    return True, total_deleted
                 else:
                     print(f"❌ Failed to send sub-tab consolidation email: {message}")
                     return False, message
@@ -22160,39 +22189,6 @@ def daily_consolidate_all_subtabs_and_email():
 
     except Exception as e:
         print(f"❌ Error in daily sub-tab consolidation + cleanup: {str(e)}")
-        db.session.rollback()
-        return False, str(e)
-
-    # Perform cleanup after emailing (delete all files from all sub-tabs)
-    try:
-        with app.app_context():
-            cleanup_configs = [
-                (DayShiftFile, "Day Shift"),
-                (NightShiftFile, "Night Shift"),
-                (NTBPFile, "NTBP"),
-                (QCPFile, "QCP"),
-                (DailyConsolidateFile, "Daily Consolidate"),
-            ]
-
-            total_deleted = 0
-            for file_model, file_type_name in cleanup_configs:
-                files_to_delete = file_model.query.all()
-                deleted_count = len(files_to_delete)
-                for work_file in files_to_delete:
-                    db.session.delete(work_file)
-                total_deleted += deleted_count
-                if deleted_count > 0:
-                    print(
-                        f"✅ Cleanup: Deleted {deleted_count} {file_type_name} file(s)"
-                    )
-
-            db.session.commit()
-            print(
-                f"✅ Daily sub-tab consolidation + cleanup complete. Deleted {total_deleted} total file(s)."
-            )
-            return True, total_deleted
-    except Exception as e:
-        print(f"❌ Error during sub-tab cleanup: {str(e)}")
         db.session.rollback()
         return False, str(e)
 

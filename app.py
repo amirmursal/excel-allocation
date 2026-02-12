@@ -1609,17 +1609,19 @@ HTML_TEMPLATE = """
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body { 
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            background: {% if session.user_role == 'admin' %}#f5f5f5{% else %}linear-gradient(135deg, #667eea 0%, #764ba2 100%){% endif %};
             min-height: 100vh;
-            padding: 20px;
+            {% if session.user_role == 'admin' %}display: flex;{% else %}padding: 20px;{% endif %}
         }
         .container { 
+            {% if session.user_role != 'admin' %}
             max-width: 1400px; 
             margin: 0 auto; 
             background: white; 
             border-radius: 15px; 
             box-shadow: 0 10px 30px rgba(0,0,0,0.2);
             overflow: hidden;
+            {% endif %}
         }
         .header { 
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
@@ -1671,6 +1673,10 @@ HTML_TEMPLATE = """
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%) !important;
             color: white !important;
             border-bottom-color: #667eea !important;
+        }
+        
+        .admin-menu-content {
+            display: none;
         }
         
         /* Toast Notifications */
@@ -1878,6 +1884,146 @@ HTML_TEMPLATE = """
         .content { padding: 30px; }
         .panel { display: none; }
         .panel.active { display: block; }
+        
+        /* Admin Sidebar Layout - Matching Agent Interface */
+        .admin-sidebar {
+            width: 250px;
+            background: linear-gradient(180deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            min-height: 100vh;
+            position: fixed;
+            left: 0;
+            top: 0;
+            padding: 20px 0;
+            box-shadow: 2px 0 10px rgba(0,0,0,0.1);
+        }
+        .admin-sidebar-header {
+            padding: 20px;
+            text-align: center;
+            border-bottom: 1px solid rgba(255,255,255,0.2);
+            margin-bottom: 20px;
+        }
+        .admin-sidebar-header h3 {
+            font-size: 1.3em;
+            margin-bottom: 5px;
+            color: white;
+        }
+        .admin-sidebar-menu {
+            list-style: none;
+            padding: 0;
+            margin: 0;
+        }
+        .admin-sidebar-menu li {
+            margin: 5px 0;
+        }
+        .admin-sidebar-menu .submenu {
+            list-style: none;
+            padding-left: 0;
+            margin: 0;
+        }
+        .admin-sidebar-menu .submenu li {
+            margin: 0;
+        }
+        .admin-sidebar .menu-item {
+            display: flex;
+            align-items: center;
+            padding: 15px 20px;
+            color: white;
+            text-decoration: none;
+            cursor: pointer;
+            transition: all 0.3s;
+            border-left: 3px solid transparent;
+        }
+        .admin-sidebar .menu-item:hover {
+            background: rgba(255,255,255,0.1);
+            border-left-color: white;
+        }
+        .admin-sidebar .menu-item.active {
+            background: rgba(255,255,255,0.2);
+            border-left-color: white;
+            font-weight: bold;
+        }
+        .admin-sidebar .menu-item i {
+            margin-right: 12px;
+            width: 20px;
+            text-align: center;
+        }
+        .admin-sidebar .submenu {
+            display: block;
+            background: rgba(0,0,0,0.1);
+        }
+        .admin-sidebar .submenu-item {
+            display: flex;
+            align-items: center;
+            padding: 10px 20px;
+            padding-left: 40px;
+            color: white;
+            text-decoration: none;
+            cursor: pointer;
+            transition: all 0.3s;
+            border-left: 3px solid transparent;
+            font-size: 0.9em;
+        }
+        .admin-sidebar .submenu-item:hover {
+            background: rgba(255,255,255,0.1);
+            border-left-color: white;
+        }
+        .admin-sidebar .submenu-item.active {
+            background: rgba(255,255,255,0.2);
+            border-left-color: white;
+            font-weight: bold;
+        }
+        .admin-sidebar .submenu-item i {
+            margin-right: 12px;
+            width: 20px;
+            text-align: center;
+        }
+        .admin-main-content {
+            margin-left: 250px;
+            flex: 1;
+            padding: 20px;
+        }
+        .admin-header {
+            background: white;
+            padding: 20px 30px;
+            border-radius: 10px;
+            margin-bottom: 20px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .admin-header h1 {
+            color: #333;
+            font-size: 1.8em;
+        }
+        .admin-content-area {
+            background: white;
+            padding: 30px;
+            border-radius: 10px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+        }
+        .admin-header .user-info {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+        }
+        .admin-header .user-info span {
+            color: #666;
+        }
+        .admin-header .logout-btn {
+            padding: 8px 20px;
+            background: #dc3545;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            text-decoration: none;
+            display: inline-block;
+        }
+        .admin-header .logout-btn:hover {
+            background: #c82333;
+        }
         
         .section { 
             margin: 25px 0; 
@@ -2258,107 +2404,291 @@ HTML_TEMPLATE = """
         .agent-row {
             display: table-row;
         }
+        
+        /* Ensure shift select dropdown can open */
+        #shift-select {
+            pointer-events: auto !important;
+            user-select: auto !important;
+            -webkit-user-select: auto !important;
+            -moz-user-select: auto !important;
+            cursor: pointer !important;
+            z-index: 99999 !important;
+            position: relative !important;
+            background: white !important;
+            opacity: 1 !important;
+            -webkit-appearance: menulist !important;
+            -moz-appearance: menulist !important;
+            appearance: menulist !important;
+        }
+        
+        #shift-select:focus {
+            outline: 2px solid #667eea !important;
+            outline-offset: 2px !important;
+        }
+        
+        #shift-select:disabled {
+            pointer-events: none !important;
+        }
+        
+        /* Ensure parent containers don't block */
+        .form-group {
+            pointer-events: auto !important;
+        }
+        
+        /* Ensure the shift select container doesn't block */
+        div[style*="z-index: 99998"] {
+            pointer-events: auto !important;
+        }
+        
+        div[style*="z-index: 99999"] {
+            pointer-events: auto !important;
+        }
     </style>
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
     <script>
-        // Define switchAdminTab function in head so it's available immediately
-        window.switchAdminTab = function(tabName, eventElement) {
-            // Update tab button states
-            document.querySelectorAll('.admin-tab-btn').forEach(btn => btn.classList.remove('active'));
+        // Define switchAdminMenu function for new sidebar menu structure
+        window.switchAdminMenu = function(menuName, submenuName) {
+            // Hide all menu content
+            document.querySelectorAll('.admin-menu-content').forEach(content => {
+                content.style.display = 'none';
+            });
             
-            // Find and activate the clicked button
-            if (eventElement) {
-                eventElement.classList.add('active');
-            } else {
-                // Fallback: find button by data-tab attribute
-                const tabButtons = document.querySelectorAll('.admin-tab-btn[data-tab]');
-                tabButtons.forEach(btn => {
-                    const tabData = btn.getAttribute('data-tab');
-                    if (tabData === tabName) {
-                        btn.classList.add('active');
+            // Remove active class from all menu items
+            document.querySelectorAll('.admin-sidebar .menu-item').forEach(item => {
+                item.classList.remove('active');
+            });
+            document.querySelectorAll('.admin-sidebar .submenu-item').forEach(item => {
+                item.classList.remove('active');
+            });
+            
+            // Hide all submenus first
+            document.querySelectorAll('.admin-sidebar .submenu').forEach(submenu => {
+                submenu.style.display = 'none';
+            });
+            
+            // Find and activate the selected menu item
+            const menuItems = document.querySelectorAll('.admin-sidebar .menu-item');
+            menuItems.forEach((item, index) => {
+                const menuText = item.textContent.trim().toLowerCase();
+                const targetMenuText = getMenuDisplayName(menuName).toLowerCase();
+                
+                if (menuText.includes(targetMenuText) || menuText.includes(menuName.toLowerCase())) {
+                    item.classList.add('active');
+                    // Show submenu if it exists (next sibling element)
+                    const nextSibling = item.nextElementSibling;
+                    if (nextSibling && nextSibling.classList.contains('submenu')) {
+                        nextSibling.style.display = 'block';
+                    }
+                }
+            });
+            
+            // Activate submenu item if specified
+            if (submenuName) {
+                const submenuItems = document.querySelectorAll('.admin-sidebar .submenu-item');
+                submenuItems.forEach(item => {
+                    const itemText = item.textContent.trim().toLowerCase();
+                    const targetSubmenuText = getSubmenuDisplayName(submenuName).toLowerCase();
+                    
+                    if (itemText.includes(targetSubmenuText) || itemText.includes(submenuName.toLowerCase())) {
+                        item.classList.add('active');
                     }
                 });
-            }
-            
-            // Show/hide tab content
-            document.querySelectorAll('.admin-tab-content').forEach(tab => tab.classList.remove('active'));
-            const targetTab = document.getElementById(tabName + '-tab');
-            if (targetTab) {
-                targetTab.classList.add('active');
+                
+                // Show corresponding content
+                const contentId = submenuName + '-content';
+                const content = document.getElementById(contentId);
+                if (content) {
+                    content.style.display = 'block';
+                    // Initialize content-specific functionality when shown
+                    if (submenuName === 'image-allocation') {
+                        // Use a longer delay to ensure DOM is ready
+                        setTimeout(function() {
+                            initializeImageAllocationContent();
+                        }, 150);
+                    }
+                } else {
+                    console.warn('Content not found for:', contentId);
+                }
             } else {
-                console.error('Tab content not found:', tabName + '-tab');
+                // Show main menu content
+                const contentId = menuName + '-content';
+                const content = document.getElementById(contentId);
+                if (content) {
+                    content.style.display = 'block';
+                } else {
+                    console.warn('Content not found for:', contentId);
+                }
             }
             
-            // Update URL without reloading page
+            // Update header title
+            const headerTitle = document.getElementById('admin-header-title');
+            if (headerTitle) {
+                headerTitle.textContent = getHeaderTitle(menuName, submenuName);
+            }
+            
+            // Update URL
             const url = new URL(window.location);
-            url.searchParams.set('tab', tabName);
+            url.searchParams.set('menu', menuName);
+            if (submenuName) {
+                url.searchParams.set('submenu', submenuName);
+            } else {
+                url.searchParams.delete('submenu');
+            }
             window.history.pushState({}, '', url);
+        };
+        
+        function getMenuDisplayName(menuName) {
+            const names = {
+                'allocations': 'Allocations',
+                'email-allocation': 'Email Allocation',
+                'agent-consolidation': 'Agent Consolidation',
+                'trackers': 'Trackers',
+                'system-setting': 'System Setting'
+            };
+            return names[menuName] || menuName;
+        }
+        
+        function getSubmenuDisplayName(submenuName) {
+            const names = {
+                'image-allocation': 'Imagen Allocation',
+                'ev-allocation': 'EV Allocations',
+                'day-shift': 'Day Shift',
+                'night-shift': 'Night Shift',
+                'ntbp': 'NTBP',
+                'qcp': 'QCP',
+                'daily-consolidate': 'Daily Consolidate',
+                'imagen-tracker': 'Imagen Tracker'
+            };
+            return names[submenuName] || submenuName;
+        }
+        
+        function getHeaderTitle(menuName, submenuName) {
+            // If submenu is specified, use submenu name
+            if (submenuName) {
+                return getSubmenuDisplayName(submenuName);
+            }
+            // Otherwise use menu name
+            return getMenuDisplayName(menuName);
+        }
+        
+        // Keep switchAdminTab for backward compatibility (if needed)
+        window.switchAdminTab = function(tabName, eventElement) {
+            // Map old tab names to new menu structure
+            const tabToMenuMap = {
+                'file-management': {menu: 'allocations', submenu: 'image-allocation'},
+                'email-allocation': {menu: 'email-allocation', submenu: ''},
+                'agent-consolidation': {menu: 'agent-consolidation', submenu: 'day-shift'},
+                'create-trackers': {menu: 'trackers', submenu: 'imagen-tracker'},
+                'system-settings': {menu: 'system-setting', submenu: ''}
+            };
+            
+            if (tabToMenuMap[tabName]) {
+                const mapping = tabToMenuMap[tabName];
+                switchAdminMenu(mapping.menu, mapping.submenu);
+            }
         };
     </script>
 </head>
 <body>
-    <div class="container">
-        <div class="header">
-            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
-                <div>
-            <h1><i class="fas fa-file-excel"></i> Excel Allocation System</h1>
-            <p>Upload and process Excel files for allocation management</p>
-                </div>
-                <div style="display: flex; align-items: center; gap: 15px;">
-                    <div style="color: white; text-align: right;">
-                        <div style="font-size: 1.1em; font-weight: 600;">Welcome, {{ session.user_name }}</div>
-                        <div style="font-size: 0.9em; opacity: 0.8;">{{ session.user_role.title() }} User</div>
-                    </div>
-                    <a href="{{ url_for('logout') }}" style="
-                        background: rgba(255, 255, 255, 0.2);
-                        color: white;
-                        padding: 8px 16px;
-                        border-radius: 20px;
-                        text-decoration: none;
-                        font-weight: 600;
-                        transition: all 0.3s ease;
-                        display: flex;
-                        align-items: center;
-                        gap: 8px;
-                    " onmouseover="this.style.background='rgba(255, 255, 255, 0.3)'" onmouseout="this.style.background='rgba(255, 255, 255, 0.2)'">
-                        <i class="fas fa-sign-out-alt"></i> Logout
-                    </a>
-                </div>
-            </div>
-            
-            {% if session.user_role == 'admin' %}
-            {% endif %}
+    {% if session.user_role == 'admin' %}
+    <!-- Admin Interface - Matching Agent Interface Layout -->
+    <div class="admin-sidebar">
+        <div class="admin-sidebar-header">
+            <img src="https://www.medinetcorp.com/images/logo.gif" alt="Logo" style="height: 40px; margin-bottom: 10px;" onerror="this.style.display='none'">
+            <h3><i class="fas fa-file-excel"></i> Admin Portal</h3>
         </div>
-
-        <div class="content">
-            <!-- Admin Panel -->
-            <div id="admin-panel" class="panel active">
-                <!-- Admin Tab Navigation -->
-                <div class="admin-tabs" style="margin-bottom: 30px;">
-                    <div class="tab-nav" style="display: flex; border-bottom: 2px solid #e9ecef; margin-bottom: 20px;">
-                        <button class="admin-tab-btn active" data-tab="file-management" onclick="switchAdminTab('file-management', this); return false;" style="padding: 12px 24px; border: none; background: #f8f9fa; color: #666; cursor: pointer; border-bottom: 3px solid transparent; transition: all 0.3s;">
-                            <i class="fas fa-upload"></i> File Management
-                        </button>
-                        <button class="admin-tab-btn" data-tab="email-allocation" onclick="switchAdminTab('email-allocation', this); return false;" style="padding: 12px 24px; border: none; background: #f8f9fa; color: #666; cursor: pointer; border-bottom: 3px solid transparent; transition: all 0.3s;">
-                            <i class="fas fa-envelope"></i> Email Allocation
-                        </button>
-                        <!-- <button class="admin-tab-btn" data-tab="agent-allocation" onclick="switchAdminTab('agent-allocation', this); return false;" style="padding: 12px 24px; border: none; background: #f8f9fa; color: #666; cursor: pointer; border-bottom: 3px solid transparent; transition: all 0.3s;">
-                            <i class="fas fa-users"></i> Agent Allocation
-                        </button> -->
-                        <button class="admin-tab-btn" data-tab="agent-consolidation" onclick="switchAdminTab('agent-consolidation', this); return false;" style="padding: 12px 24px; border: none; background: #f8f9fa; color: #666; cursor: pointer; border-bottom: 3px solid transparent; transition: all 0.3s;">
-                            <i class="fas fa-compress-arrows-alt"></i> Agent Consolidation
-                        </button>
-                        <button class="admin-tab-btn" data-tab="create-trackers" onclick="switchAdminTab('create-trackers', this); return false;" style="padding: 12px 24px; border: none; background: #f8f9fa; color: #666; cursor: pointer; border-bottom: 3px solid transparent; transition: all 0.3s;">
-                            <i class="fas fa-chart-line"></i> Create Trackers
-                        </button>
-                        <button class="admin-tab-btn" data-tab="system-settings" onclick="switchAdminTab('system-settings', this); return false;" style="padding: 12px 24px; border: none; background: #f8f9fa; color: #666; cursor: pointer; border-bottom: 3px solid transparent; transition: all 0.3s;">
-                            <i class="fas fa-cog"></i> System Settings
-                        </button>
-                    </div>
+        <ul class="admin-sidebar-menu">
+            <li>
+                <div class="menu-item {% if current_menu == 'allocations' %}active{% endif %}" onclick="switchAdminMenu('allocations', 'image-allocation')">
+                    <i class="fas fa-folder-open"></i> Allocations
                 </div>
+                <ul class="submenu" style="display: {% if current_menu == 'allocations' %}block{% else %}none{% endif %}; list-style: none; padding-left: 0;">
+                    <li>
+                        <div class="submenu-item {% if current_submenu == 'image-allocation' %}active{% endif %}" onclick="switchAdminMenu('allocations', 'image-allocation')">
+                            <i class="fas fa-image"></i> Imagen Allocation
+                        </div>
+                    </li>
+                    <li>
+                        <div class="submenu-item {% if current_submenu == 'ev-allocation' %}active{% endif %}" onclick="switchAdminMenu('allocations', 'ev-allocation')">
+                            <i class="fas fa-car"></i> EV Allocations
+                        </div>
+                    </li>
+                </ul>
+            </li>
+            <li>
+                <div class="menu-item {% if current_menu == 'email-allocation' %}active{% endif %}" onclick="switchAdminMenu('email-allocation', '')">
+                    <i class="fas fa-envelope"></i> Email Allocation
+                </div>
+            </li>
+            <li>
+                <div class="menu-item {% if current_menu == 'agent-consolidation' %}active{% endif %}" onclick="switchAdminMenu('agent-consolidation', 'day-shift')">
+                    <i class="fas fa-compress-arrows-alt"></i> Agent Consolidation
+                </div>
+                <ul class="submenu" style="display: {% if current_menu == 'agent-consolidation' %}block{% else %}none{% endif %}; list-style: none; padding-left: 0;">
+                    <li>
+                        <div class="submenu-item {% if current_submenu == 'day-shift' %}active{% endif %}" onclick="switchAdminMenu('agent-consolidation', 'day-shift')">
+                            <i class="fas fa-sun"></i> Day Shift
+                        </div>
+                    </li>
+                    <li>
+                        <div class="submenu-item {% if current_submenu == 'night-shift' %}active{% endif %}" onclick="switchAdminMenu('agent-consolidation', 'night-shift')">
+                            <i class="fas fa-moon"></i> Night Shift
+                        </div>
+                    </li>
+                    <li>
+                        <div class="submenu-item {% if current_submenu == 'ntbp' %}active{% endif %}" onclick="switchAdminMenu('agent-consolidation', 'ntbp')">
+                            <i class="fas fa-ban"></i> NTBP
+                        </div>
+                    </li>
+                    <li>
+                        <div class="submenu-item {% if current_submenu == 'qcp' %}active{% endif %}" onclick="switchAdminMenu('agent-consolidation', 'qcp')">
+                            <i class="fas fa-check-double"></i> QCP
+                        </div>
+                    </li>
+                    <li>
+                        <div class="submenu-item {% if current_submenu == 'daily-consolidate' %}active{% endif %}" onclick="switchAdminMenu('agent-consolidation', 'daily-consolidate')">
+                            <i class="fas fa-calendar-day"></i> Daily Consolidate
+                        </div>
+                    </li>
+                </ul>
+            </li>
+            <li>
+                <div class="menu-item {% if current_menu == 'trackers' %}active{% endif %}" onclick="switchAdminMenu('trackers', 'imagen-tracker')">
+                    <i class="fas fa-chart-line"></i> Trackers
+                </div>
+                <ul class="submenu" style="display: {% if current_menu == 'trackers' %}block{% else %}none{% endif %}; list-style: none; padding-left: 0;">
+                    <li>
+                        <div class="submenu-item {% if current_submenu == 'imagen-tracker' %}active{% endif %}" onclick="switchAdminMenu('trackers', 'imagen-tracker')">
+                            <i class="fas fa-chart-bar"></i> Imagen Tracker
+                        </div>
+                    </li>
+                </ul>
+            </li>
+            <li>
+                <div class="menu-item {% if current_menu == 'system-setting' %}active{% endif %}" onclick="switchAdminMenu('system-setting', '')">
+                    <i class="fas fa-cog"></i> System Setting
+                </div>
+            </li>
+        </ul>
+    </div>
+    
+    <div class="admin-main-content">
+        <div class="admin-header">
+            <h1 id="admin-header-title">Excel Allocation System</h1>
+            <div class="user-info">
+                <span><i class="fas fa-user"></i> {{ session.user_name }}</span>
+                <a href="{{ url_for('logout') }}" class="logout-btn">
+                    <i class="fas fa-sign-out-alt"></i> Logout
+                </a>
+            </div>
+        </div>
+        
+        <div class="admin-content-area">
+            <!-- Admin Panel Content -->
+            <div id="admin-panel" class="panel active">
                 
-                <!-- File Management Tab -->
-                <div id="file-management-tab" class="admin-tab-content active">
+                <!-- Imagen Allocation Content (under Allocations menu) -->
+                <div id="image-allocation-content" class="admin-menu-content" style="display: {% if current_menu == 'allocations' and current_submenu == 'image-allocation' %}block{% else %}none{% endif %};">
                 <div class="upload-grid">
                     <div class="upload-card">
                         <form action="/upload_allocation" method="post" enctype="multipart/form-data" id="allocation-form">
@@ -2412,12 +2742,12 @@ HTML_TEMPLATE = """
                 {% if allocation_data and data_file_data %}
                 <div class="section">
                     <h3>👥 Shift Selection</h3>
-                    <div style="background: #f8f9fa; padding: 20px; border-radius: 8px; margin-bottom: 20px;">
-                        <div class="form-group">
+                    <div style="background: #f8f9fa; padding: 20px; border-radius: 8px; margin-bottom: 20px; position: relative; z-index: 99998;">
+                        <div class="form-group" style="position: relative; z-index: 99999;">
                             <label for="shift-select" style="display: block; margin-bottom: 8px; font-weight: 600; color: #555;">
                                 <i class="fas fa-clock"></i> Select Shift:
                             </label>
-                            <select id="shift-select" style="width: 100%; padding: 12px; border: 2px solid #ddd; border-radius: 8px; font-size: 16px; transition: border-color 0.3s;">
+                            <select id="shift-select" style="width: 100%; padding: 12px; border: 2px solid #ddd; border-radius: 8px; font-size: 16px; transition: border-color 0.3s; cursor: pointer; position: relative; z-index: 99999 !important; background: white !important; pointer-events: auto !important; opacity: 1 !important; -webkit-appearance: menulist; -moz-appearance: menulist; appearance: menulist;">
                                 <option value="">-- Select a Shift --</option>
                             </select>
                         </div>
@@ -2553,8 +2883,19 @@ HTML_TEMPLATE = """
 
                 </div>
                 
-                <!-- Email Allocation Tab -->
-                <div id="email-allocation-tab" class="admin-tab-content">
+                <!-- EV Allocations Content (under Allocations menu) -->
+                <div id="ev-allocation-content" class="admin-menu-content" style="display: {% if current_menu == 'allocations' and current_submenu == 'ev-allocation' %}block{% else %}none{% endif %};">
+                    <div class="section">
+                        <h3>EV Allocation</h3>
+                        <div style="background: #f8f9fa; padding: 40px; border-radius: 10px; text-align: center;">
+                            <i class="fas fa-car" style="font-size: 4rem; color: #bdc3c7; margin-bottom: 20px;"></i>
+                            <p style="color: #666; font-size: 1.2em;">EV Allocation view coming soon...</p>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Email Allocation Content -->
+                <div id="email-allocation-content" class="admin-menu-content" style="display: {% if current_menu == 'email-allocation' %}block{% else %}none{% endif %};">
                     <!-- File Upload Status Messages -->
                     <div id="email-upload-status" style="margin-bottom: 20px;">
                         {% with messages = get_flashed_messages(with_categories=true) %}
@@ -2700,8 +3041,8 @@ HTML_TEMPLATE = """
                     </div>
                 </div>
                 
-                <!-- Agent Allocation Tab -->
-                <div id="agent-allocation-tab" class="admin-tab-content">
+                <!-- Agent Consolidation Content -->
+                <div id="agent-consolidation-content" class="admin-menu-content" style="display: {% if current_menu == 'agent-consolidation' %}block{% else %}none{% endif %};">
                     <!-- Individual Agent Downloads -->
                     {% if agent_allocations_data %}
                     <div class="section">
@@ -2803,32 +3144,9 @@ HTML_TEMPLATE = """
                     </div>
                 </div>
                 
-                <!-- Agent Consolidation Tab -->
-                <div id="agent-consolidation-tab" class="admin-tab-content">
+                <!-- Day Shift Content (under Agent Consolidation menu) -->
+                <div id="day-shift-content" class="admin-menu-content" style="display: {% if current_menu == 'agent-consolidation' and current_submenu == 'day-shift' %}block{% else %}none{% endif %};">
                     <div class="section">
-                        <h3>📋 Agent Consolidation</h3>
-                        
-                        <!-- Sub-tab Navigation -->
-                        <div style="display: flex; gap: 10px; margin-bottom: 20px; border-bottom: 2px solid #dee2e6; flex-wrap: wrap;">
-                            <button class="consolidation-subtab-btn active" onclick="switchConsolidationSubTab('day-shift')" id="subtab-day-shift-btn" style="padding: 12px 24px; border: none; background: #f8f9fa; color: #666; cursor: pointer; border-bottom: 3px solid transparent; transition: all 0.3s;">
-                                <i class="fas fa-sun"></i> Day Shift
-                            </button>
-                            <button class="consolidation-subtab-btn" onclick="switchConsolidationSubTab('night-shift')" id="subtab-night-shift-btn" style="padding: 12px 24px; border: none; background: #f8f9fa; color: #666; cursor: pointer; border-bottom: 3px solid transparent; transition: all 0.3s;">
-                                <i class="fas fa-moon"></i> Night Shift
-                            </button>
-                            <button class="consolidation-subtab-btn" onclick="switchConsolidationSubTab('ntbp')" id="subtab-ntbp-btn" style="padding: 12px 24px; border: none; background: #f8f9fa; color: #666; cursor: pointer; border-bottom: 3px solid transparent; transition: all 0.3s;">
-                                <i class="fas fa-ban"></i> NTBP
-                            </button>
-                            <button class="consolidation-subtab-btn" onclick="switchConsolidationSubTab('qcp')" id="subtab-qcp-btn" style="padding: 12px 24px; border: none; background: #f8f9fa; color: #666; cursor: pointer; border-bottom: 3px solid transparent; transition: all 0.3s;">
-                                <i class="fas fa-check-double"></i> QCP
-                            </button>
-                            <button class="consolidation-subtab-btn" onclick="switchConsolidationSubTab('daily-consolidate')" id="subtab-daily-consolidate-btn" style="padding: 12px 24px; border: none; background: #f8f9fa; color: #666; cursor: pointer; border-bottom: 3px solid transparent; transition: all 0.3s;">
-                                <i class="fas fa-calendar-day"></i> Daily Consolidate
-                            </button>
-                        </div>
-                        
-                        <!-- Day Shift Sub-tab -->
-                        <div id="consolidation-day-shift" class="consolidation-subtab-content">
                             {% if day_shift_files %}
                         <div style="background: #f8f9fa; padding: 20px; border-radius: 10px; margin-bottom: 20px;">
                                 <h4>Available Day Shift Files:</h4>
@@ -2852,6 +3170,8 @@ HTML_TEMPLATE = """
                                     </a>
                                     <form action="/delete_day_shift_file/{{ file.id }}" method="post" style="margin: 0; display: inline-block;" onsubmit="return confirm('Are you sure you want to delete this file? This action cannot be undone.');">
                                         <input type="hidden" name="subtab" value="day-shift">
+                                        <input type="hidden" name="current_menu" value="agent-consolidation">
+                                        <input type="hidden" name="current_submenu" value="day-shift">
                                         <button type="submit" class="process-btn" style="padding: 8px 16px; background: linear-gradient(135deg, #dc3545, #c82333); color: white; border: none; border-radius: 5px; font-size: 14px; cursor: pointer;">
                                             <i class="fas fa-trash-alt"></i> Delete
                                         </button>
@@ -2868,6 +3188,8 @@ HTML_TEMPLATE = """
                             </form>
                                 <form action="/clear_day_shift_files" method="post" style="margin: 0;" onsubmit="return confirm('Are you sure you want to delete all Day Shift files? This action cannot be undone.');">
                                     <input type="hidden" name="subtab" value="day-shift">
+                                    <input type="hidden" name="current_menu" value="agent-consolidation">
+                                    <input type="hidden" name="current_submenu" value="day-shift">
                                 <button type="submit" class="process-btn" style="background: linear-gradient(135deg, #dc3545, #c82333);">
                                     <i class="fas fa-trash-alt"></i> Clear all files
                                 </button>
@@ -2878,10 +3200,12 @@ HTML_TEMPLATE = """
                                 <p style="color: #666;">No Day Shift files uploaded yet.</p>
                             </div>
                             {% endif %}
-                        </div>
-                        
-                        <!-- Night Shift Sub-tab -->
-                        <div id="consolidation-night-shift" class="consolidation-subtab-content" style="display: none;">
+                    </div>
+                </div>
+                
+                <!-- Night Shift Content (under Agent Consolidation menu) -->
+                <div id="night-shift-content" class="admin-menu-content" style="display: {% if current_menu == 'agent-consolidation' and current_submenu == 'night-shift' %}block{% else %}none{% endif %};">
+                    <div class="section">
                             {% if night_shift_files %}
                             <div style="background: #f8f9fa; padding: 20px; border-radius: 10px; margin-bottom: 20px;">
                                 <h4>Available Night Shift Files:</h4>
@@ -2905,6 +3229,8 @@ HTML_TEMPLATE = """
                                         </a>
                                         <form action="/delete_night_shift_file/{{ file.id }}" method="post" style="margin: 0; display: inline-block;" onsubmit="return confirm('Are you sure you want to delete this file? This action cannot be undone.');">
                                             <input type="hidden" name="subtab" value="night-shift">
+                                            <input type="hidden" name="current_menu" value="agent-consolidation">
+                                            <input type="hidden" name="current_submenu" value="night-shift">
                                             <button type="submit" class="process-btn" style="padding: 8px 16px; background: linear-gradient(135deg, #dc3545, #c82333); color: white; border: none; border-radius: 5px; font-size: 14px; cursor: pointer;">
                                                 <i class="fas fa-trash-alt"></i> Delete
                                             </button>
@@ -2921,6 +3247,8 @@ HTML_TEMPLATE = """
                             </form>
                                 <form action="/clear_night_shift_files" method="post" style="margin: 0;" onsubmit="return confirm('Are you sure you want to delete all Night Shift files? This action cannot be undone.');">
                                     <input type="hidden" name="subtab" value="night-shift">
+                                    <input type="hidden" name="current_menu" value="agent-consolidation">
+                                    <input type="hidden" name="current_submenu" value="night-shift">
                                 <button type="submit" class="process-btn" style="background: linear-gradient(135deg, #dc3545, #c82333);">
                                     <i class="fas fa-trash-alt"></i> Clear all files
                                 </button>
@@ -2931,10 +3259,12 @@ HTML_TEMPLATE = """
                                 <p style="color: #666;">No Night Shift files uploaded yet.</p>
                         </div>
                             {% endif %}
-                        </div>
-                        
-                        <!-- NTBP Sub-tab -->
-                        <div id="consolidation-ntbp" class="consolidation-subtab-content" style="display: none;">
+                    </div>
+                </div>
+                
+                <!-- NTBP Content (under Agent Consolidation menu) -->
+                <div id="ntbp-content" class="admin-menu-content" style="display: {% if current_menu == 'agent-consolidation' and current_submenu == 'ntbp' %}block{% else %}none{% endif %};">
+                    <div class="section">
                             {% if ntbp_files %}
                             <div style="background: #f8f9fa; padding: 20px; border-radius: 10px; margin-bottom: 20px;">
                                 <h4>Available NTBP Files:</h4>
@@ -2958,6 +3288,8 @@ HTML_TEMPLATE = """
                                         </a>
                                         <form action="/delete_ntbp_file/{{ file.id }}" method="post" style="margin: 0; display: inline-block;" onsubmit="return confirm('Are you sure you want to delete this file? This action cannot be undone.');">
                                             <input type="hidden" name="subtab" value="ntbp">
+                                            <input type="hidden" name="current_menu" value="agent-consolidation">
+                                            <input type="hidden" name="current_submenu" value="ntbp">
                                             <button type="submit" class="process-btn" style="padding: 8px 16px; background: linear-gradient(135deg, #dc3545, #c82333); color: white; border: none; border-radius: 5px; font-size: 14px; cursor: pointer;">
                                                 <i class="fas fa-trash-alt"></i> Delete
                                             </button>
@@ -2974,6 +3306,8 @@ HTML_TEMPLATE = """
                                 </form>
                                 <form action="/clear_ntbp_files" method="post" style="margin: 0;" onsubmit="return confirm('Are you sure you want to delete all NTBP files? This action cannot be undone.');">
                                     <input type="hidden" name="subtab" value="ntbp">
+                                    <input type="hidden" name="current_menu" value="agent-consolidation">
+                                    <input type="hidden" name="current_submenu" value="ntbp">
                                     <button type="submit" class="process-btn" style="background: linear-gradient(135deg, #dc3545, #c82333);">
                                         <i class="fas fa-trash-alt"></i> Clear all files
                                     </button>
@@ -2984,10 +3318,12 @@ HTML_TEMPLATE = """
                                 <p style="color: #666;">No NTBP files uploaded yet.</p>
                     </div>
                     {% endif %}
-                        </div>
-                        
-                        <!-- QCP Sub-tab -->
-                        <div id="consolidation-qcp" class="consolidation-subtab-content" style="display: none;">
+                    </div>
+                </div>
+                
+                <!-- QCP Content (under Agent Consolidation menu) -->
+                <div id="qcp-content" class="admin-menu-content" style="display: {% if current_menu == 'agent-consolidation' and current_submenu == 'qcp' %}block{% else %}none{% endif %};">
+                    <div class="section">
                             {% if qcp_files %}
                             <div style="background: #f8f9fa; padding: 20px; border-radius: 10px; margin-bottom: 20px;">
                                 <h4>Available QCP Files:</h4>
@@ -3011,6 +3347,8 @@ HTML_TEMPLATE = """
                                         </a>
                                         <form action="/delete_qcp_file/{{ file.id }}" method="post" style="margin: 0; display: inline-block;" onsubmit="return confirm('Are you sure you want to delete this file? This action cannot be undone.');">
                                             <input type="hidden" name="subtab" value="qcp">
+                                            <input type="hidden" name="current_menu" value="agent-consolidation">
+                                            <input type="hidden" name="current_submenu" value="qcp">
                                             <button type="submit" class="process-btn" style="padding: 8px 16px; background: linear-gradient(135deg, #dc3545, #c82333); color: white; border: none; border-radius: 5px; font-size: 14px; cursor: pointer;">
                                                 <i class="fas fa-trash-alt"></i> Delete
                                             </button>
@@ -3027,6 +3365,8 @@ HTML_TEMPLATE = """
                                 </form>
                                 <form action="/clear_qcp_files" method="post" style="margin: 0;" onsubmit="return confirm('Are you sure you want to delete all QCP files? This action cannot be undone.');">
                                     <input type="hidden" name="subtab" value="qcp">
+                                    <input type="hidden" name="current_menu" value="agent-consolidation">
+                                    <input type="hidden" name="current_submenu" value="qcp">
                                     <button type="submit" class="process-btn" style="background: linear-gradient(135deg, #dc3545, #c82333);">
                                         <i class="fas fa-trash-alt"></i> Clear all files
                                     </button>
@@ -3037,10 +3377,12 @@ HTML_TEMPLATE = """
                                 <p style="color: #666;">No QCP files uploaded yet.</p>
                     </div>
                     {% endif %}
-                        </div>
-                        
-                        <!-- Daily Consolidate Sub-tab -->
-                        <div id="consolidation-daily-consolidate" class="consolidation-subtab-content" style="display: none;">
+                    </div>
+                </div>
+                
+                <!-- Daily Consolidate Content (under Agent Consolidation menu) -->
+                <div id="daily-consolidate-content" class="admin-menu-content" style="display: {% if current_menu == 'agent-consolidation' and current_submenu == 'daily-consolidate' %}block{% else %}none{% endif %};">
+                    <div class="section">
                             {% if daily_consolidate_files %}
                             <div style="background: #f8f9fa; padding: 20px; border-radius: 10px; margin-bottom: 20px;">
                                 <h4>Available Daily Consolidate Files:</h4>
@@ -3064,6 +3406,8 @@ HTML_TEMPLATE = """
                                         </a>
                                         <form action="/delete_daily_consolidate_file/{{ file.id }}" method="post" style="margin: 0; display: inline-block;" onsubmit="return confirm('Are you sure you want to delete this file? This action cannot be undone.');">
                                             <input type="hidden" name="subtab" value="daily-consolidate">
+                                            <input type="hidden" name="current_menu" value="agent-consolidation">
+                                            <input type="hidden" name="current_submenu" value="daily-consolidate">
                                             <button type="submit" class="process-btn" style="padding: 8px 16px; background: linear-gradient(135deg, #dc3545, #c82333); color: white; border: none; border-radius: 5px; font-size: 14px; cursor: pointer;">
                                                 <i class="fas fa-trash-alt"></i> Delete
                                             </button>
@@ -3080,6 +3424,8 @@ HTML_TEMPLATE = """
                                 </form>
                                 <form action="/clear_daily_consolidate_files" method="post" style="margin: 0;" onsubmit="return confirm('Are you sure you want to delete all Daily Consolidate files? This action cannot be undone.');">
                                     <input type="hidden" name="subtab" value="daily-consolidate">
+                                    <input type="hidden" name="current_menu" value="agent-consolidation">
+                                    <input type="hidden" name="current_submenu" value="daily-consolidate">
                                     <button type="submit" class="process-btn" style="background: linear-gradient(135deg, #dc3545, #c82333);">
                                         <i class="fas fa-trash-alt"></i> Clear all files
                                     </button>
@@ -3090,12 +3436,11 @@ HTML_TEMPLATE = """
                                 <p style="color: #666;">No Daily Consolidate files uploaded yet.</p>
                             </div>
                             {% endif %}
-                        </div>
                     </div>
                 </div>
                 
-                <!-- Create Trackers Tab -->
-                <div id="create-trackers-tab" class="admin-tab-content">
+                <!-- Imagen Tracker Content (under Trackers menu) -->
+                <div id="imagen-tracker-content" class="admin-menu-content" style="display: {% if current_menu == 'trackers' and current_submenu == 'imagen-tracker' %}block{% else %}none{% endif %};">
                     <div class="section">
                         <h3>📊 Create Trackers</h3>
                         <p>Upload a data file to generate all 10 tracking sheets. The file should contain the necessary columns (Agent Name, Appointment Date, Remark, Priority Status, Insurance Carrier, Office Name, etc.)</p>
@@ -3140,8 +3485,8 @@ HTML_TEMPLATE = """
                     </div>
                 </div>
                 
-                <!-- System Settings Tab -->
-                <div id="system-settings-tab" class="admin-tab-content">
+                <!-- System Setting Content -->
+                <div id="system-setting-content" class="admin-menu-content" style="display: {% if current_menu == 'system-setting' %}block{% else %}none{% endif %};">
                     <!-- Reset Section -->
                     <div class="section">
                         <h3>🔄 Reset Application</h3>
@@ -3152,7 +3497,41 @@ HTML_TEMPLATE = """
                     </div>
                 </div>
             </div>
+        </div>
+    </div>
+    {% else %}
+    <!-- Agent/Non-Admin Interface -->
+    <div class="container">
+        <div class="header">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+                <div>
+            <h1><i class="fas fa-file-excel"></i> Excel Allocation System</h1>
+            <p>Upload and process Excel files for allocation management</p>
+                </div>
+                <div style="display: flex; align-items: center; gap: 15px;">
+                    <div style="color: white; text-align: right;">
+                        <div style="font-size: 1.1em; font-weight: 600;">Welcome, {{ session.user_name }}</div>
+                        <div style="font-size: 0.9em; opacity: 0.8;">{{ session.user_role.title() }} User</div>
+                    </div>
+                    <a href="{{ url_for('logout') }}" style="
+                        background: rgba(255, 255, 255, 0.2);
+                        color: white;
+                        padding: 8px 16px;
+                        border-radius: 20px;
+                        text-decoration: none;
+                        font-weight: 600;
+                        transition: all 0.3s ease;
+                        display: flex;
+                        align-items: center;
+                        gap: 8px;
+                    " onmouseover="this.style.background='rgba(255, 255, 255, 0.3)'" onmouseout="this.style.background='rgba(255, 255, 255, 0.2)'">
+                        <i class="fas fa-sign-out-alt"></i> Logout
+                    </a>
+                </div>
+            </div>
+        </div>
 
+        <div class="content">
             <!-- Agent Panel -->
             <div id="agent-panel" class="panel">
            
@@ -3204,6 +3583,7 @@ HTML_TEMPLATE = """
             </div>
         </div>
     </div>
+    {% endif %}
 
     <!-- Toast Container -->
     <div class="toast-container" id="toastContainer"></div>
@@ -3256,61 +3636,36 @@ HTML_TEMPLATE = """
             window.history.pushState({}, '', url);
         }
         
-        // Set up tab button event listeners (backup to inline onclick handlers)
+        // Initialize admin menu on page load
         document.addEventListener('DOMContentLoaded', function() {
-            // Add click event listeners to all admin tab buttons
-            const adminTabButtons = document.querySelectorAll('.admin-tab-btn[data-tab]');
-            console.log('Found admin tab buttons:', adminTabButtons.length);
-            adminTabButtons.forEach(btn => {
-                btn.addEventListener('click', function(e) {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    const tabName = this.getAttribute('data-tab');
-                    console.log('Tab clicked:', tabName);
-                    if (tabName) {
-                        switchAdminTab(tabName, this);
-                    }
-                });
-            });
-            
-            // Check for tab parameter in URL on page load
+            // Check for menu and submenu parameters in URL
             const urlParams = new URLSearchParams(window.location.search);
+            const menuParam = urlParams.get('menu');
+            const submenuParam = urlParams.get('submenu');
+            
+            // Also check for legacy 'tab' parameter for backward compatibility
             const tabParam = urlParams.get('tab');
-            const subtabParam = urlParams.get('subtab');
             
-            if (tabParam) {
-                // Find the button for this tab and activate it
-                const tabButtons = document.querySelectorAll('.admin-tab-btn[data-tab]');
-                tabButtons.forEach(btn => {
-                    const tabData = btn.getAttribute('data-tab');
-                    if (tabData === tabParam) {
-                        // Remove active from all tabs
-                        document.querySelectorAll('.admin-tab-btn').forEach(b => b.classList.remove('active'));
-                        document.querySelectorAll('.admin-tab-content').forEach(t => t.classList.remove('active'));
-                        // Add active to selected tab
-                        btn.classList.add('active');
-                        const tabContent = document.getElementById(tabParam + '-tab');
-                        if (tabContent) {
-                            tabContent.classList.add('active');
-                        }
-                    }
-                });
+            if (menuParam) {
+                // Use new menu structure
+                switchAdminMenu(menuParam, submenuParam || '');
+            } else if (tabParam) {
+                // Legacy tab parameter - convert to menu structure
+                switchAdminTab(tabParam);
             } else {
-                // If no tab parameter, ensure first tab (file-management) is active
-                const firstTab = document.querySelector('.admin-tab-btn[data-tab="file-management"]');
-                const firstTabContent = document.getElementById('file-management-tab');
-                if (firstTab && firstTabContent) {
-                    document.querySelectorAll('.admin-tab-btn').forEach(b => b.classList.remove('active'));
-                    document.querySelectorAll('.admin-tab-content').forEach(t => t.classList.remove('active'));
-                    firstTab.classList.add('active');
-                    firstTabContent.classList.add('active');
-                }
+                // Default: show Imagen Allocation (first menu item)
+                switchAdminMenu('allocations', 'image-allocation');
             }
             
-            // Handle subtab parameter for Agent Consolidation tab
-            if (subtabParam && tabParam === 'agent-consolidation') {
-                switchConsolidationSubTab(subtabParam);
-            }
+            // Update header title on initial load (after menu is switched)
+            setTimeout(function() {
+                const headerTitle = document.getElementById('admin-header-title');
+                if (headerTitle) {
+                    const finalMenu = menuParam || 'allocations';
+                    const finalSubmenu = submenuParam || 'image-allocation';
+                    headerTitle.textContent = getHeaderTitle(finalMenu, finalSubmenu);
+                }
+            }, 100);
         });
         
         // Handle file upload forms with status messages
@@ -3964,8 +4319,15 @@ HTML_TEMPLATE = """
         
         // Populate date fields when page loads
         document.addEventListener('DOMContentLoaded', function() {
-            // Load shifts first if both files are uploaded
-            loadShifts();
+            // Check if Imagen Allocation content is visible and initialize it
+            const imageAllocationContent = document.getElementById('image-allocation-content');
+            if (imageAllocationContent) {
+                // Check computed style to see if content is visible
+                const computedStyle = window.getComputedStyle(imageAllocationContent);
+                if (computedStyle.display !== 'none') {
+                    initializeImageAllocationContent();
+                }
+            }
             
             // Only load appointment dates if files have been uploaded
             // Check if data file container exists and has content before showing loader
@@ -3980,13 +4342,43 @@ HTML_TEMPLATE = """
         // Load available shifts from uploaded staff details
         function loadShifts() {
             const shiftSelect = document.getElementById('shift-select');
-            if (!shiftSelect) return;
+            if (!shiftSelect) {
+                // If shift-select doesn't exist yet, try again after a short delay
+                setTimeout(loadShifts, 100);
+                return;
+            }
+            
+            // Ensure dropdown is enabled and fully interactive
+            shiftSelect.disabled = false;
+            shiftSelect.removeAttribute('disabled');
+            shiftSelect.removeAttribute('readonly');
+            shiftSelect.style.pointerEvents = 'auto';
+            shiftSelect.style.opacity = '1';
+            shiftSelect.style.cursor = 'pointer';
+            shiftSelect.style.zIndex = '99999';
+            shiftSelect.style.background = 'white';
+            shiftSelect.style.webkitAppearance = 'menulist';
+            shiftSelect.style.mozAppearance = 'menulist';
+            shiftSelect.style.appearance = 'menulist';
+            shiftSelect.setAttribute('tabindex', '0');
+            
+            console.log('Loading shifts...');
+            console.log('Shift select element:', shiftSelect);
+            console.log('Is disabled?', shiftSelect.disabled);
             
             fetch('/get_shifts')
-                .then(response => response.json())
+                .then(response => {
+                    if (!response.ok) {
+                        throw new Error(`HTTP error! status: ${response.status}`);
+                    }
+                    return response.json();
+                })
                 .then(data => {
+                    console.log('Shifts data received:', data);
                     if (data.error) {
                         console.log('No shifts available:', data.error);
+                        // Show error in dropdown
+                        shiftSelect.innerHTML = '<option value="">-- ' + data.error + ' --</option>';
                         return;
                     }
                     
@@ -3996,26 +4388,168 @@ HTML_TEMPLATE = """
                     }
                     
                     // Add shift options
-                    data.shifts.forEach(shift => {
-                        const option = document.createElement('option');
-                        option.value = shift.value;
-                        option.textContent = shift.label;
-                        shiftSelect.appendChild(option);
-                    });
+                    if (data.shifts && data.shifts.length > 0) {
+                        data.shifts.forEach(shift => {
+                            const option = document.createElement('option');
+                            option.value = shift.value;
+                            option.textContent = shift.label;
+                            shiftSelect.appendChild(option);
+                        });
+                        console.log('Loaded', data.shifts.length, 'shifts into dropdown');
+                        console.log('Dropdown now has', shiftSelect.options.length, 'options');
+                        
+                        // Ensure dropdown is still enabled after populating
+                        shiftSelect.disabled = false;
+                        shiftSelect.removeAttribute('disabled');
+                        shiftSelect.removeAttribute('readonly');
+                        shiftSelect.style.pointerEvents = 'auto';
+                        shiftSelect.style.opacity = '1';
+                        shiftSelect.style.zIndex = '99999';
+                        shiftSelect.style.background = 'white';
+                        shiftSelect.style.webkitAppearance = 'menulist';
+                        shiftSelect.style.mozAppearance = 'menulist';
+                        shiftSelect.style.appearance = 'menulist';
+                        shiftSelect.setAttribute('tabindex', '0');
+                    } else {
+                        shiftSelect.innerHTML = '<option value="">-- No shifts available --</option>';
+                    }
                 })
                 .catch(error => {
-                    console.log('Error loading shifts:', error);
+                    console.error('Error loading shifts:', error);
+                    shiftSelect.innerHTML = '<option value="">-- Error loading shifts --</option>';
                 });
         }
         
-        // Handle shift selection change
-        const shiftSelect = document.getElementById('shift-select');
-        if (shiftSelect) {
+        // Setup shift selection change handler (use a flag to prevent duplicate handlers)
+        let shiftSelectHandlerAttached = false;
+        function setupShiftSelectHandler() {
+            const shiftSelect = document.getElementById('shift-select');
+            if (!shiftSelect) {
+                // If shift-select doesn't exist yet, try again after a short delay
+                setTimeout(setupShiftSelectHandler, 100);
+                return;
+            }
+            
+            // Ensure dropdown is enabled and not disabled
+            shiftSelect.disabled = false;
+            shiftSelect.removeAttribute('disabled');
+            shiftSelect.removeAttribute('readonly');
+            shiftSelect.style.pointerEvents = 'auto';
+            shiftSelect.style.opacity = '1';
+            shiftSelect.style.cursor = 'pointer';
+            shiftSelect.style.zIndex = '99999';
+            shiftSelect.style.position = 'relative';
+            shiftSelect.style.background = 'white';
+            shiftSelect.style.webkitAppearance = 'menulist';
+            shiftSelect.style.mozAppearance = 'menulist';
+            shiftSelect.style.appearance = 'menulist';
+            shiftSelect.setAttribute('tabindex', '0');
+            
+            console.log('Setting up shift select handler');
+            console.log('Shift select element:', shiftSelect);
+            console.log('Is disabled?', shiftSelect.disabled);
+            console.log('Has options?', shiftSelect.options.length);
+            
+            // Only attach handler once
+            if (shiftSelectHandlerAttached) {
+                // Check if handler is still attached by checking for a data attribute
+                if (shiftSelect.dataset.handlerAttached === 'true') {
+                    console.log('Handler already attached, skipping');
+                    return;
+                }
+            }
+            
+            // Mark as attached
+            shiftSelect.dataset.handlerAttached = 'true';
+            shiftSelectHandlerAttached = true;
+            
+            // Ensure parent containers aren't blocking
+            const formGroup = shiftSelect.closest('.form-group');
+            if (formGroup) {
+                formGroup.style.pointerEvents = 'auto';
+                formGroup.style.zIndex = '99999';
+                formGroup.style.position = 'relative';
+            }
+            
+            const container = shiftSelect.closest('div[style*="z-index"]');
+            if (container) {
+                container.style.pointerEvents = 'auto';
+            }
+            
+            // Ensure dropdown is enabled and can open
+            shiftSelect.disabled = false;
+            shiftSelect.removeAttribute('disabled');
+            shiftSelect.removeAttribute('readonly');
+            shiftSelect.style.pointerEvents = 'auto';
+            shiftSelect.style.opacity = '1';
+            shiftSelect.style.cursor = 'pointer';
+            shiftSelect.style.zIndex = '99999';
+            shiftSelect.style.position = 'relative';
+            shiftSelect.style.background = 'white';
+            shiftSelect.style.webkitAppearance = 'menulist';
+            shiftSelect.style.mozAppearance = 'menulist';
+            shiftSelect.style.appearance = 'menulist';
+            shiftSelect.setAttribute('tabindex', '0');
+            
+            // Remove any overlay that might be blocking
+            const loader = document.getElementById('loader-overlay');
+            if (loader) {
+                loader.classList.remove('show');
+                loader.style.pointerEvents = 'none';
+                loader.style.zIndex = '1';
+                loader.style.display = 'none';
+            }
+            
+            // Ensure no other elements are blocking
+            const allOverlays = document.querySelectorAll('[style*="z-index"]');
+            allOverlays.forEach(el => {
+                const zIndex = window.getComputedStyle(el).zIndex;
+                if (zIndex && parseInt(zIndex) > 10000 && el.id !== 'shift-select' && !el.closest('#shift-select')) {
+                    // Don't modify the shift-select itself or its parents
+                    if (!el.id.includes('shift') && !el.closest('.form-group')) {
+                        console.log('Found potential blocking element:', el.id || el.className, 'z-index:', zIndex);
+                    }
+                }
+            });
+            
+            // Add mousedown handler to ensure dropdown opens (mousedown fires before click)
+            shiftSelect.addEventListener('mousedown', function(e) {
+                console.log('Shift dropdown mousedown!', e);
+                console.log('Current value:', this.value);
+                console.log('Options count:', this.options.length);
+                console.log('Is disabled?', this.disabled);
+                
+                // Ensure it's enabled - critical for dropdown to open
+                this.disabled = false;
+                this.removeAttribute('disabled');
+                this.removeAttribute('readonly');
+                this.style.pointerEvents = 'auto';
+                this.style.opacity = '1';
+                this.style.cursor = 'pointer';
+                
+                // Don't prevent default - let browser handle dropdown opening
+            }, false);
+            
+            // Add click handler for debugging
+            shiftSelect.addEventListener('click', function(e) {
+                console.log('Shift dropdown clicked!', e);
+                console.log('Is disabled after click?', this.disabled);
+                // Ensure still enabled
+                this.disabled = false;
+                this.removeAttribute('disabled');
+            }, false);
+            
+            // Attach change event listener
             shiftSelect.addEventListener('change', function() {
+                console.log('Shift selected:', this.value);
                 const selectedShift = this.value;
                 const agentExclusionContainer = document.getElementById('agent-exclusion-container');
                 const excludeAgentsSelect = document.getElementById('exclude-agents');
                 const processBtn = document.getElementById('process-btn');
+                
+                // Ensure dropdown stays enabled
+                this.disabled = false;
+                this.removeAttribute('disabled');
                 
                 // Enable or disable process button based on shift selection
                 if (processBtn) {
@@ -4066,6 +4600,47 @@ HTML_TEMPLATE = """
                         console.error('Error loading agents:', error);
                     });
             });
+        }
+        
+        // Call setup when Imagen Allocation content is shown
+        function initializeImageAllocationContent() {
+            console.log('Initializing Imagen Allocation content');
+            
+            // Ensure loader is not blocking - make it non-interactive
+            const loader = document.getElementById('loader-overlay');
+            if (loader) {
+                console.log('Loader found, ensuring it does not block dropdown');
+                loader.classList.remove('show');
+                loader.style.pointerEvents = 'none';
+                loader.style.zIndex = '1';
+                loader.style.display = 'none';
+            }
+            
+            // Reset handler flag when reinitializing
+            shiftSelectHandlerAttached = false;
+            
+            // Ensure dropdown exists and is enabled immediately
+            const shiftSelect = document.getElementById('shift-select');
+            if (shiftSelect) {
+                shiftSelect.disabled = false;
+                shiftSelect.removeAttribute('disabled');
+                shiftSelect.removeAttribute('readonly');
+                shiftSelect.style.pointerEvents = 'auto';
+                shiftSelect.style.opacity = '1';
+                shiftSelect.style.cursor = 'pointer';
+                shiftSelect.style.zIndex = '99999';
+                shiftSelect.style.position = 'relative';
+                shiftSelect.style.background = 'white';
+                shiftSelect.style.webkitAppearance = 'menulist';
+                shiftSelect.style.mozAppearance = 'menulist';
+                shiftSelect.style.appearance = 'menulist';
+                // Force enable the select element
+                shiftSelect.setAttribute('tabindex', '0');
+            }
+            
+            loadShifts();
+            // Setup handler after a short delay to ensure dropdown is populated
+            setTimeout(setupShiftSelectHandler, 300);
         }
         
         // Version of loadAppointmentDates that checks if loader should be shown (for initial page load after file upload)
@@ -5005,6 +5580,11 @@ HTML_TEMPLATE = """
         }
         
         function processFiles() {
+            // Get current menu parameters to preserve view (declare once at function level)
+            const urlParams = new URLSearchParams(window.location.search);
+            const currentMenu = urlParams.get('menu') || 'allocations';
+            const currentSubmenu = urlParams.get('submenu') || 'image-allocation';
+            
             // Add selected calendar dates to form
             const form = document.getElementById('process-form');
             if (form) {
@@ -5021,6 +5601,26 @@ HTML_TEMPLATE = """
                 
                 const existingExcludedInputs = form.querySelectorAll('input[name="excluded_agents"]');
                 existingExcludedInputs.forEach(input => input.remove());
+                
+                // Remove existing menu parameters
+                const existingMenuInput = form.querySelector('input[name="current_menu"]');
+                if (existingMenuInput) existingMenuInput.remove();
+                const existingSubmenuInput = form.querySelector('input[name="current_submenu"]');
+                if (existingSubmenuInput) existingSubmenuInput.remove();
+                
+                // Add current menu and submenu to preserve the view (reuse variables declared above)
+                
+                const menuInput = document.createElement('input');
+                menuInput.type = 'hidden';
+                menuInput.name = 'current_menu';
+                menuInput.value = currentMenu;
+                form.appendChild(menuInput);
+                
+                const submenuInput = document.createElement('input');
+                submenuInput.type = 'hidden';
+                submenuInput.name = 'current_submenu';
+                submenuInput.value = currentSubmenu;
+                form.appendChild(submenuInput);
                 
                 // Add shift selection
                 const shiftSelect = document.getElementById('shift-select');
@@ -5102,6 +5702,9 @@ HTML_TEMPLATE = """
                 debugSecondInput.name = 'debug_selected_count_second';
                 debugSecondInput.value = selectedSecondDates.size;
                 form.appendChild(debugSecondInput);
+                
+                // Note: urlParams, currentMenu, and currentSubmenu are already declared above
+                // No need to redeclare them here
             }
             
             const processingStatus = document.getElementById('processing-status');
@@ -5144,12 +5747,15 @@ HTML_TEMPLATE = """
             
             // Make AJAX request with form body
             const formData = new FormData(form);
+            
+            // Note: urlParams, currentMenu, and currentSubmenu are already declared at the top of the function
+            
             fetch('/process_files', {
                 method: 'POST',
-                body: new URLSearchParams(formData)
+                body: formData,
+                redirect: 'follow'
             })
-            .then(response => response.text())
-            .then(html => {
+            .then(response => {
                 clearInterval(progressInterval);
                 if (progressBar) {
                     progressBar.style.width = '100%';
@@ -5159,8 +5765,10 @@ HTML_TEMPLATE = """
                     progressText.textContent = 'Processing complete!';
                 }
                 
+                // Reload page with menu parameters preserved to show results
                 setTimeout(() => {
-                    document.body.innerHTML = html;
+                    const redirectUrl = `/?menu=${currentMenu}&submenu=${currentSubmenu}`;
+                    window.location.href = redirectUrl;
                 }, 1000);
             })
             .catch(error => {
@@ -5168,6 +5776,11 @@ HTML_TEMPLATE = """
                 if (progressText) {
                     progressText.textContent = 'Error: ' + error.message;
                 }
+                // On error, reload to show error message with menu preserved
+                setTimeout(() => {
+                    const redirectUrl = `/?menu=${currentMenu}&submenu=${currentSubmenu}`;
+                    window.location.href = redirectUrl;
+                }, 2000);
             });
         }
         
@@ -15251,6 +15864,11 @@ def index():
     ntbp_files = None
     qcp_files = None
     daily_consolidate_files = None
+    
+    # Get menu and submenu from URL parameters (for admin users)
+    current_menu = request.args.get('menu', 'allocations' if user and user.role == 'admin' else '')
+    current_submenu = request.args.get('submenu', 'image-allocation' if current_menu == 'allocations' else ('day-shift' if current_menu == 'agent-consolidation' else ('imagen-tracker' if current_menu == 'trackers' else '')))
+    
     if user and user.role == "admin":
         all_agent_work_files = get_all_agent_work_files()
         day_shift_files = get_day_shift_files()
@@ -15283,6 +15901,8 @@ def index():
         email_allocation_agents_list=email_allocation_agents_list,
         email_sent_agents=list(email_sent_agents) if email_sent_agents else [],
         tracker_file_ready=tracker_file_ready if 'tracker_file_ready' in globals() else False,
+        current_menu=current_menu,
+        current_submenu=current_submenu,
     )
 
 
@@ -16432,19 +17052,40 @@ def upload_data_file():
 @admin_required
 def process_files():
     global allocation_data, data_file_data, processing_result, agent_processing_result, agent_allocations_data
+    global email_staff_details, email_staff_filename
+    global email_allocation_data, email_allocation_filename, email_allocation_agents_list
+    global tracker_data, tracker_filename, tracker_file_ready
+
+    # Get current user
+    user = get_user_by_username(session.get("user_id"))
+    
+    # Preserve menu and submenu parameters to stay on Imagen Allocation view
+    current_menu = request.form.get('current_menu', 'allocations')
+    current_submenu = request.form.get('current_submenu', 'image-allocation')
+    
+    # Load all agent work files for admin view
+    all_agent_work_files = None
+    day_shift_files = None
+    night_shift_files = None
+    ntbp_files = None
+    qcp_files = None
+    daily_consolidate_files = None
+    if user and user.role == "admin":
+        all_agent_work_files = get_all_agent_work_files()
+        day_shift_files = get_day_shift_files()
+        night_shift_files = get_night_shift_files()
+        ntbp_files = get_ntbp_files()
+        qcp_files = get_qcp_files()
+        daily_consolidate_files = get_daily_consolidate_files()
 
     if not data_file_data:
         processing_result = "❌ Error: Please upload data file first"
-        return render_template_string(
-            HTML_TEMPLATE,
-            allocation_data=allocation_data,
-            data_file_data=data_file_data,
-            allocation_filename=allocation_filename,
-            data_filename=data_filename,
-            processing_result=processing_result,
-            agent_processing_result=agent_processing_result,
-            agent_allocations_data=agent_allocations_data,
-        )
+        # Redirect back to the same view with menu parameters preserved
+        redirect_url = f"/?menu={current_menu}"
+        if current_submenu:
+            redirect_url += f"&submenu={current_submenu}"
+        flash(processing_result, "error")
+        return redirect(redirect_url)
 
     try:
         import time
@@ -16517,16 +17158,12 @@ def process_files():
                 f"⚠️ [process_files] Processing returned None - {result_message[:100]}"
             )
 
-        return render_template_string(
-            HTML_TEMPLATE,
-            allocation_data=allocation_data,
-            data_file_data=data_file_data,
-            allocation_filename=allocation_filename,
-            data_filename=data_filename,
-            processing_result=processing_result,
-            agent_processing_result=agent_processing_result,
-            agent_allocations_data=agent_allocations_data,
-        )
+        # Redirect back to the same view with menu parameters preserved
+        redirect_url = f"/?menu={current_menu}"
+        if current_submenu:
+            redirect_url += f"&submenu={current_submenu}"
+        flash(processing_result, "success" if processed_df is not None else "info")
+        return redirect(redirect_url)
 
     except Exception as e:
         import traceback
@@ -16539,16 +17176,12 @@ def process_files():
         print(f"❌ [process_files] Error occurred: {str(e)}")
         print(f"📋 [process_files] Traceback:\n{error_details}")
 
-        return render_template_string(
-            HTML_TEMPLATE,
-            allocation_data=allocation_data,
-            data_file_data=data_file_data,
-            allocation_filename=allocation_filename,
-            data_filename=data_filename,
-            processing_result=processing_result,
-            agent_processing_result=agent_processing_result,
-            agent_allocations_data=agent_allocations_data,
-        )
+        # Redirect back to the same view with menu parameters preserved
+        redirect_url = f"/?menu={current_menu}"
+        if current_submenu:
+            redirect_url += f"&submenu={current_submenu}"
+        flash(processing_result, "error")
+        return redirect(redirect_url)
 
 
 @app.route("/download_result", methods=["POST"])
@@ -20211,10 +20844,12 @@ def delete_file_helper(file_model, file_id, file_type_name, subtab=None):
     except Exception as e:
         flash(f"Error deleting {file_type_name} file: {str(e)}", "error")
 
-    # Redirect back to the same tab and subtab
-    redirect_url = "/?tab=agent-consolidation"
-    if subtab:
-        redirect_url += f"&subtab={subtab}"
+    # Redirect back to the same menu and submenu
+    current_menu = request.form.get('current_menu', 'agent-consolidation')
+    current_submenu = request.form.get('current_submenu', subtab or 'day-shift')
+    redirect_url = f"/?menu={current_menu}"
+    if current_submenu:
+        redirect_url += f"&submenu={current_submenu}"
     return redirect(redirect_url)
 
 
@@ -20278,10 +20913,12 @@ def clear_files_helper(file_model, file_type_name, subtab=None):
     except Exception as e:
         flash(f"Error clearing {file_type_name} files: {str(e)}", "error")
 
-    # Redirect back to the same tab and subtab
-    redirect_url = "/?tab=agent-consolidation"
-    if subtab:
-        redirect_url += f"&subtab={subtab}"
+    # Redirect back to the same menu and submenu
+    current_menu = request.form.get('current_menu', 'agent-consolidation')
+    current_submenu = request.form.get('current_submenu', subtab or 'day-shift')
+    redirect_url = f"/?menu={current_menu}"
+    if current_submenu:
+        redirect_url += f"&submenu={current_submenu}"
     return redirect(redirect_url)
 
 

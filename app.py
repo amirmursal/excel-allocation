@@ -801,6 +801,13 @@ agent_insurance_agent_names = (
     None  # Store agent names for Agent Insurance sheet formatting
 )
 
+# EV Allocation data storage
+ev_staff_data = None
+ev_staff_filename = None
+ev_allocation_data = None
+ev_allocation_filename = None
+ev_processing_result = None
+
 # Day Shift and Night Shift data storage (using global variables like allocation/data files)
 day_shift_allocation_data = None
 day_shift_allocation_filename = None
@@ -820,6 +827,7 @@ tracker_filename = None
 tracker_file_ready = False
 tracker_processed_df = None
 tracker_processed_sheet = None
+
 
 # Database helper functions
 def init_database():
@@ -2551,7 +2559,7 @@ HTML_TEMPLATE = """
         function getSubmenuDisplayName(submenuName) {
             const names = {
                 'image-allocation': 'Imagen Allocation',
-                'ev-allocation': 'EV Allocations',
+                'ev-allocation': 'EV Allocation',
                 'day-shift': 'Day Shift',
                 'night-shift': 'Night Shift',
                 'ntbp': 'NTBP',
@@ -2610,7 +2618,7 @@ HTML_TEMPLATE = """
                     </li>
                     <li>
                         <div class="submenu-item {% if current_submenu == 'ev-allocation' %}active{% endif %}" onclick="switchAdminMenu('allocations', 'ev-allocation')">
-                            <i class="fas fa-car"></i> EV Allocations
+                            <i class="fas fa-car"></i> EV Allocation
                         </div>
                     </li>
                 </ul>
@@ -2883,15 +2891,104 @@ HTML_TEMPLATE = """
 
                 </div>
                 
-                <!-- EV Allocations Content (under Allocations menu) -->
+                <!-- EV Allocation Content (under Allocations menu) -->
                 <div id="ev-allocation-content" class="admin-menu-content" style="display: {% if current_menu == 'allocations' and current_submenu == 'ev-allocation' %}block{% else %}none{% endif %};">
-                    <div class="section">
-                        <h3>EV Allocation</h3>
-                        <div style="background: #f8f9fa; padding: 40px; border-radius: 10px; text-align: center;">
-                            <i class="fas fa-car" style="font-size: 4rem; color: #bdc3c7; margin-bottom: 20px;"></i>
-                            <p style="color: #666; font-size: 1.2em;">EV Allocation view coming soon...</p>
-                        </div>
+                <div class="upload-grid">
+                    <div class="upload-card">
+                        <form action="/upload_ev_staff" method="post" enctype="multipart/form-data" id="ev-staff-form">
+                            <div class="form-group">
+                                <input type="file" id="ev_staff_file" name="file" accept=".xlsx,.xls" required>
+                            </div>
+                            <button type="submit" id="ev-staff-btn">📤 Upload Staff Details</button>
+                        </form>
                     </div>
+
+                    <div class="upload-card">
+                        <form action="/upload_ev_allocation_data" method="post" enctype="multipart/form-data" id="ev-allocation-form">
+                            <div class="form-group">
+                                <input type="file" id="ev_allocation_file" name="file" accept=".xlsx,.xls" required>
+                            </div>
+                            <button type="submit" id="ev-allocation-btn">📤 Upload EV Allocation Data</button>
+                        </form>
+                    </div>
+                </div>
+
+                <!-- File Status -->
+                <div class="section">
+                    <h3>📊 File Status</h3>
+                    <div class="file-status">
+                        {% if ev_staff_filename %}
+                            <div class="status-success">
+                                ✅ Staff Details File: {{ ev_staff_filename }}
+                            </div>
+                        {% else %}
+                            <div class="status-info">
+                                ℹ️ No staff details file uploaded yet.
+                            </div>
+                        {% endif %}
+                        
+                        {% if ev_allocation_filename %}
+                            <div class="status-success">
+                                ✅ EV Allocation Data File: {{ ev_allocation_filename }}
+                            </div>
+                        {% else %}
+                            <div class="status-info">
+                                ℹ️ No EV allocation data file uploaded yet.
+                            </div>
+                        {% endif %}
+                    </div>
+                </div>
+
+                <!-- Processing Section -->
+                {% if ev_staff_data is not none and ev_allocation_data is not none %}
+                <div class="section">
+                    <h3>🔄 Process EV Allocation</h3>
+                    <form action="/process_ev_allocation" method="post" id="ev-process-form">
+                        <input type="hidden" name="current_menu" value="allocations">
+                        <input type="hidden" name="current_submenu" value="ev-allocation">
+                        <button type="submit" class="process-btn" id="ev-process-btn">
+                            <i class="fas fa-cogs"></i> Process EV Allocation
+                        </button>
+                    </form>
+                </div>
+                {% endif %}
+
+                <!-- Status Messages -->
+                {% if ev_processing_result %}
+                <div class="section">
+                    <h3>📢 Processing Results</h3>
+                    <div class="status-message">
+                        {{ ev_processing_result | safe }}
+                    </div>
+                </div>
+                {% endif %}
+
+                <!-- Download Section -->
+                {% if ev_processing_result and 'successfully' in ev_processing_result.lower() %}
+                <div class="section">
+                    <h3>💾 Download EV Allocation Result</h3>
+                    <form action="/download_ev_allocation" method="post" id="ev-download-form">
+                        <input type="hidden" name="current_menu" value="allocations">
+                        <input type="hidden" name="current_submenu" value="ev-allocation">
+                        <button type="submit" class="process-btn" id="ev-download-btn" style="background: linear-gradient(135deg, #3498db, #2980b9);">
+                            <i class="fas fa-download"></i> Download Processed File
+                        </button>
+                    </form>
+                </div>
+                {% endif %}
+
+                <!-- Processing Modal -->
+                <div class="processing-status" id="ev-processing-status" style="display: none;">
+                    <div class="processing-content">
+                        <div class="spinner"></div>
+                        <h3 id="ev-processing-title">Processing...</h3>
+                        <div class="progress-container">
+                            <div class="progress-bar" id="ev-progress-bar" style="width: 100%;">Processing...</div>
+                        </div>
+                        <div class="progress-text" id="ev-progress-text">Please wait...</div>
+                    </div>
+                </div>
+
                 </div>
                 
                 <!-- Email Allocation Content -->
@@ -3701,6 +3798,97 @@ HTML_TEMPLATE = """
                     }
                 });
             }
+        });
+        
+        // Handle EV Allocation forms with processing modal
+        document.addEventListener('DOMContentLoaded', function() {
+            // Helper function to show processing modal
+            function showEVProcessingModal(title, message) {
+                const modal = document.getElementById('ev-processing-status');
+                const titleEl = document.getElementById('ev-processing-title');
+                const textEl = document.getElementById('ev-progress-text');
+                if (modal && titleEl && textEl) {
+                    titleEl.textContent = title;
+                    textEl.textContent = message;
+                    modal.style.display = 'flex';
+                }
+            }
+            
+            // Helper function to hide processing modal
+            function hideEVProcessingModal() {
+                const modal = document.getElementById('ev-processing-status');
+                if (modal) {
+                    modal.style.display = 'none';
+                }
+            }
+            
+            // EV Staff upload form
+            const evStaffForm = document.getElementById('ev-staff-form');
+            if (evStaffForm) {
+                evStaffForm.addEventListener('submit', function(e) {
+                    const btn = document.getElementById('ev-staff-btn');
+                    if (btn) {
+                        btn.disabled = true;
+                        btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Uploading...';
+                    }
+                    showEVProcessingModal('Uploading Staff Details', 'Please wait while we upload your staff details file...');
+                });
+            }
+            
+            // EV Allocation Data upload form
+            const evAllocationForm = document.getElementById('ev-allocation-form');
+            if (evAllocationForm) {
+                evAllocationForm.addEventListener('submit', function(e) {
+                    const btn = document.getElementById('ev-allocation-btn');
+                    if (btn) {
+                        btn.disabled = true;
+                        btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Uploading...';
+                    }
+                    showEVProcessingModal('Uploading EV Allocation Data', 'Please wait while we upload your EV allocation data file...');
+                });
+            }
+            
+            // EV Process form
+            const evProcessForm = document.getElementById('ev-process-form');
+            if (evProcessForm) {
+                evProcessForm.addEventListener('submit', function(e) {
+                    const btn = document.getElementById('ev-process-btn');
+                    if (btn) {
+                        btn.disabled = true;
+                        btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Processing...';
+                    }
+                    showEVProcessingModal('Processing EV Allocation', 'Matching allocation rows to agents... This may take a moment.');
+                });
+            }
+            
+            // EV Download form
+            const evDownloadForm = document.getElementById('ev-download-form');
+            if (evDownloadForm) {
+                evDownloadForm.addEventListener('submit', function(e) {
+                    const btn = document.getElementById('ev-download-btn');
+                    if (btn) {
+                        btn.disabled = true;
+                        btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Downloading...';
+                    }
+                    showEVProcessingModal('Preparing Download', 'Generating Excel file... Please wait.');
+                    
+                    // Hide modal after download starts (file downloads don't cause page redirect)
+                    // Wait a bit longer to ensure download has started
+                    setTimeout(function() {
+                        hideEVProcessingModal();
+                        // Re-enable button after a delay
+                        if (btn) {
+                            setTimeout(function() {
+                                btn.disabled = false;
+                                btn.innerHTML = '<i class="fas fa-download"></i> Download Processed File';
+                            }, 1000);
+                        }
+                    }, 2000);
+                });
+            }
+            
+            // Hide modal when page loads (in case it was left open)
+            hideEVProcessingModal();
         });
         
         // View agent allocation in modal (for Email Allocation tab)
@@ -15846,6 +16034,7 @@ def index():
     global email_staff_details, email_staff_filename
     global email_allocation_data, email_allocation_filename, email_allocation_agents_list
     global tracker_data, tracker_filename, tracker_file_ready
+    global ev_staff_data, ev_staff_filename, ev_allocation_data, ev_allocation_filename, ev_processing_result
 
     # Get current user
     user = get_user_by_username(session.get("user_id"))
@@ -15864,11 +16053,24 @@ def index():
     ntbp_files = None
     qcp_files = None
     daily_consolidate_files = None
-    
+
     # Get menu and submenu from URL parameters (for admin users)
-    current_menu = request.args.get('menu', 'allocations' if user and user.role == 'admin' else '')
-    current_submenu = request.args.get('submenu', 'image-allocation' if current_menu == 'allocations' else ('day-shift' if current_menu == 'agent-consolidation' else ('imagen-tracker' if current_menu == 'trackers' else '')))
-    
+    current_menu = request.args.get(
+        "menu", "allocations" if user and user.role == "admin" else ""
+    )
+    current_submenu = request.args.get(
+        "submenu",
+        (
+            "image-allocation"
+            if current_menu == "allocations"
+            else (
+                "day-shift"
+                if current_menu == "agent-consolidation"
+                else ("imagen-tracker" if current_menu == "trackers" else "")
+            )
+        ),
+    )
+
     if user and user.role == "admin":
         all_agent_work_files = get_all_agent_work_files()
         day_shift_files = get_day_shift_files()
@@ -15900,7 +16102,14 @@ def index():
         email_allocation_filename=email_allocation_filename,
         email_allocation_agents_list=email_allocation_agents_list,
         email_sent_agents=list(email_sent_agents) if email_sent_agents else [],
-        tracker_file_ready=tracker_file_ready if 'tracker_file_ready' in globals() else False,
+        tracker_file_ready=(
+            tracker_file_ready if "tracker_file_ready" in globals() else False
+        ),
+        ev_staff_data=ev_staff_data,
+        ev_staff_filename=ev_staff_filename,
+        ev_allocation_data=ev_allocation_data,
+        ev_allocation_filename=ev_allocation_filename,
+        ev_processing_result=ev_processing_result,
         current_menu=current_menu,
         current_submenu=current_submenu,
     )
@@ -17048,6 +17257,263 @@ def upload_data_file():
         return redirect("/")
 
 
+@app.route("/upload_ev_staff", methods=["POST"])
+@admin_required
+def upload_ev_staff():
+    """Upload EV Allocation Staff Details file"""
+    global ev_staff_data, ev_staff_filename, ev_processing_result
+
+    if "file" not in request.files:
+        flash("No file provided", "error")
+        return redirect("/?menu=allocations&submenu=ev-allocation")
+
+    file = request.files["file"]
+    if file.filename == "":
+        flash("No file selected", "error")
+        return redirect("/?menu=allocations&submenu=ev-allocation")
+
+    try:
+        # Save uploaded file temporarily
+        filename = secure_filename(file.filename)
+        file.save(filename)
+
+        # Load Excel file
+        ev_staff_data = pd.read_excel(filename, sheet_name=None, parse_dates=False)
+        
+        # Use first sheet if multiple sheets, or get the main sheet
+        if len(ev_staff_data) == 1:
+            ev_staff_data = list(ev_staff_data.values())[0]
+        elif "main" in ev_staff_data:
+            ev_staff_data = ev_staff_data["main"]
+        else:
+            ev_staff_data = list(ev_staff_data.values())[0]
+
+        ev_staff_filename = filename
+        ev_processing_result = None  # Reset processing result
+
+        flash("✅ Staff Details file uploaded successfully!", "success")
+
+        # Clean up uploaded file
+        if os.path.exists(filename):
+            os.remove(filename)
+
+        return redirect("/?menu=allocations&submenu=ev-allocation")
+
+    except Exception as e:
+        ev_processing_result = f"❌ Error uploading staff details file: {str(e)}"
+        flash(f"Error uploading staff details file: {str(e)}", "error")
+        # Clean up uploaded file on error
+        if "filename" in locals() and os.path.exists(filename):
+            os.remove(filename)
+        return redirect("/?menu=allocations&submenu=ev-allocation")
+
+
+@app.route("/upload_ev_allocation_data", methods=["POST"])
+@admin_required
+def upload_ev_allocation_data():
+    """Upload EV Allocation Data file"""
+    global ev_allocation_data, ev_allocation_filename, ev_processing_result
+
+    if "file" not in request.files:
+        flash("No file provided", "error")
+        return redirect("/?menu=allocations&submenu=ev-allocation")
+
+    file = request.files["file"]
+    if file.filename == "":
+        flash("No file selected", "error")
+        return redirect("/?menu=allocations&submenu=ev-allocation")
+
+    try:
+        # Save uploaded file temporarily
+        filename = secure_filename(file.filename)
+        file.save(filename)
+
+        # Load Excel file
+        ev_allocation_data = pd.read_excel(filename, sheet_name=None, parse_dates=False)
+        
+        # Use first sheet if multiple sheets, or get the main sheet
+        if len(ev_allocation_data) == 1:
+            ev_allocation_data = list(ev_allocation_data.values())[0]
+        elif "main" in ev_allocation_data:
+            ev_allocation_data = ev_allocation_data["main"]
+        else:
+            ev_allocation_data = list(ev_allocation_data.values())[0]
+
+        ev_allocation_filename = filename
+        ev_processing_result = None  # Reset processing result
+
+        flash("✅ EV Allocation Data file uploaded successfully!", "success")
+
+        # Clean up uploaded file
+        if os.path.exists(filename):
+            os.remove(filename)
+
+        return redirect("/?menu=allocations&submenu=ev-allocation")
+
+    except Exception as e:
+        ev_processing_result = f"❌ Error uploading EV allocation data file: {str(e)}"
+        flash(f"Error uploading EV allocation data file: {str(e)}", "error")
+        # Clean up uploaded file on error
+        if "filename" in locals() and os.path.exists(filename):
+            os.remove(filename)
+        return redirect("/?menu=allocations&submenu=ev-allocation")
+
+
+def match_ev_allocation_row(allocation_row, allocation_df, staff_df):
+    """
+    Match an EV allocation row to an agent from staff details.
+    Returns agent name if match found, None otherwise.
+    
+    Matching criteria (all case-insensitive):
+    - Office/Doctor Name: OR logic (staff "ABC Clinic, XYZ Hospital" matches allocation "ABC Clinic" OR "XYZ Hospital")
+      Special: If staff has "All", it matches any Office/Doctor Name value
+    - System: OR logic (staff "System1, System2" matches allocation "System1" OR "System2")
+    - Reference: OR logic (staff "MCD+Commercial" matches allocation "MCD" OR "Commercial")
+    - Source: OR logic (staff "Evening+Morning" matches allocation "Evening" OR "Morning")
+    """
+    # Find column names (case-insensitive)
+    def find_column(df, possible_names):
+        for col in df.columns:
+            col_lower = str(col).strip().lower()
+            for name in possible_names:
+                if name.lower() in col_lower:
+                    return col
+        return None
+    
+    # Find columns in allocation data (use the DataFrame, not a single row)
+    office_col = find_column(allocation_df, ["Office/Doctor Name", "Office", "Doctor Name"])
+    system_col = find_column(allocation_df, ["System"])
+    reference_col = find_column(allocation_df, ["Reference"])
+    source_col = find_column(allocation_df, ["Source"])
+    
+    if not all([office_col, system_col, reference_col, source_col]):
+        return None
+    
+    # Get values from allocation row
+    allocation_office = str(allocation_row[office_col]).strip().lower() if pd.notna(allocation_row[office_col]) else ""
+    allocation_system = str(allocation_row[system_col]).strip().lower() if pd.notna(allocation_row[system_col]) else ""
+    allocation_reference = str(allocation_row[reference_col]).strip().lower() if pd.notna(allocation_row[reference_col]) else ""
+    allocation_source = str(allocation_row[source_col]).strip().lower() if pd.notna(allocation_row[source_col]) else ""
+    
+    # Find columns in staff data
+    staff_office_col = find_column(staff_df, ["Office/Doctor Name", "Office", "Doctor Name"])
+    staff_system_col = find_column(staff_df, ["System"])
+    staff_reference_col = find_column(staff_df, ["Reference"])
+    staff_source_col = find_column(staff_df, ["Source"])
+    staff_agent_col = find_column(staff_df, ["Agent Name", "Agent"])
+    
+    if not all([staff_office_col, staff_system_col, staff_reference_col, staff_source_col, staff_agent_col]):
+        return None
+    
+    # Iterate through staff to find first match
+    for idx, staff_row in staff_df.iterrows():
+        staff_office = str(staff_row[staff_office_col]).strip().lower() if pd.notna(staff_row[staff_office_col]) else ""
+        staff_system = str(staff_row[staff_system_col]).strip().lower() if pd.notna(staff_row[staff_system_col]) else ""
+        staff_reference = str(staff_row[staff_reference_col]).strip().lower() if pd.notna(staff_row[staff_reference_col]) else ""
+        staff_source = str(staff_row[staff_source_col]).strip().lower() if pd.notna(staff_row[staff_source_col]) else ""
+        
+        # Check Office/Doctor Name (OR logic with comma separator, case-insensitive)
+        # Split staff office by comma and check if allocation office matches any part
+        # Special case: "All" matches any Office/Doctor Name value
+        staff_offices = [o.strip().lower() for o in staff_office.split(",") if o.strip()]
+        if "all" not in staff_offices and allocation_office not in staff_offices:
+            continue
+        
+        # Check System (OR logic with comma separator, case-insensitive)
+        # Split staff system by comma and check if allocation system matches any part
+        staff_systems = [s.strip().lower() for s in staff_system.split(",") if s.strip()]
+        if allocation_system not in staff_systems:
+            continue
+        
+        # Check Reference (OR logic, case-insensitive)
+        # Split staff reference by "+" and check if allocation reference matches any part
+        staff_refs = [r.strip().lower() for r in staff_reference.split("+") if r.strip()]
+        if allocation_reference not in staff_refs:
+            continue
+        
+        # Check Source (OR logic, case-insensitive)
+        # Split staff source by "+" and check if allocation source matches any part
+        staff_sources = [s.strip().lower() for s in staff_source.split("+") if s.strip()]
+        if allocation_source not in staff_sources:
+            continue
+        
+        # All criteria matched! Return agent name
+        agent_name = str(staff_row[staff_agent_col]).strip() if pd.notna(staff_row[staff_agent_col]) else ""
+        return agent_name
+    
+    return None
+
+
+@app.route("/process_ev_allocation", methods=["POST"])
+@admin_required
+def process_ev_allocation():
+    """Process EV Allocation - match allocation rows to agents"""
+    global ev_staff_data, ev_allocation_data, ev_processing_result
+
+    # Preserve menu and submenu parameters
+    current_menu = request.form.get("current_menu", "allocations")
+    current_submenu = request.form.get("current_submenu", "ev-allocation")
+
+    if ev_staff_data is None or ev_allocation_data is None:
+        ev_processing_result = "❌ Error: Please upload both Staff Details and EV Allocation Data files first"
+        flash(ev_processing_result, "error")
+        return redirect(f"/?menu={current_menu}&submenu={current_submenu}")
+
+    try:
+        import time
+        start_time = time.time()
+
+        # Ensure we have DataFrames
+        if not isinstance(ev_staff_data, pd.DataFrame):
+            ev_staff_data = pd.DataFrame(ev_staff_data)
+        if not isinstance(ev_allocation_data, pd.DataFrame):
+            ev_allocation_data = pd.DataFrame(ev_allocation_data)
+
+        # Create a copy of allocation data for processing
+        result_df = ev_allocation_data.copy()
+        
+        # Add Agent Name column
+        result_df["Agent Name"] = ""
+        
+        matched_count = 0
+        unmatched_count = 0
+        
+        # Process each allocation row
+        for idx, row in ev_allocation_data.iterrows():
+            agent_name = match_ev_allocation_row(row, ev_allocation_data, ev_staff_data)
+            if agent_name:
+                result_df.at[idx, "Agent Name"] = agent_name
+                matched_count += 1
+            else:
+                unmatched_count += 1
+        
+        # Store the result
+        ev_allocation_data = result_df
+        
+        processing_time = time.time() - start_time
+        
+        ev_processing_result = f"""✅ EV Allocation processing completed successfully!
+
+📊 Processing Statistics:
+- Total rows processed: {len(ev_allocation_data)}
+- Matched rows: {matched_count}
+- Unmatched rows: {unmatched_count}
+- Processing time: {processing_time:.2f}s
+
+💾 Ready to download the processed result file!"""
+        
+        flash("EV Allocation processed successfully!", "success")
+        return redirect(f"/?menu={current_menu}&submenu={current_submenu}")
+
+    except Exception as e:
+        import traceback
+        error_trace = traceback.format_exc()
+        ev_processing_result = f"❌ Error processing EV Allocation: {str(e)}\n\n{error_trace}"
+        flash(f"Error processing EV Allocation: {str(e)}", "error")
+        print(f"EV Allocation Processing Error: {error_trace}")
+        return redirect(f"/?menu={current_menu}&submenu={current_submenu}")
+
+
 @app.route("/process_files", methods=["POST"])
 @admin_required
 def process_files():
@@ -17058,11 +17524,11 @@ def process_files():
 
     # Get current user
     user = get_user_by_username(session.get("user_id"))
-    
+
     # Preserve menu and submenu parameters to stay on Imagen Allocation view
-    current_menu = request.form.get('current_menu', 'allocations')
-    current_submenu = request.form.get('current_submenu', 'image-allocation')
-    
+    current_menu = request.form.get("current_menu", "allocations")
+    current_submenu = request.form.get("current_submenu", "image-allocation")
+
     # Load all agent work files for admin view
     all_agent_work_files = None
     day_shift_files = None
@@ -18975,17 +19441,17 @@ def generate_tracker_sheets(processed_df, writer, agent_allocations_data=None):
     """
     Generate all 10 tracker sheets from a processed dataframe.
     This function extracts the tracker generation logic from download_result.
-    
+
     Args:
         processed_df: The main dataframe with all the data
         writer: pd.ExcelWriter instance
         agent_allocations_data: Optional agent allocations data for Zero Allocation Agents sheet
     """
     from openpyxl.styles import Font
-    
+
     if processed_df is None:
         return
-    
+
     # Helper function to find columns
     def find_column(df, keywords):
         """Find column by keywords (case-insensitive)"""
@@ -18994,15 +19460,17 @@ def generate_tracker_sheets(processed_df, writer, agent_allocations_data=None):
             if all(keyword.lower() in col_lower for keyword in keywords):
                 return col
         return None
-    
+
     # Find key columns
     agent_name_col = find_column(processed_df, ["agent", "name"])
     appointment_date_col = find_column(processed_df, ["appointment", "date"])
     remark_col = find_column(processed_df, ["remark"])
     priority_status_col = find_column(processed_df, ["priority", "status"])
-    insurance_carrier_col = find_column(processed_df, ["insurance"]) or find_column(processed_df, ["dental", "primary", "ins"])
+    insurance_carrier_col = find_column(processed_df, ["insurance"]) or find_column(
+        processed_df, ["dental", "primary", "ins"]
+    )
     office_name_col = find_column(processed_df, ["office", "name"])
-    
+
     # 1. Agent Count Summary
     if agent_name_col:
         agent_counts = {}
@@ -19014,34 +19482,49 @@ def generate_tracker_sheets(processed_df, writer, agent_allocations_data=None):
                     if remark_str == "NTC":
                         agent_counts["NTC"] = agent_counts.get("NTC", 0) + 1
                         continue
-                    elif "NOT TO WORK" in remark_str.replace("-", " ").replace("_", " "):
-                        agent_counts["Not to work"] = agent_counts.get("Not to work", 0) + 1
+                    elif "NOT TO WORK" in remark_str.replace("-", " ").replace(
+                        "_", " "
+                    ):
+                        agent_counts["Not to work"] = (
+                            agent_counts.get("Not to work", 0) + 1
+                        )
                         continue
-            
+
             agent_name_value = row.get(agent_name_col)
             if pd.notna(agent_name_value):
                 agent_name_str = str(agent_name_value).strip()
                 agent_name_upper = agent_name_str.upper()
                 if agent_name_upper == "NTC":
                     agent_counts["NTC"] = agent_counts.get("NTC", 0) + 1
-                elif "NOT TO WORK" in agent_name_upper.replace("-", " ").replace("_", " "):
+                elif "NOT TO WORK" in agent_name_upper.replace("-", " ").replace(
+                    "_", " "
+                ):
                     agent_counts["Not to work"] = agent_counts.get("Not to work", 0) + 1
                 else:
-                    agent_counts[agent_name_str] = agent_counts.get(agent_name_str, 0) + 1
-        
+                    agent_counts[agent_name_str] = (
+                        agent_counts.get(agent_name_str, 0) + 1
+                    )
+
         summary_list = [(row_label, count) for row_label, count in agent_counts.items()]
         summary_list.sort(key=lambda x: x[1], reverse=True)
         grand_total = sum(count for _, count in summary_list)
-        
+
         if summary_list:
-            summary_df = pd.DataFrame(summary_list, columns=["Row Labels", "Count of Agent Name"])
-            grand_total_row = pd.DataFrame([["Grand Total", grand_total]], columns=["Row Labels", "Count of Agent Name"])
+            summary_df = pd.DataFrame(
+                summary_list, columns=["Row Labels", "Count of Agent Name"]
+            )
+            grand_total_row = pd.DataFrame(
+                [["Grand Total", grand_total]],
+                columns=["Row Labels", "Count of Agent Name"],
+            )
             summary_df = pd.concat([summary_df, grand_total_row], ignore_index=True)
         else:
-            summary_df = pd.DataFrame([["Grand Total", 0]], columns=["Row Labels", "Count of Agent Name"])
-        
+            summary_df = pd.DataFrame(
+                [["Grand Total", 0]], columns=["Row Labels", "Count of Agent Name"]
+            )
+
         summary_df.to_excel(writer, sheet_name="Agent Count Summary", index=False)
-    
+
     # 2. Priority Status
     if priority_status_col and appointment_date_col:
         appointment_dates_dict = {}
@@ -19055,14 +19538,19 @@ def generate_tracker_sheets(processed_df, writer, agent_allocations_data=None):
                     appointment_dates_dict[date_key] = date_display
                 except:
                     continue
-        
+
         sorted_date_keys = sorted(appointment_dates_dict.keys())
         appointment_dates = sorted_date_keys
-        appointment_dates_display = [appointment_dates_dict[key] for key in sorted_date_keys]
-        
+        appointment_dates_display = [
+            appointment_dates_dict[key] for key in sorted_date_keys
+        ]
+
         priority_rows = ["First Priority", "Second Priority"]
-        priority_data = {priority: {date: 0 for date in appointment_dates} for priority in priority_rows}
-        
+        priority_data = {
+            priority: {date: 0 for date in appointment_dates}
+            for priority in priority_rows
+        }
+
         for idx, row in processed_df.iterrows():
             priority_status = row.get(priority_status_col)
             appt_date = row.get(appointment_date_col)
@@ -19072,14 +19560,22 @@ def generate_tracker_sheets(processed_df, writer, agent_allocations_data=None):
                     date_obj = pd.to_datetime(appt_date).date()
                     date_str = date_obj.strftime("%Y-%m-%d")
                     if priority_str in priority_rows and date_str in appointment_dates:
-                        priority_data[priority_str][date_str] = priority_data[priority_str].get(date_str, 0) + 1
+                        priority_data[priority_str][date_str] = (
+                            priority_data[priority_str].get(date_str, 0) + 1
+                        )
                 except:
                     continue
-        
-        priority_totals = {priority: sum(priority_data[priority].values()) for priority in priority_rows}
+
+        priority_totals = {
+            priority: sum(priority_data[priority].values())
+            for priority in priority_rows
+        }
         overall_grand_total = sum(priority_totals.values())
-        date_totals = {date: sum(priority_data[priority][date] for priority in priority_rows) for date in appointment_dates}
-        
+        date_totals = {
+            date: sum(priority_data[priority][date] for priority in priority_rows)
+            for date in appointment_dates
+        }
+
         columns = ["Row Labels", "Grand Total"] + appointment_dates_display
         rows_data = []
         for priority in priority_rows:
@@ -19087,19 +19583,19 @@ def generate_tracker_sheets(processed_df, writer, agent_allocations_data=None):
             for date_key in appointment_dates:
                 row_data.append(priority_data[priority][date_key])
             rows_data.append(row_data)
-        
+
         grand_total_row = ["Grand Total", overall_grand_total]
         for date_key in appointment_dates:
             grand_total_row.append(date_totals[date_key])
         rows_data.append(grand_total_row)
-        
+
         priority_df = pd.DataFrame(rows_data, columns=columns)
         priority_df.to_excel(writer, sheet_name="Priority Status", index=False)
-    
+
     # 3. Priority Remark (similar logic - truncated for brevity, will include full implementation)
     # 4-10. Other trackers (Today Allocation, NTBP, NTC, etc.) - similar pattern
     # For now, I'll create a simplified version that includes all trackers
-    
+
     # Note: The full implementation would include all 10 trackers with the same logic as download_result
     # Due to length constraints, I'll create a function that reuses the existing logic
 
@@ -19109,32 +19605,38 @@ def generate_tracker_sheets(processed_df, writer, agent_allocations_data=None):
 def upload_tracker_data():
     """Upload data file and prepare for tracker generation"""
     global tracker_data, tracker_filename, tracker_file_ready, data_file_data, tracker_processed_df, tracker_processed_sheet
-    
+
     if "file" not in request.files:
-        if request.headers.get('Content-Type', '').startswith('application/json') or request.is_json:
+        if (
+            request.headers.get("Content-Type", "").startswith("application/json")
+            or request.is_json
+        ):
             return jsonify({"error": "No file provided"}), 400
         flash("No file provided", "error")
         return redirect("/")
-    
+
     file = request.files["file"]
     if file.filename == "":
-        if request.headers.get('Content-Type', '').startswith('application/json') or request.is_json:
+        if (
+            request.headers.get("Content-Type", "").startswith("application/json")
+            or request.is_json
+        ):
             return jsonify({"error": "No file selected"}), 400
         flash("No file selected", "error")
         return redirect("/")
-    
+
     try:
         # Save uploaded file temporarily
         filename = secure_filename(file.filename)
         file.save(filename)
-        
+
         # Load Excel file into memory
         tracker_data = pd.read_excel(filename, sheet_name=None, parse_dates=False)
-        
+
         # Clean up uploaded file after loading into memory
         if os.path.exists(filename):
             os.remove(filename)
-        
+
         # Look for "Today" sheet first, otherwise use first sheet
         if tracker_data:
             # Try to find "Today" sheet (case-insensitive)
@@ -19143,7 +19645,7 @@ def upload_tracker_data():
                 if sheet_name.lower() == "today":
                     today_sheet_name = sheet_name
                     break
-            
+
             # Use "Today" sheet if found, otherwise use first sheet
             if today_sheet_name:
                 processed_df = tracker_data[today_sheet_name]
@@ -19152,14 +19654,14 @@ def upload_tracker_data():
                 first_sheet_name = list(tracker_data.keys())[0]
                 processed_df = tracker_data[first_sheet_name]
                 tracker_processed_sheet = first_sheet_name
-            
+
             # Validate required columns exist
             required_keywords = [
                 (["agent", "name"], "Agent Name"),
                 (["appointment", "date"], "Appointment Date"),
                 (["remark"], "Remark"),
             ]
-            
+
             missing = []
             for keywords, display_name in required_keywords:
                 found = False
@@ -19169,41 +19671,59 @@ def upload_tracker_data():
                         break
                 if not found:
                     missing.append(display_name)
-            
+
             if missing:
                 error_msg = f"Missing required columns: {', '.join(missing)}"
                 flash(error_msg, "error")
                 # Return JSON error for AJAX requests
-                if request.headers.get('X-Requested-With') == 'XMLHttpRequest' or request.headers.get('Content-Type', '').startswith('multipart/form-data'):
-                    return jsonify({"error": error_msg, "missing_columns": missing}), 400
+                if request.headers.get(
+                    "X-Requested-With"
+                ) == "XMLHttpRequest" or request.headers.get(
+                    "Content-Type", ""
+                ).startswith(
+                    "multipart/form-data"
+                ):
+                    return (
+                        jsonify({"error": error_msg, "missing_columns": missing}),
+                        400,
+                    )
                 return redirect("/")
-            
+
             # Store data in memory (not on disk)
             tracker_filename = file.filename  # Store original filename for display
             tracker_file_ready = True
-            
+
             # Store the processed dataframe for later use in download
             tracker_processed_df = processed_df.copy()
-            
+
             # Return success message (don't generate file yet - wait for download button)
             success_msg = f"✅ File uploaded successfully! Ready to generate trackers. Using sheet: '{tracker_processed_sheet}'"
             flash(success_msg, "success")
-            
+
             # Return JSON for AJAX requests
-            if request.headers.get('X-Requested-With') == 'XMLHttpRequest' or request.headers.get('Content-Type', '').startswith('multipart/form-data'):
+            if request.headers.get(
+                "X-Requested-With"
+            ) == "XMLHttpRequest" or request.headers.get("Content-Type", "").startswith(
+                "multipart/form-data"
+            ):
                 return jsonify({"success": True, "message": success_msg})
-            
+
             return redirect("/")
         else:
             error_msg = "❌ Error: File appears to be empty"
             flash(error_msg, "error")
             # Return JSON error for AJAX requests
-            if request.headers.get('X-Requested-With') == 'XMLHttpRequest' or request.headers.get('Content-Type', '').startswith('multipart/form-data'):
+            if request.headers.get(
+                "X-Requested-With"
+            ) == "XMLHttpRequest" or request.headers.get("Content-Type", "").startswith(
+                "multipart/form-data"
+            ):
                 return jsonify({"error": error_msg}), 400
             return redirect("/")
-    
+
     except Exception as e:
         import traceback
+
         error_msg = f"❌ Error processing tracker file: {str(e)}"
         print(f"Tracker upload error: {traceback.format_exc()}")
         flash(error_msg, "error")
@@ -19211,9 +19731,62 @@ def upload_tracker_data():
         if "filename" in locals() and os.path.exists(filename):
             os.remove(filename)
         # Return JSON error for AJAX requests
-        if request.headers.get('X-Requested-With') == 'XMLHttpRequest' or request.headers.get('Content-Type', '').startswith('multipart/form-data'):
+        if request.headers.get(
+            "X-Requested-With"
+        ) == "XMLHttpRequest" or request.headers.get("Content-Type", "").startswith(
+            "multipart/form-data"
+        ):
             return jsonify({"error": error_msg}), 500
         return redirect("/")
+
+
+@app.route("/download_ev_allocation", methods=["POST"])
+@admin_required
+def download_ev_allocation():
+    """Download EV Allocation processed result as Excel file"""
+    global ev_allocation_data, ev_allocation_filename
+
+    if ev_allocation_data is None:
+        flash("No processed data to download", "error")
+        return redirect("/?menu=allocations&submenu=ev-allocation")
+
+    try:
+        # Create filename with timestamp
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        if ev_allocation_filename:
+            base_name = os.path.splitext(ev_allocation_filename)[0]
+            filename = f"{base_name}_ev_allocation_{timestamp}.xlsx"
+        else:
+            filename = f"ev_allocation_result_{timestamp}.xlsx"
+
+        # Create a temporary file
+        temp_fd, temp_path = tempfile.mkstemp(suffix=".xlsx")
+
+        try:
+            # Write DataFrame to Excel
+            with pd.ExcelWriter(temp_path, engine="openpyxl") as writer:
+                ev_allocation_data.to_excel(writer, sheet_name="EV Allocation", index=False)
+            
+            # Send file
+            return send_file(
+                temp_path,
+                as_attachment=True,
+                download_name=filename,
+                mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+        finally:
+            # Clean up temp file after sending
+            os.close(temp_fd)
+            if os.path.exists(temp_path):
+                # File will be deleted after send_file completes
+                pass
+
+    except Exception as e:
+        import traceback
+        error_trace = traceback.format_exc()
+        flash(f"Error downloading EV Allocation file: {str(e)}", "error")
+        print(f"EV Allocation Download Error: {error_trace}")
+        return redirect("/?menu=allocations&submenu=ev-allocation")
 
 
 @app.route("/download_trackers", methods=["POST"])
@@ -19221,24 +19794,24 @@ def upload_tracker_data():
 def download_trackers():
     """Download Excel file with all 10 tracker sheets"""
     global tracker_data, tracker_filename, data_file_data, tracker_processed_df, tracker_processed_sheet
-    
+
     if not tracker_data or tracker_processed_df is None:
         flash("No tracker data available. Please upload a data file first.", "error")
         return redirect("/")
-    
+
     filename = request.form.get("filename", "").strip()
     if not filename:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = f"trackers_{timestamp}.xlsx"
-    
+
     try:
         # Temporarily set data_file_data to tracker_data to reuse download_result logic
         original_data_file_data = data_file_data
         data_file_data = tracker_data
-        
+
         # Create a temporary file path
         temp_fd, temp_path = tempfile.mkstemp(suffix=".xlsx")
-        
+
         try:
             with pd.ExcelWriter(temp_path, engine="openpyxl") as writer:
                 # Write all existing sheets from tracker data
@@ -19249,59 +19822,87 @@ def download_trackers():
                         if ("appointment" in col.lower() and "date" in col.lower()) or (
                             "receive" in col.lower() and "date" in col.lower()
                         ):
-                            df_copy[col] = pd.to_datetime(df_copy[col], errors="coerce").dt.strftime("%m/%d/%Y")
-                    
+                            df_copy[col] = pd.to_datetime(
+                                df_copy[col], errors="coerce"
+                            ).dt.strftime("%m/%d/%Y")
+
                     # Reorder columns if needed
-                    if "Agent Name" in df_copy.columns and "Supervisor" in df_copy.columns:
+                    if (
+                        "Agent Name" in df_copy.columns
+                        and "Supervisor" in df_copy.columns
+                    ):
                         agent_name_idx = df_copy.columns.get_loc("Agent Name")
                         cols = df_copy.columns.tolist()
                         cols.remove("Supervisor")
                         cols.insert(agent_name_idx + 1, "Supervisor")
                         df_copy = df_copy[cols]
-                    
-                    if "Supervisor" in df_copy.columns and "Auditors" in df_copy.columns:
+
+                    if (
+                        "Supervisor" in df_copy.columns
+                        and "Auditors" in df_copy.columns
+                    ):
                         supervisor_idx = df_copy.columns.get_loc("Supervisor")
                         cols = df_copy.columns.tolist()
                         cols.remove("Auditors")
                         cols.insert(supervisor_idx + 1, "Auditors")
                         df_copy = df_copy[cols]
-                    
+
                     df_copy.to_excel(writer, sheet_name=sheet_name, index=False)
-                
+
                 # Use the processed_df that was determined during upload (Today sheet or first sheet)
                 if tracker_processed_df is not None:
                     # Generate all 10 tracker sheets using the complete implementation
-                    generate_all_trackers_from_dataframe(tracker_processed_df, writer, None)
-            
+                    generate_all_trackers_from_dataframe(
+                        tracker_processed_df, writer, None
+                    )
+
             # Apply formatting (same as download_result)
             from openpyxl import load_workbook
             from openpyxl.styles import Font
-            
+
             wb = load_workbook(temp_path)
-            
+
             # Format all tracker sheets
-            for sheet_name in ["Agent Count Summary", "Priority Status", "Priority Remark", 
-                             "Today Allocation", "NTBP Allocation", "NTC Allocation", 
-                             "Priority Appointment Pending"]:
+            for sheet_name in [
+                "Agent Count Summary",
+                "Priority Status",
+                "Priority Remark",
+                "Today Allocation",
+                "NTBP Allocation",
+                "NTC Allocation",
+                "Priority Appointment Pending",
+            ]:
                 if sheet_name in wb.sheetnames:
                     ws = wb[sheet_name]
-                    for row_idx, row in enumerate(ws.iter_rows(min_row=2, max_row=ws.max_row, min_col=1, max_col=1), start=2):
+                    for row_idx, row in enumerate(
+                        ws.iter_rows(
+                            min_row=2, max_row=ws.max_row, min_col=1, max_col=1
+                        ),
+                        start=2,
+                    ):
                         cell_value = row[0].value
                         if cell_value and isinstance(cell_value, str):
                             cell_str = cell_value.strip()
-                            if cell_str in ["Grand Total", "First Priority", "Second Priority", "Third Priority"]:
+                            if cell_str in [
+                                "Grand Total",
+                                "First Priority",
+                                "Second Priority",
+                                "Third Priority",
+                            ]:
                                 for col_idx in range(1, ws.max_column + 1):
-                                    ws.cell(row=row_idx, column=col_idx).font = Font(bold=True)
-            
+                                    ws.cell(row=row_idx, column=col_idx).font = Font(
+                                        bold=True
+                                    )
+
             wb.save(temp_path)
             wb.close()
-            
+
             # Restore original data_file_data before returning
             data_file_data = original_data_file_data
-            
+
             # Return the file for download (send_file will handle cleanup)
             return send_file(temp_path, as_attachment=True, download_name=filename)
-        
+
         except Exception as e:
             # Restore original data_file_data on error
             data_file_data = original_data_file_data
@@ -19317,20 +19918,24 @@ def download_trackers():
                 if os.path.exists(temp_path):
                     # Give send_file a moment to read the file, then clean up
                     import time
+
                     time.sleep(0.5)
                     if os.path.exists(temp_path):
                         os.unlink(temp_path)
             except:
                 pass
-    
+
     except Exception as e:
         import traceback
+
         error_msg = f"❌ Error generating trackers: {str(e)}\n{traceback.format_exc()}"
         flash(error_msg, "error")
         return redirect("/")
 
 
-def generate_all_trackers_from_dataframe(processed_df, writer, agent_allocations_data_param=None):
+def generate_all_trackers_from_dataframe(
+    processed_df, writer, agent_allocations_data_param=None
+):
     """
     Generate all 10 tracker sheets from a processed dataframe.
     This function contains the complete tracker generation logic extracted from download_result.
@@ -19348,7 +19953,7 @@ def generate_all_trackers_from_dataframe(processed_df, writer, agent_allocations
     """
     if processed_df is None:
         return
-    
+
     # Helper function to find columns
     def find_column(df, keywords):
         """Find column by keywords (case-insensitive)"""
@@ -19357,7 +19962,7 @@ def generate_all_trackers_from_dataframe(processed_df, writer, agent_allocations
             if all(keyword.lower() in col_lower for keyword in keywords):
                 return col
         return None
-    
+
     # Find key columns
     agent_name_col = find_column(processed_df, ["agent", "name"])
     appointment_date_col = find_column(processed_df, ["appointment", "date"])
@@ -19366,14 +19971,18 @@ def generate_all_trackers_from_dataframe(processed_df, writer, agent_allocations
     insurance_carrier_col = None
     for col in processed_df.columns:
         if (
-            ("dental" in col.lower() and "primary" in col.lower() and "ins" in col.lower())
+            (
+                "dental" in col.lower()
+                and "primary" in col.lower()
+                and "ins" in col.lower()
+            )
             or ("insurance" in col.lower() and "carrier" in col.lower())
             or ("insurance" in col.lower() and "name" in col.lower())
         ):
             insurance_carrier_col = col
             break
     office_name_col = find_column(processed_df, ["office", "name"])
-    
+
     # Helper function to parse appointment dates
     def get_appointment_dates_dict(df, date_col):
         """Get all unique appointment dates"""
@@ -19397,13 +20006,13 @@ def generate_all_trackers_from_dataframe(processed_df, writer, agent_allocations
                         date_obj = pd.to_datetime(appt_date).date()
                     except:
                         continue
-                
+
                 if date_obj:
                     date_key = date_obj.strftime("%Y-%m-%d")
                     date_display = date_obj.strftime("%m/%d/%Y")
                     appointment_dates_dict[date_key] = date_display
         return appointment_dates_dict
-    
+
     # ========== 1. Agent Count Summary ==========
     if agent_name_col:
         agent_counts = {}
@@ -19415,61 +20024,95 @@ def generate_all_trackers_from_dataframe(processed_df, writer, agent_allocations
                     if remark_str == "NTC":
                         agent_counts["NTC"] = agent_counts.get("NTC", 0) + 1
                         continue
-                    elif "NOT TO WORK" in remark_str.replace("-", " ").replace("_", " "):
-                        agent_counts["Not to work"] = agent_counts.get("Not to work", 0) + 1
+                    elif "NOT TO WORK" in remark_str.replace("-", " ").replace(
+                        "_", " "
+                    ):
+                        agent_counts["Not to work"] = (
+                            agent_counts.get("Not to work", 0) + 1
+                        )
                         continue
-            
+
             agent_name_value = row.get(agent_name_col)
             if pd.notna(agent_name_value):
                 agent_name_str = str(agent_name_value).strip()
                 agent_name_upper = agent_name_str.upper()
                 if agent_name_upper == "NTC":
                     agent_counts["NTC"] = agent_counts.get("NTC", 0) + 1
-                elif "NOT TO WORK" in agent_name_upper.replace("-", " ").replace("_", " "):
+                elif "NOT TO WORK" in agent_name_upper.replace("-", " ").replace(
+                    "_", " "
+                ):
                     agent_counts["Not to work"] = agent_counts.get("Not to work", 0) + 1
                 else:
-                    agent_counts[agent_name_str] = agent_counts.get(agent_name_str, 0) + 1
-        
+                    agent_counts[agent_name_str] = (
+                        agent_counts.get(agent_name_str, 0) + 1
+                    )
+
         summary_list = [(row_label, count) for row_label, count in agent_counts.items()]
         summary_list.sort(key=lambda x: x[1], reverse=True)
         grand_total = sum(count for _, count in summary_list)
-        
+
         if summary_list:
-            summary_df = pd.DataFrame(summary_list, columns=["Row Labels", "Count of Agent Name"])
-            grand_total_row = pd.DataFrame([["Grand Total", grand_total]], columns=["Row Labels", "Count of Agent Name"])
+            summary_df = pd.DataFrame(
+                summary_list, columns=["Row Labels", "Count of Agent Name"]
+            )
+            grand_total_row = pd.DataFrame(
+                [["Grand Total", grand_total]],
+                columns=["Row Labels", "Count of Agent Name"],
+            )
             summary_df = pd.concat([summary_df, grand_total_row], ignore_index=True)
         else:
-            summary_df = pd.DataFrame([["Grand Total", 0]], columns=["Row Labels", "Count of Agent Name"])
-        
+            summary_df = pd.DataFrame(
+                [["Grand Total", 0]], columns=["Row Labels", "Count of Agent Name"]
+            )
+
         summary_df.to_excel(writer, sheet_name="Agent Count Summary", index=False)
-    
+
     # ========== 2. Priority Status ==========
     if priority_status_col and appointment_date_col:
-        appointment_dates_dict = get_appointment_dates_dict(processed_df, appointment_date_col)
+        appointment_dates_dict = get_appointment_dates_dict(
+            processed_df, appointment_date_col
+        )
         sorted_date_keys = sorted(appointment_dates_dict.keys())
         appointment_dates = sorted_date_keys
-        appointment_dates_display = [appointment_dates_dict[key] for key in sorted_date_keys]
-        
+        appointment_dates_display = [
+            appointment_dates_dict[key] for key in sorted_date_keys
+        ]
+
         priority_rows = ["First Priority", "Second Priority"]
-        priority_data = {priority: {date: 0 for date in appointment_dates} for priority in priority_rows}
-        
+        priority_data = {
+            priority: {date: 0 for date in appointment_dates}
+            for priority in priority_rows
+        }
+
         for idx, row in processed_df.iterrows():
             priority_status = row.get(priority_status_col)
             appt_date = row.get(appointment_date_col)
             if pd.notna(priority_status) and pd.notna(appt_date):
                 priority_str = str(priority_status).strip()
                 try:
-                    date_obj = pd.to_datetime(appt_date).date() if not hasattr(appt_date, "date") else appt_date.date()
+                    date_obj = (
+                        pd.to_datetime(appt_date).date()
+                        if not hasattr(appt_date, "date")
+                        else appt_date.date()
+                    )
                     date_str = date_obj.strftime("%Y-%m-%d")
                     if priority_str in priority_rows and date_str in appointment_dates:
-                        priority_data[priority_str][date_str] = priority_data[priority_str].get(date_str, 0) + 1
+                        priority_data[priority_str][date_str] = (
+                            priority_data[priority_str].get(date_str, 0) + 1
+                        )
                 except:
                     continue
-        
-        priority_totals = {priority: sum(priority_data[priority].values()) for priority in priority_rows}
+
+        priority_totals = {
+            priority: sum(priority_data[priority].values())
+            for priority in priority_rows
+        }
         overall_grand_total = sum(priority_totals.values())
-        date_totals = {date: sum(priority_data[priority][date] for priority in priority_rows) for date in appointment_dates}
-        
+        date_totals = {
+            date: sum(priority_data[priority][date] for priority in priority_rows)
+            for date in appointment_dates
+        }
+
         columns = ["Row Labels", "Grand Total"] + appointment_dates_display
         rows_data = []
         for priority in priority_rows:
@@ -19477,22 +20120,26 @@ def generate_all_trackers_from_dataframe(processed_df, writer, agent_allocations
             for date_key in appointment_dates:
                 row_data.append(priority_data[priority][date_key])
             rows_data.append(row_data)
-        
+
         grand_total_row = ["Grand Total", overall_grand_total]
         for date_key in appointment_dates:
             grand_total_row.append(date_totals[date_key])
         rows_data.append(grand_total_row)
-        
+
         priority_df = pd.DataFrame(rows_data, columns=columns)
         priority_df.to_excel(writer, sheet_name="Priority Status", index=False)
-    
+
     # ========== 3. Priority Remark ==========
     if priority_status_col and appointment_date_col and remark_col:
-        appointment_dates_dict = get_appointment_dates_dict(processed_df, appointment_date_col)
+        appointment_dates_dict = get_appointment_dates_dict(
+            processed_df, appointment_date_col
+        )
         sorted_date_keys = sorted(appointment_dates_dict.keys())
         appointment_dates = sorted_date_keys
-        appointment_dates_display = [appointment_dates_dict[key] for key in sorted_date_keys]
-        
+        appointment_dates_display = [
+            appointment_dates_dict[key] for key in sorted_date_keys
+        ]
+
         priority_rows = ["First Priority", "Second Priority"]
         remark_types = ["NTBP", "Not to work", "Workable", "NTC"]
         priority_remark_data = {}
@@ -19502,18 +20149,22 @@ def generate_all_trackers_from_dataframe(processed_df, writer, agent_allocations
                 priority_remark_data[priority][remark] = {}
                 for date_key in appointment_dates:
                     priority_remark_data[priority][remark][date_key] = 0
-        
+
         for idx, row in processed_df.iterrows():
             priority_status = row.get(priority_status_col)
             appt_date = row.get(appointment_date_col)
             remark_value = row.get(remark_col)
-            
+
             if pd.notna(priority_status) and pd.notna(appt_date):
                 priority_str = str(priority_status).strip()
                 try:
-                    date_obj = pd.to_datetime(appt_date).date() if not hasattr(appt_date, "date") else appt_date.date()
+                    date_obj = (
+                        pd.to_datetime(appt_date).date()
+                        if not hasattr(appt_date, "date")
+                        else appt_date.date()
+                    )
                     date_str = date_obj.strftime("%Y-%m-%d")
-                    
+
                     if date_str in appointment_dates and priority_str in priority_rows:
                         remark_type = "Workable"
                         if pd.notna(remark_value):
@@ -19522,22 +20173,31 @@ def generate_all_trackers_from_dataframe(processed_df, writer, agent_allocations
                                 remark_type = "NTBP"
                             elif remark_str == "NTC":
                                 remark_type = "NTC"
-                            elif "NOT TO WORK" in remark_str.replace("-", " ").replace("_", " "):
+                            elif "NOT TO WORK" in remark_str.replace("-", " ").replace(
+                                "_", " "
+                            ):
                                 remark_type = "Not to work"
-                        
+
                         if remark_type in remark_types:
-                            priority_remark_data[priority_str][remark_type][date_str] = (
-                                priority_remark_data[priority_str][remark_type].get(date_str, 0) + 1
+                            priority_remark_data[priority_str][remark_type][
+                                date_str
+                            ] = (
+                                priority_remark_data[priority_str][remark_type].get(
+                                    date_str, 0
+                                )
+                                + 1
                             )
                 except:
                     continue
-        
+
         priority_remark_totals = {}
         for priority in priority_rows:
             priority_remark_totals[priority] = {}
             for remark in remark_types:
-                priority_remark_totals[priority][remark] = sum(priority_remark_data[priority][remark].values())
-        
+                priority_remark_totals[priority][remark] = sum(
+                    priority_remark_data[priority][remark].values()
+                )
+
         date_totals = {}
         for date_key in appointment_dates:
             date_totals[date_key] = sum(
@@ -19545,24 +20205,27 @@ def generate_all_trackers_from_dataframe(processed_df, writer, agent_allocations
                 for priority in priority_rows
                 for remark in remark_types
             )
-        
+
         overall_grand_total = sum(
             priority_remark_totals[priority][remark]
             for priority in priority_rows
             for remark in remark_types
         )
-        
+
         columns = ["Row Labels", "Grand Total"] + appointment_dates_display
         rows_data = []
-        
+
         for priority in priority_rows:
             priority_total = sum(priority_remark_totals[priority].values())
             priority_row_data = [priority, priority_total]
             for date_key in appointment_dates:
-                date_total = sum(priority_remark_data[priority][remark][date_key] for remark in remark_types)
+                date_total = sum(
+                    priority_remark_data[priority][remark][date_key]
+                    for remark in remark_types
+                )
                 priority_row_data.append(date_total)
             rows_data.append(priority_row_data)
-            
+
             for remark in remark_types:
                 row_label = remark
                 row_total = priority_remark_totals[priority][remark]
@@ -19570,25 +20233,29 @@ def generate_all_trackers_from_dataframe(processed_df, writer, agent_allocations
                 for date_key in appointment_dates:
                     row_data.append(priority_remark_data[priority][remark][date_key])
                 rows_data.append(row_data)
-        
+
         grand_total_row = ["Grand Total", overall_grand_total]
         for date_key in appointment_dates:
             grand_total_row.append(date_totals[date_key])
         rows_data.append(grand_total_row)
-        
+
         priority_remark_df = pd.DataFrame(rows_data, columns=columns)
         priority_remark_df.to_excel(writer, sheet_name="Priority Remark", index=False)
-    
+
     # ========== 4. Today Allocation ==========
     if agent_name_col and appointment_date_col and remark_col:
-        appointment_dates_dict = get_appointment_dates_dict(processed_df, appointment_date_col)
+        appointment_dates_dict = get_appointment_dates_dict(
+            processed_df, appointment_date_col
+        )
         sorted_date_keys = sorted(appointment_dates_dict.keys())
         appointment_dates = sorted_date_keys
-        appointment_dates_display = [appointment_dates_dict[key] for key in sorted_date_keys]
-        
+        appointment_dates_display = [
+            appointment_dates_dict[key] for key in sorted_date_keys
+        ]
+
         agent_allocation_data = {}
         agent_names = set()
-        
+
         for idx, row in processed_df.iterrows():
             agent_name = row.get(agent_name_col)
             remark_value = row.get(remark_col)
@@ -19598,49 +20265,74 @@ def generate_all_trackers_from_dataframe(processed_df, writer, agent_allocations
                     if pd.notna(agent_name) and str(agent_name).strip():
                         agent_name_str = str(agent_name).strip()
                         agent_name_upper = agent_name_str.upper()
-                        if agent_name_upper != "NTC" and "NOT TO WORK" not in agent_name_upper.replace("-", " ").replace("_", " "):
+                        if (
+                            agent_name_upper != "NTC"
+                            and "NOT TO WORK"
+                            not in agent_name_upper.replace("-", " ").replace("_", " ")
+                        ):
                             agent_names.add(agent_name_str)
-        
+
         for agent_name in agent_names:
-            agent_allocation_data[agent_name] = {date_key: 0 for date_key in appointment_dates}
-        
+            agent_allocation_data[agent_name] = {
+                date_key: 0 for date_key in appointment_dates
+            }
+
         for idx, row in processed_df.iterrows():
             agent_name = row.get(agent_name_col)
             appt_date = row.get(appointment_date_col)
             remark_value = row.get(remark_col)
-            
+
             if pd.isna(remark_value):
                 continue
             remark_str = str(remark_value).strip().upper()
             if remark_str != "WORKABLE":
                 continue
-            
+
             if pd.notna(agent_name) and pd.notna(appt_date):
                 agent_name_str = str(agent_name).strip()
                 agent_name_upper = agent_name_str.upper()
-                if agent_name_upper == "NTC" or "NOT TO WORK" in agent_name_upper.replace("-", " ").replace("_", " "):
+                if (
+                    agent_name_upper == "NTC"
+                    or "NOT TO WORK"
+                    in agent_name_upper.replace("-", " ").replace("_", " ")
+                ):
                     continue
-                
+
                 try:
-                    date_obj = pd.to_datetime(appt_date).date() if not hasattr(appt_date, "date") else appt_date.date()
+                    date_obj = (
+                        pd.to_datetime(appt_date).date()
+                        if not hasattr(appt_date, "date")
+                        else appt_date.date()
+                    )
                     date_str = date_obj.strftime("%Y-%m-%d")
                     if date_str in appointment_dates and agent_name_str in agent_names:
-                        agent_allocation_data[agent_name_str][date_str] = agent_allocation_data[agent_name_str].get(date_str, 0) + 1
+                        agent_allocation_data[agent_name_str][date_str] = (
+                            agent_allocation_data[agent_name_str].get(date_str, 0) + 1
+                        )
                 except:
                     continue
-        
-        agent_totals = {agent_name: sum(agent_allocation_data[agent_name].values()) for agent_name in agent_names}
-        date_totals = {date_key: sum(agent_allocation_data[agent_name][date_key] for agent_name in agent_names) for date_key in appointment_dates}
+
+        agent_totals = {
+            agent_name: sum(agent_allocation_data[agent_name].values())
+            for agent_name in agent_names
+        }
+        date_totals = {
+            date_key: sum(
+                agent_allocation_data[agent_name][date_key]
+                for agent_name in agent_names
+            )
+            for date_key in appointment_dates
+        }
         overall_grand_total = sum(agent_totals.values())
-        
+
         columns = ["Row Labels", "Grand Total"] + appointment_dates_display
         rows_data = []
-        
+
         grand_total_row = ["Grand Total", overall_grand_total]
         for date_key in appointment_dates:
             grand_total_row.append(date_totals[date_key])
         rows_data.append(grand_total_row)
-        
+
         sorted_agent_names = sorted(agent_names)
         for agent_name in sorted_agent_names:
             agent_total = agent_totals[agent_name]
@@ -19648,20 +20340,24 @@ def generate_all_trackers_from_dataframe(processed_df, writer, agent_allocations
             for date_key in appointment_dates:
                 row_data.append(agent_allocation_data[agent_name][date_key])
             rows_data.append(row_data)
-        
+
         today_allocation_df = pd.DataFrame(rows_data, columns=columns)
         today_allocation_df.to_excel(writer, sheet_name="Today Allocation", index=False)
-    
+
     # ========== 5. NTBP Allocation ==========
     if agent_name_col and appointment_date_col and remark_col:
-        appointment_dates_dict = get_appointment_dates_dict(processed_df, appointment_date_col)
+        appointment_dates_dict = get_appointment_dates_dict(
+            processed_df, appointment_date_col
+        )
         sorted_date_keys = sorted(appointment_dates_dict.keys())
         appointment_dates = sorted_date_keys
-        appointment_dates_display = [appointment_dates_dict[key] for key in sorted_date_keys]
-        
+        appointment_dates_display = [
+            appointment_dates_dict[key] for key in sorted_date_keys
+        ]
+
         agent_ntbp_allocation_data = {}
         agent_names = set()
-        
+
         for idx, row in processed_df.iterrows():
             agent_name = row.get(agent_name_col)
             remark_value = row.get(remark_col)
@@ -19671,49 +20367,75 @@ def generate_all_trackers_from_dataframe(processed_df, writer, agent_allocations
                     if pd.notna(agent_name) and str(agent_name).strip():
                         agent_name_str = str(agent_name).strip()
                         agent_name_upper = agent_name_str.upper()
-                        if agent_name_upper != "NTC" and "NOT TO WORK" not in agent_name_upper.replace("-", " ").replace("_", " "):
+                        if (
+                            agent_name_upper != "NTC"
+                            and "NOT TO WORK"
+                            not in agent_name_upper.replace("-", " ").replace("_", " ")
+                        ):
                             agent_names.add(agent_name_str)
-        
+
         for agent_name in agent_names:
-            agent_ntbp_allocation_data[agent_name] = {date_key: 0 for date_key in appointment_dates}
-        
+            agent_ntbp_allocation_data[agent_name] = {
+                date_key: 0 for date_key in appointment_dates
+            }
+
         for idx, row in processed_df.iterrows():
             agent_name = row.get(agent_name_col)
             appt_date = row.get(appointment_date_col)
             remark_value = row.get(remark_col)
-            
+
             if pd.isna(remark_value):
                 continue
             remark_str = str(remark_value).strip().upper()
             if remark_str != "NTBP":
                 continue
-            
+
             if pd.notna(agent_name) and pd.notna(appt_date):
                 agent_name_str = str(agent_name).strip()
                 agent_name_upper = agent_name_str.upper()
-                if agent_name_upper == "NTC" or "NOT TO WORK" in agent_name_upper.replace("-", " ").replace("_", " "):
+                if (
+                    agent_name_upper == "NTC"
+                    or "NOT TO WORK"
+                    in agent_name_upper.replace("-", " ").replace("_", " ")
+                ):
                     continue
-                
+
                 try:
-                    date_obj = pd.to_datetime(appt_date).date() if not hasattr(appt_date, "date") else appt_date.date()
+                    date_obj = (
+                        pd.to_datetime(appt_date).date()
+                        if not hasattr(appt_date, "date")
+                        else appt_date.date()
+                    )
                     date_str = date_obj.strftime("%Y-%m-%d")
                     if date_str in appointment_dates and agent_name_str in agent_names:
-                        agent_ntbp_allocation_data[agent_name_str][date_str] = agent_ntbp_allocation_data[agent_name_str].get(date_str, 0) + 1
+                        agent_ntbp_allocation_data[agent_name_str][date_str] = (
+                            agent_ntbp_allocation_data[agent_name_str].get(date_str, 0)
+                            + 1
+                        )
                 except:
                     continue
-        
-        agent_totals = {agent_name: sum(agent_ntbp_allocation_data[agent_name].values()) for agent_name in agent_names}
-        date_totals = {date_key: sum(agent_ntbp_allocation_data[agent_name][date_key] for agent_name in agent_names) for date_key in appointment_dates}
+
+        agent_totals = {
+            agent_name: sum(agent_ntbp_allocation_data[agent_name].values())
+            for agent_name in agent_names
+        }
+        date_totals = {
+            date_key: sum(
+                agent_ntbp_allocation_data[agent_name][date_key]
+                for agent_name in agent_names
+            )
+            for date_key in appointment_dates
+        }
         overall_grand_total = sum(agent_totals.values())
-        
+
         columns = ["Row Labels", "Grand Total"] + appointment_dates_display
         rows_data = []
-        
+
         grand_total_row = ["Grand Total", overall_grand_total]
         for date_key in appointment_dates:
             grand_total_row.append(date_totals[date_key])
         rows_data.append(grand_total_row)
-        
+
         sorted_agent_names = sorted(agent_names)
         for agent_name in sorted_agent_names:
             agent_total = agent_totals[agent_name]
@@ -19721,21 +20443,25 @@ def generate_all_trackers_from_dataframe(processed_df, writer, agent_allocations
             for date_key in appointment_dates:
                 row_data.append(agent_ntbp_allocation_data[agent_name][date_key])
             rows_data.append(row_data)
-        
+
         ntbp_allocation_df = pd.DataFrame(rows_data, columns=columns)
         ntbp_allocation_df.to_excel(writer, sheet_name="NTBP Allocation", index=False)
-    
+
     # ========== 6. NTC Allocation ==========
     if agent_name_col and appointment_date_col and remark_col:
-        appointment_dates_dict = get_appointment_dates_dict(processed_df, appointment_date_col)
+        appointment_dates_dict = get_appointment_dates_dict(
+            processed_df, appointment_date_col
+        )
         sorted_date_keys = sorted(appointment_dates_dict.keys())
         appointment_dates = sorted_date_keys
-        appointment_dates_display = [appointment_dates_dict[key] for key in sorted_date_keys]
-        
+        appointment_dates_display = [
+            appointment_dates_dict[key] for key in sorted_date_keys
+        ]
+
         agent_ntc_allocation_data = {}
         ntc_row_data = {date_key: 0 for date_key in appointment_dates}
         agent_names = set()
-        
+
         for idx, row in processed_df.iterrows():
             agent_name = row.get(agent_name_col)
             remark_value = row.get(remark_col)
@@ -19745,60 +20471,83 @@ def generate_all_trackers_from_dataframe(processed_df, writer, agent_allocations
                     if pd.notna(agent_name) and str(agent_name).strip():
                         agent_name_str = str(agent_name).strip()
                         agent_name_upper = agent_name_str.upper()
-                        if agent_name_upper != "NTC" and "NOT TO WORK" not in agent_name_upper.replace("-", " ").replace("_", " "):
+                        if (
+                            agent_name_upper != "NTC"
+                            and "NOT TO WORK"
+                            not in agent_name_upper.replace("-", " ").replace("_", " ")
+                        ):
                             agent_names.add(agent_name_str)
-        
+
         for agent_name in agent_names:
-            agent_ntc_allocation_data[agent_name] = {date_key: 0 for date_key in appointment_dates}
-        
+            agent_ntc_allocation_data[agent_name] = {
+                date_key: 0 for date_key in appointment_dates
+            }
+
         for idx, row in processed_df.iterrows():
             agent_name = row.get(agent_name_col)
             appt_date = row.get(appointment_date_col)
             remark_value = row.get(remark_col)
-            
+
             if pd.isna(remark_value):
                 continue
             remark_str = str(remark_value).strip().upper()
             if remark_str != "NTC":
                 continue
-            
+
             if pd.notna(appt_date):
                 try:
-                    date_obj = pd.to_datetime(appt_date).date() if not hasattr(appt_date, "date") else appt_date.date()
+                    date_obj = (
+                        pd.to_datetime(appt_date).date()
+                        if not hasattr(appt_date, "date")
+                        else appt_date.date()
+                    )
                     date_str = date_obj.strftime("%Y-%m-%d")
-                    
+
                     if date_str in appointment_dates:
                         if pd.notna(agent_name) and str(agent_name).strip():
                             agent_name_str = str(agent_name).strip()
                             agent_name_upper = agent_name_str.upper()
                             if agent_name_upper == "NTC":
-                                ntc_row_data[date_str] = ntc_row_data.get(date_str, 0) + 1
+                                ntc_row_data[date_str] = (
+                                    ntc_row_data.get(date_str, 0) + 1
+                                )
                             elif agent_name_str in agent_names:
-                                agent_ntc_allocation_data[agent_name_str][date_str] = agent_ntc_allocation_data[agent_name_str].get(date_str, 0) + 1
+                                agent_ntc_allocation_data[agent_name_str][date_str] = (
+                                    agent_ntc_allocation_data[agent_name_str].get(
+                                        date_str, 0
+                                    )
+                                    + 1
+                                )
                         else:
                             ntc_row_data[date_str] = ntc_row_data.get(date_str, 0) + 1
                 except:
                     continue
-        
-        agent_totals = {agent_name: sum(agent_ntc_allocation_data[agent_name].values()) for agent_name in agent_names}
+
+        agent_totals = {
+            agent_name: sum(agent_ntc_allocation_data[agent_name].values())
+            for agent_name in agent_names
+        }
         ntc_row_total = sum(ntc_row_data.values())
         date_totals = {
             date_key: (
-                sum(agent_ntc_allocation_data[agent_name][date_key] for agent_name in agent_names)
+                sum(
+                    agent_ntc_allocation_data[agent_name][date_key]
+                    for agent_name in agent_names
+                )
                 + ntc_row_data[date_key]
             )
             for date_key in appointment_dates
         }
         overall_grand_total = sum(agent_totals.values()) + ntc_row_total
-        
+
         columns = ["Row Labels", "Grand Total"] + appointment_dates_display
         rows_data = []
-        
+
         grand_total_row = ["Grand Total", overall_grand_total]
         for date_key in appointment_dates:
             grand_total_row.append(date_totals[date_key])
         rows_data.append(grand_total_row)
-        
+
         sorted_agent_names = sorted(agent_names)
         for agent_name in sorted_agent_names:
             agent_total = agent_totals[agent_name]
@@ -19806,138 +20555,197 @@ def generate_all_trackers_from_dataframe(processed_df, writer, agent_allocations
             for date_key in appointment_dates:
                 row_data.append(agent_ntc_allocation_data[agent_name][date_key])
             rows_data.append(row_data)
-        
+
         ntc_row = ["NTC", ntc_row_total]
         for date_key in appointment_dates:
             ntc_row.append(ntc_row_data[date_key])
         rows_data.append(ntc_row)
-        
+
         ntc_allocation_df = pd.DataFrame(rows_data, columns=columns)
         ntc_allocation_df.to_excel(writer, sheet_name="NTC Allocation", index=False)
-    
+
     # ========== 7. NTC Insurance Name and counts ==========
     if insurance_carrier_col and remark_col:
         insurance_ntc_counts = {}
         for idx, row in processed_df.iterrows():
             remark_value = row.get(remark_col)
             insurance_value = row.get(insurance_carrier_col)
-            
+
             if pd.isna(remark_value):
                 continue
             remark_str = str(remark_value).strip().upper()
             if remark_str != "NTC":
                 continue
-            
+
             if pd.notna(insurance_value):
                 insurance_name = str(insurance_value).strip()
                 if insurance_name:
-                    insurance_ntc_counts[insurance_name] = insurance_ntc_counts.get(insurance_name, 0) + 1
-        
-        insurance_list = [(insurance_name, count) for insurance_name, count in insurance_ntc_counts.items()]
+                    insurance_ntc_counts[insurance_name] = (
+                        insurance_ntc_counts.get(insurance_name, 0) + 1
+                    )
+
+        insurance_list = [
+            (insurance_name, count)
+            for insurance_name, count in insurance_ntc_counts.items()
+        ]
         insurance_list.sort(key=lambda x: x[1], reverse=True)
         grand_total = sum(count for _, count in insurance_list)
-        
+
         if insurance_list:
-            ntc_insurance_df = pd.DataFrame(insurance_list, columns=["Row Labels", "Count of Agent Name"])
-            grand_total_row = pd.DataFrame([["Grand Total", grand_total]], columns=["Row Labels", "Count of Agent Name"])
-            ntc_insurance_df = pd.concat([ntc_insurance_df, grand_total_row], ignore_index=True)
+            ntc_insurance_df = pd.DataFrame(
+                insurance_list, columns=["Row Labels", "Count of Agent Name"]
+            )
+            grand_total_row = pd.DataFrame(
+                [["Grand Total", grand_total]],
+                columns=["Row Labels", "Count of Agent Name"],
+            )
+            ntc_insurance_df = pd.concat(
+                [ntc_insurance_df, grand_total_row], ignore_index=True
+            )
         else:
-            ntc_insurance_df = pd.DataFrame([["Grand Total", 0]], columns=["Row Labels", "Count of Agent Name"])
-        
-        ntc_insurance_df.to_excel(writer, sheet_name="NTC Insurance Name and counts", index=False)
-    
+            ntc_insurance_df = pd.DataFrame(
+                [["Grand Total", 0]], columns=["Row Labels", "Count of Agent Name"]
+            )
+
+        ntc_insurance_df.to_excel(
+            writer, sheet_name="NTC Insurance Name and counts", index=False
+        )
+
     # ========== 8. Agent Insurance ==========
     if agent_name_col and insurance_carrier_col:
         agent_insurance_data = {}
         agent_names = set()
-        
+
         for idx, row in processed_df.iterrows():
             agent_name = row.get(agent_name_col)
             if pd.notna(agent_name) and str(agent_name).strip():
                 agent_name_str = str(agent_name).strip()
                 agent_name_upper = agent_name_str.upper()
-                if agent_name_upper != "NTC" and "NOT TO WORK" not in agent_name_upper.replace("-", " ").replace("_", " "):
+                if (
+                    agent_name_upper != "NTC"
+                    and "NOT TO WORK"
+                    not in agent_name_upper.replace("-", " ").replace("_", " ")
+                ):
                     agent_names.add(agent_name_str)
-        
+
         for agent_name in agent_names:
             agent_insurance_data[agent_name] = {}
-        
+
         for idx, row in processed_df.iterrows():
             agent_name = row.get(agent_name_col)
             insurance_value = row.get(insurance_carrier_col)
-            
+
             if pd.notna(agent_name) and str(agent_name).strip():
                 agent_name_str = str(agent_name).strip()
                 agent_name_upper = agent_name_str.upper()
-                if agent_name_upper == "NTC" or "NOT TO WORK" in agent_name_upper.replace("-", " ").replace("_", " "):
+                if (
+                    agent_name_upper == "NTC"
+                    or "NOT TO WORK"
+                    in agent_name_upper.replace("-", " ").replace("_", " ")
+                ):
                     continue
-                
+
                 if agent_name_str in agent_names:
                     if pd.notna(insurance_value):
                         insurance_name = str(insurance_value).strip()
                         if insurance_name:
-                            agent_insurance_data[agent_name_str][insurance_name] = agent_insurance_data[agent_name_str].get(insurance_name, 0) + 1
-        
-        agent_totals = {agent_name: sum(agent_insurance_data[agent_name].values()) for agent_name in agent_names}
+                            agent_insurance_data[agent_name_str][insurance_name] = (
+                                agent_insurance_data[agent_name_str].get(
+                                    insurance_name, 0
+                                )
+                                + 1
+                            )
+
+        agent_totals = {
+            agent_name: sum(agent_insurance_data[agent_name].values())
+            for agent_name in agent_names
+        }
         overall_grand_total = sum(agent_totals.values())
-        
+
         columns = ["Row Labels", "Count of Insurance rows"]
         rows_data = []
-        
+
         sorted_agent_names = sorted(agent_names)
         for agent_name in sorted_agent_names:
             agent_total = agent_totals[agent_name]
             rows_data.append([agent_name, agent_total])
-            
-            insurance_companies = sorted(agent_insurance_data[agent_name].items(), key=lambda x: x[1], reverse=True)
+
+            insurance_companies = sorted(
+                agent_insurance_data[agent_name].items(),
+                key=lambda x: x[1],
+                reverse=True,
+            )
             for insurance_name, count in insurance_companies:
                 rows_data.append([insurance_name, count])
-        
+
         rows_data.append(["Grand Total", overall_grand_total])
-        
+
         agent_insurance_df = pd.DataFrame(rows_data, columns=columns)
         agent_insurance_df.to_excel(writer, sheet_name="Agent Insurance", index=False)
-    
+
     # ========== 9. Priority Appointment Pending ==========
     if office_name_col and appointment_date_col:
-        appointment_dates_dict = get_appointment_dates_dict(processed_df, appointment_date_col)
+        appointment_dates_dict = get_appointment_dates_dict(
+            processed_df, appointment_date_col
+        )
         sorted_date_keys = sorted(appointment_dates_dict.keys())
         appointment_dates = sorted_date_keys
-        appointment_dates_display = [appointment_dates_dict[key] for key in sorted_date_keys]
-        
+        appointment_dates_display = [
+            appointment_dates_dict[key] for key in sorted_date_keys
+        ]
+
         office_date_data = {}
         office_names = set()
-        
+
         for idx, row in processed_df.iterrows():
             office_name = row.get(office_name_col)
             if pd.notna(office_name) and str(office_name).strip():
                 office_name_str = str(office_name).strip()
                 office_names.add(office_name_str)
-        
+
         for office_name in office_names:
-            office_date_data[office_name] = {date_key: 0 for date_key in appointment_dates}
-        
+            office_date_data[office_name] = {
+                date_key: 0 for date_key in appointment_dates
+            }
+
         for idx, row in processed_df.iterrows():
             office_name = row.get(office_name_col)
             appt_date = row.get(appointment_date_col)
-            
+
             if pd.notna(office_name) and pd.notna(appt_date):
                 office_name_str = str(office_name).strip()
                 try:
-                    date_obj = pd.to_datetime(appt_date).date() if not hasattr(appt_date, "date") else appt_date.date()
+                    date_obj = (
+                        pd.to_datetime(appt_date).date()
+                        if not hasattr(appt_date, "date")
+                        else appt_date.date()
+                    )
                     date_str = date_obj.strftime("%Y-%m-%d")
-                    if date_str in appointment_dates and office_name_str in office_names:
-                        office_date_data[office_name_str][date_str] = office_date_data[office_name_str].get(date_str, 0) + 1
+                    if (
+                        date_str in appointment_dates
+                        and office_name_str in office_names
+                    ):
+                        office_date_data[office_name_str][date_str] = (
+                            office_date_data[office_name_str].get(date_str, 0) + 1
+                        )
                 except:
                     continue
-        
-        office_totals = {office_name: sum(office_date_data[office_name].values()) for office_name in office_names}
-        date_totals = {date_key: sum(office_date_data[office_name][date_key] for office_name in office_names) for date_key in appointment_dates}
+
+        office_totals = {
+            office_name: sum(office_date_data[office_name].values())
+            for office_name in office_names
+        }
+        date_totals = {
+            date_key: sum(
+                office_date_data[office_name][date_key] for office_name in office_names
+            )
+            for date_key in appointment_dates
+        }
         overall_grand_total = sum(office_totals.values())
-        
+
         columns = ["Row Labels"] + appointment_dates_display + ["Grand Total"]
         rows_data = []
-        
+
         sorted_office_names = sorted(office_names)
         for office_name in sorted_office_names:
             office_total = office_totals[office_name]
@@ -19946,23 +20754,26 @@ def generate_all_trackers_from_dataframe(processed_df, writer, agent_allocations
                 row_data.append(office_date_data[office_name][date_key])
             row_data.append(office_total)
             rows_data.append(row_data)
-        
+
         grand_total_row = ["Grand Total"]
         for date_key in appointment_dates:
             grand_total_row.append(date_totals[date_key])
         grand_total_row.append(overall_grand_total)
         rows_data.append(grand_total_row)
-        
+
         priority_appointment_pending_df = pd.DataFrame(rows_data, columns=columns)
-        priority_appointment_pending_df.to_excel(writer, sheet_name="Priority Appointment Pending", index=False)
-    
+        priority_appointment_pending_df.to_excel(
+            writer, sheet_name="Priority Appointment Pending", index=False
+        )
+
     # ========== 10. Zero Allocation Agents ==========
     if agent_allocations_data_param:
         zero_allocation_agents = [
-            agent for agent in agent_allocations_data_param
+            agent
+            for agent in agent_allocations_data_param
             if agent.get("allocated", 0) == 0
         ]
-        
+
         if zero_allocation_agents:
             zero_allocation_data = []
             for agent in zero_allocation_agents:
@@ -19973,25 +20784,33 @@ def generate_all_trackers_from_dataframe(processed_df, writer, agent_allocations
                     "Allocated": agent.get("allocated", 0),
                     "Allocation Preference": agent.get("allocation_preference", "N/A"),
                 }
-                
+
                 if agent.get("insurance_companies"):
-                    insurance_list = ", ".join([
-                        str(ic).strip()
-                        for ic in agent.get("insurance_companies", [])[:5]
-                        if ic is not None and not pd.isna(ic)
-                    ])
+                    insurance_list = ", ".join(
+                        [
+                            str(ic).strip()
+                            for ic in agent.get("insurance_companies", [])[:5]
+                            if ic is not None and not pd.isna(ic)
+                        ]
+                    )
                     agent_info["Insurance Companies"] = insurance_list
                 else:
                     agent_info["Insurance Companies"] = "N/A"
-                
+
                 agent_info["Senior Agent"] = "Yes" if agent.get("is_senior") else "No"
                 zero_allocation_data.append(agent_info)
-            
+
             zero_allocation_df = pd.DataFrame(zero_allocation_data)
-            zero_allocation_df.to_excel(writer, sheet_name="Zero Allocation Agents", index=False)
+            zero_allocation_df.to_excel(
+                writer, sheet_name="Zero Allocation Agents", index=False
+            )
         else:
-            zero_allocation_df = pd.DataFrame({"Message": ["No agents with zero allocation"]})
-            zero_allocation_df.to_excel(writer, sheet_name="Zero Allocation Agents", index=False)
+            zero_allocation_df = pd.DataFrame(
+                {"Message": ["No agents with zero allocation"]}
+            )
+            zero_allocation_df.to_excel(
+                writer, sheet_name="Zero Allocation Agents", index=False
+            )
 
 
 def validate_agent_work_file_columns(file_data):
@@ -20845,8 +21664,8 @@ def delete_file_helper(file_model, file_id, file_type_name, subtab=None):
         flash(f"Error deleting {file_type_name} file: {str(e)}", "error")
 
     # Redirect back to the same menu and submenu
-    current_menu = request.form.get('current_menu', 'agent-consolidation')
-    current_submenu = request.form.get('current_submenu', subtab or 'day-shift')
+    current_menu = request.form.get("current_menu", "agent-consolidation")
+    current_submenu = request.form.get("current_submenu", subtab or "day-shift")
     redirect_url = f"/?menu={current_menu}"
     if current_submenu:
         redirect_url += f"&submenu={current_submenu}"
@@ -20914,8 +21733,8 @@ def clear_files_helper(file_model, file_type_name, subtab=None):
         flash(f"Error clearing {file_type_name} files: {str(e)}", "error")
 
     # Redirect back to the same menu and submenu
-    current_menu = request.form.get('current_menu', 'agent-consolidation')
-    current_submenu = request.form.get('current_submenu', subtab or 'day-shift')
+    current_menu = request.form.get("current_menu", "agent-consolidation")
+    current_submenu = request.form.get("current_submenu", subtab or "day-shift")
     redirect_url = f"/?menu={current_menu}"
     if current_submenu:
         redirect_url += f"&submenu={current_submenu}"
@@ -22711,8 +23530,10 @@ def daily_consolidate_all_subtabs_and_email():
     Consolidate all 5 sub-tabs (Day Shift, Night Shift, NTBP, QCP, Daily Consolidate)
     and send them in one email with 5 attachments at 7 AM daily.
     """
-    print(f"🔔 Daily consolidation job triggered at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    
+    print(
+        f"🔔 Daily consolidation job triggered at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+    )
+
     # Safeguard: Track last execution date to prevent duplicate emails on the same day
     if not hasattr(app, "_last_subtab_consolidation_date"):
         app._last_subtab_consolidation_date = None
@@ -22789,7 +23610,7 @@ def daily_consolidate_all_subtabs_and_email():
                     print(
                         f"✅ Daily sub-tab consolidation email sent to {to_email} with {len(attachments)} attachment(s)"
                     )
-                    
+
                     # Perform cleanup after successful email (delete all files from all sub-tabs)
                     cleanup_configs = [
                         (DayShiftFile, "Day Shift"),
@@ -22815,7 +23636,7 @@ def daily_consolidate_all_subtabs_and_email():
                     print(
                         f"✅ Daily sub-tab consolidation + cleanup complete. Deleted {total_deleted} total file(s)."
                     )
-                    
+
                     return True, total_deleted
                 else:
                     print(f"❌ Failed to send sub-tab consolidation email: {message}")

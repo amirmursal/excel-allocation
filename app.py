@@ -3572,13 +3572,27 @@ HTML_TEMPLATE = """
                         <div class="section" style="margin-top: 30px;">
                             <h3>💾 Download Trackers File</h3>
                             <p>Your tracker file has been generated with all 10 tracking sheets.</p>
-                            <form action="/download_trackers" method="post">
-                                <button type="submit" class="process-btn" style="background: linear-gradient(135deg, #3498db, #2980b9);">
+                            <form action="/download_trackers" method="post" id="tracker-download-form">
+                                <input type="hidden" name="current_menu" value="trackers">
+                                <input type="hidden" name="current_submenu" value="imagen-tracker">
+                                <button type="submit" class="process-btn" id="tracker-download-btn" style="background: linear-gradient(135deg, #3498db, #2980b9);">
                                     <i class="fas fa-download"></i> Download Trackers File
                                 </button>
                             </form>
                         </div>
                         {% endif %}
+                    </div>
+                    
+                    <!-- Processing Modal -->
+                    <div class="processing-status" id="tracker-processing-status" style="display: none;">
+                        <div class="processing-content">
+                            <div class="spinner"></div>
+                            <h3 id="tracker-processing-title">Processing...</h3>
+                            <div class="progress-container">
+                                <div class="progress-bar" id="tracker-progress-bar" style="width: 100%;">Processing...</div>
+                            </div>
+                            <div class="progress-text" id="tracker-progress-text">Please wait...</div>
+                        </div>
                     </div>
                 </div>
                 
@@ -4414,6 +4428,25 @@ HTML_TEMPLATE = """
         }
         
         // Tracker upload form handler
+        // Helper functions for tracker processing modal
+        function showTrackerProcessingModal(title, message) {
+            const modal = document.getElementById('tracker-processing-status');
+            const titleEl = document.getElementById('tracker-processing-title');
+            const textEl = document.getElementById('tracker-progress-text');
+            if (modal && titleEl && textEl) {
+                titleEl.textContent = title;
+                textEl.textContent = message;
+                modal.style.display = 'flex';
+            }
+        }
+        
+        function hideTrackerProcessingModal() {
+            const modal = document.getElementById('tracker-processing-status');
+            if (modal) {
+                modal.style.display = 'none';
+            }
+        }
+        
         const trackerUploadForm = document.getElementById('tracker-upload-form');
         if (trackerUploadForm) {
             trackerUploadForm.addEventListener('submit', function(e) {
@@ -4432,6 +4465,9 @@ HTML_TEMPLATE = """
                     btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Processing...';
                 }
                 
+                // Show processing modal
+                showTrackerProcessingModal('Uploading Tracker Data', 'Please wait while we upload and process your tracker file...');
+                
                 const formData = new FormData();
                 formData.append('file', fileInput.files[0]);
                 
@@ -4446,6 +4482,7 @@ HTML_TEMPLATE = """
                     // Check if it's a JSON response (success or error)
                     if (contentType.includes('application/json')) {
                         return response.json().then(data => {
+                            hideTrackerProcessingModal();
                             if (data.success) {
                                 showSuccessToast('Upload Successful', data.message || 'File uploaded successfully! Ready to generate trackers.');
                                 // Reset form
@@ -4466,6 +4503,7 @@ HTML_TEMPLATE = """
                     
                     // If not JSON, it might be a redirect - reload the page
                     if (response.ok || response.status === 302) {
+                        hideTrackerProcessingModal();
                         showSuccessToast('Upload Successful', 'File uploaded successfully! Ready to generate trackers.');
                         trackerUploadForm.reset();
                         setTimeout(() => {
@@ -4474,6 +4512,7 @@ HTML_TEMPLATE = """
                     } else {
                         // Error response - try to get error message
                         return response.text().then(html => {
+                            hideTrackerProcessingModal();
                             let errorMsg = 'Error processing tracker file.';
                             const errorMatch = html.match(/alert.*?error.*?>(.*?)<\/div>/i);
                             if (errorMatch) {
@@ -4485,6 +4524,7 @@ HTML_TEMPLATE = """
                 })
                 .catch(error => {
                     console.error('Tracker upload error:', error);
+                    hideTrackerProcessingModal();
                     showErrorToast('Upload Error', 'Error uploading file: ' + (error.message || 'Unknown error. Please check the browser console for details.'));
                 })
                 .finally(() => {
@@ -4493,6 +4533,32 @@ HTML_TEMPLATE = """
                         btn.innerHTML = '<i class="fas fa-upload"></i> Upload and Generate Trackers';
                     }
                 });
+            });
+        }
+        
+        // Tracker download form handler
+        const trackerDownloadForm = document.getElementById('tracker-download-form');
+        if (trackerDownloadForm) {
+            trackerDownloadForm.addEventListener('submit', function(e) {
+                const btn = document.getElementById('tracker-download-btn');
+                if (btn) {
+                    btn.disabled = true;
+                    btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Downloading...';
+                }
+                showTrackerProcessingModal('Preparing Download', 'Generating tracker file with all 10 sheets... Please wait.');
+                
+                // Hide modal after download starts (file downloads don't cause page redirect)
+                // Wait a bit longer to ensure download has started
+                setTimeout(function() {
+                    hideTrackerProcessingModal();
+                    // Re-enable button after a delay
+                    if (btn) {
+                        setTimeout(function() {
+                            btn.disabled = false;
+                            btn.innerHTML = '<i class="fas fa-download"></i> Download Trackers File';
+                        }, 1000);
+                    }
+                }, 2000);
             });
         }
         
@@ -4507,6 +4573,9 @@ HTML_TEMPLATE = """
         
         // Populate date fields when page loads
         document.addEventListener('DOMContentLoaded', function() {
+            // Hide tracker modal when page loads (in case it was left open)
+            hideTrackerProcessingModal();
+            
             // Check if Imagen Allocation content is visible and initialize it
             const imageAllocationContent = document.getElementById('image-allocation-content');
             if (imageAllocationContent) {
@@ -19797,7 +19866,13 @@ def download_trackers():
 
     if not tracker_data or tracker_processed_df is None:
         flash("No tracker data available. Please upload a data file first.", "error")
-        return redirect("/")
+        # Preserve menu and submenu parameters to stay on trackers route
+        current_menu = request.form.get("current_menu", "trackers")
+        current_submenu = request.form.get("current_submenu", "imagen-tracker")
+        redirect_url = f"/?menu={current_menu}"
+        if current_submenu:
+            redirect_url += f"&submenu={current_submenu}"
+        return redirect(redirect_url)
 
     filename = request.form.get("filename", "").strip()
     if not filename:
@@ -19819,8 +19894,10 @@ def download_trackers():
                     df_copy = df.copy()
                     # Format date columns
                     for col in df_copy.columns:
-                        if ("appointment" in col.lower() and "date" in col.lower()) or (
-                            "receive" in col.lower() and "date" in col.lower()
+                        # Convert column name to string (handles integer column names)
+                        col_str = str(col).lower()
+                        if ("appointment" in col_str and "date" in col_str) or (
+                            "receive" in col_str and "date" in col_str
                         ):
                             df_copy[col] = pd.to_datetime(
                                 df_copy[col], errors="coerce"
@@ -19930,7 +20007,13 @@ def download_trackers():
 
         error_msg = f"❌ Error generating trackers: {str(e)}\n{traceback.format_exc()}"
         flash(error_msg, "error")
-        return redirect("/")
+        # Preserve menu and submenu parameters to stay on trackers route
+        current_menu = request.form.get("current_menu", "trackers")
+        current_submenu = request.form.get("current_submenu", "imagen-tracker")
+        redirect_url = f"/?menu={current_menu}"
+        if current_submenu:
+            redirect_url += f"&submenu={current_submenu}"
+        return redirect(redirect_url)
 
 
 def generate_all_trackers_from_dataframe(

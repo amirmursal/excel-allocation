@@ -815,6 +815,13 @@ dental_bv_allocation_data = None
 dental_bv_allocation_filename = None
 dental_bv_processing_result = None
 
+# Imagen QC Allocation data storage
+imagen_qc_staff_data = None
+imagen_qc_staff_filename = None
+imagen_qc_allocation_data = None
+imagen_qc_allocation_filename = None
+imagen_qc_processing_result = None
+
 # Day Shift and Night Shift data storage (using global variables like allocation/data files)
 day_shift_allocation_data = None
 day_shift_allocation_filename = None
@@ -2566,6 +2573,7 @@ HTML_TEMPLATE = """
                 'image-allocation': 'Imagen Allocation',
                 'ev-allocation': 'EV Allocation',
                 'dental-bv-allocation': 'Dental BV Allocation',
+                'imagen-qc-allocation': 'Imagen QC Allocation',
                 'day-shift': 'Day Shift',
                 'night-shift': 'Night Shift',
                 'ntbp': 'NTBP',
@@ -2630,6 +2638,11 @@ HTML_TEMPLATE = """
                     <li>
                         <div class="submenu-item {% if current_submenu == 'dental-bv-allocation' %}active{% endif %}" onclick="switchAdminMenu('allocations', 'dental-bv-allocation')">
                             <i class="fas fa-tooth"></i> Dental BV Allocation
+                        </div>
+                    </li>
+                    <li>
+                        <div class="submenu-item {% if current_submenu == 'imagen-qc-allocation' %}active{% endif %}" onclick="switchAdminMenu('allocations', 'imagen-qc-allocation')">
+                            <i class="fas fa-check-double"></i> Imagen QC Allocation
                         </div>
                     </li>
                 </ul>
@@ -3097,6 +3110,106 @@ HTML_TEMPLATE = """
                             <div class="progress-bar" id="dental-bv-progress-bar" style="width: 100%;">Processing...</div>
                         </div>
                         <div class="progress-text" id="dental-bv-progress-text">Please wait...</div>
+                    </div>
+                </div>
+
+                </div>
+
+                <!-- Imagen QC Allocation Content (under Allocations menu) -->
+                <div id="imagen-qc-allocation-content" class="admin-menu-content" style="display: {% if current_menu == 'allocations' and current_submenu == 'imagen-qc-allocation' %}block{% else %}none{% endif %};">
+                <div class="upload-grid">
+                    <div class="upload-card">
+                        <form action="/upload_imagen_qc_staff" method="post" enctype="multipart/form-data" id="imagen-qc-staff-form">
+                            <div class="form-group">
+                                <input type="file" id="imagen_qc_staff_file" name="file" accept=".xlsx,.xls" required>
+                            </div>
+                            <button type="submit" id="imagen-qc-staff-btn">📤 Upload Staff Database</button>
+                        </form>
+                    </div>
+
+                    <div class="upload-card">
+                        <form action="/upload_imagen_qc_allocation_data" method="post" enctype="multipart/form-data" id="imagen-qc-allocation-form">
+                            <div class="form-group">
+                                <input type="file" id="imagen_qc_allocation_file" name="file" accept=".xlsx,.xls" required>
+                            </div>
+                            <button type="submit" id="imagen-qc-allocation-btn">📤 Upload QC Allocation Data</button>
+                        </form>
+                    </div>
+                </div>
+
+                <!-- File Status -->
+                <div class="section">
+                    <h3>📊 File Status</h3>
+                    <div class="file-status">
+                        {% if imagen_qc_staff_filename %}
+                            <div class="status-success">
+                                ✅ Staff Database File: {{ imagen_qc_staff_filename }}
+                            </div>
+                        {% else %}
+                            <div class="status-info">
+                                ℹ️ No staff database file uploaded yet.
+                            </div>
+                        {% endif %}
+                        
+                        {% if imagen_qc_allocation_filename %}
+                            <div class="status-success">
+                                ✅ QC Allocation Data File: {{ imagen_qc_allocation_filename }}
+                            </div>
+                        {% else %}
+                            <div class="status-info">
+                                ℹ️ No QC allocation data file uploaded yet.
+                            </div>
+                        {% endif %}
+                    </div>
+                </div>
+
+                <!-- Processing Section -->
+                {% if imagen_qc_staff_data is not none and imagen_qc_allocation_data is not none %}
+                <div class="section">
+                    <h3>🔄 Process Imagen QC Allocation</h3>
+                    <form action="/process_imagen_qc_allocation" method="post" id="imagen-qc-process-form">
+                        <input type="hidden" name="current_menu" value="allocations">
+                        <input type="hidden" name="current_submenu" value="imagen-qc-allocation">
+                        <button type="submit" class="process-btn" id="imagen-qc-process-btn">
+                            <i class="fas fa-cogs"></i> Process Imagen QC Allocation
+                        </button>
+                    </form>
+                </div>
+                {% endif %}
+
+                <!-- Status Messages -->
+                {% if imagen_qc_processing_result %}
+                <div class="section">
+                    <h3>📢 Processing Results</h3>
+                    <div class="status-message">
+                        {{ imagen_qc_processing_result | safe }}
+                    </div>
+                </div>
+                {% endif %}
+
+                <!-- Download Section -->
+                {% if imagen_qc_processing_result and 'successfully' in imagen_qc_processing_result.lower() %}
+                <div class="section">
+                    <h3>💾 Download Imagen QC Allocation Result</h3>
+                    <form action="/download_imagen_qc_allocation" method="post" id="imagen-qc-download-form">
+                        <input type="hidden" name="current_menu" value="allocations">
+                        <input type="hidden" name="current_submenu" value="imagen-qc-allocation">
+                        <button type="submit" class="process-btn" id="imagen-qc-download-btn" style="background: linear-gradient(135deg, #3498db, #2980b9);">
+                            <i class="fas fa-download"></i> Download Processed File
+                        </button>
+                    </form>
+                </div>
+                {% endif %}
+
+                <!-- Processing Modal -->
+                <div class="processing-status" id="imagen-qc-processing-status" style="display: none;">
+                    <div class="processing-content">
+                        <div class="spinner"></div>
+                        <h3 id="imagen-qc-processing-title">Processing...</h3>
+                        <div class="progress-container">
+                            <div class="progress-bar" id="imagen-qc-progress-bar" style="width: 100%;">Processing...</div>
+                        </div>
+                        <div class="progress-text" id="imagen-qc-progress-text">Please wait...</div>
                     </div>
                 </div>
 
@@ -4095,6 +4208,87 @@ HTML_TEMPLATE = """
             }
             
             hideDentalBVProcessingModal();
+        });
+        
+        // Handle Imagen QC Allocation forms with processing modal
+        document.addEventListener('DOMContentLoaded', function() {
+            function showImagenQCProcessingModal(title, message) {
+                const modal = document.getElementById('imagen-qc-processing-status');
+                const titleEl = document.getElementById('imagen-qc-processing-title');
+                const textEl = document.getElementById('imagen-qc-progress-text');
+                if (modal && titleEl && textEl) {
+                    titleEl.textContent = title;
+                    textEl.textContent = message;
+                    modal.style.display = 'flex';
+                }
+            }
+            
+            function hideImagenQCProcessingModal() {
+                const modal = document.getElementById('imagen-qc-processing-status');
+                if (modal) {
+                    modal.style.display = 'none';
+                }
+            }
+            
+            const imagenQCStaffForm = document.getElementById('imagen-qc-staff-form');
+            if (imagenQCStaffForm) {
+                imagenQCStaffForm.addEventListener('submit', function(e) {
+                    const btn = document.getElementById('imagen-qc-staff-btn');
+                    if (btn) {
+                        btn.disabled = true;
+                        btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Uploading...';
+                    }
+                    showImagenQCProcessingModal('Uploading Staff Database', 'Please wait while we upload your staff database file...');
+                });
+            }
+            
+            const imagenQCAllocationForm = document.getElementById('imagen-qc-allocation-form');
+            if (imagenQCAllocationForm) {
+                imagenQCAllocationForm.addEventListener('submit', function(e) {
+                    const btn = document.getElementById('imagen-qc-allocation-btn');
+                    if (btn) {
+                        btn.disabled = true;
+                        btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Uploading...';
+                    }
+                    showImagenQCProcessingModal('Uploading QC Allocation Data', 'Please wait while we upload your QC allocation data file...');
+                });
+            }
+            
+            const imagenQCProcessForm = document.getElementById('imagen-qc-process-form');
+            if (imagenQCProcessForm) {
+                imagenQCProcessForm.addEventListener('submit', function(e) {
+                    const btn = document.getElementById('imagen-qc-process-btn');
+                    if (btn) {
+                        btn.disabled = true;
+                        btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Processing...';
+                    }
+                    showImagenQCProcessingModal('Processing Imagen QC Allocation', 'Matching agents to auditors... This may take a moment.');
+                });
+            }
+            
+            const imagenQCDownloadForm = document.getElementById('imagen-qc-download-form');
+            if (imagenQCDownloadForm) {
+                imagenQCDownloadForm.addEventListener('submit', function(e) {
+                    const btn = document.getElementById('imagen-qc-download-btn');
+                    if (btn) {
+                        btn.disabled = true;
+                        btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Downloading...';
+                    }
+                    showImagenQCProcessingModal('Preparing Download', 'Generating Excel file... Please wait.');
+                    
+                    setTimeout(function() {
+                        hideImagenQCProcessingModal();
+                        if (btn) {
+                            setTimeout(function() {
+                                btn.disabled = false;
+                                btn.innerHTML = '<i class="fas fa-download"></i> Download Processed File';
+                            }, 1000);
+                        }
+                    }, 2000);
+                });
+            }
+            
+            hideImagenQCProcessingModal();
         });
         
         // View agent allocation in modal (for Email Allocation tab)
@@ -16297,6 +16491,7 @@ def index():
     global tracker_data, tracker_filename, tracker_file_ready
     global ev_staff_data, ev_staff_filename, ev_allocation_data, ev_allocation_filename, ev_processing_result
     global dental_bv_staff_data, dental_bv_staff_filename, dental_bv_allocation_data, dental_bv_allocation_filename, dental_bv_processing_result
+    global imagen_qc_staff_data, imagen_qc_staff_filename, imagen_qc_allocation_data, imagen_qc_allocation_filename, imagen_qc_processing_result
 
     # Get current user
     user = get_user_by_username(session.get("user_id"))
@@ -16377,6 +16572,11 @@ def index():
         dental_bv_allocation_data=dental_bv_allocation_data,
         dental_bv_allocation_filename=dental_bv_allocation_filename,
         dental_bv_processing_result=dental_bv_processing_result,
+        imagen_qc_staff_data=imagen_qc_staff_data,
+        imagen_qc_staff_filename=imagen_qc_staff_filename,
+        imagen_qc_allocation_data=imagen_qc_allocation_data,
+        imagen_qc_allocation_filename=imagen_qc_allocation_filename,
+        imagen_qc_processing_result=imagen_qc_processing_result,
         current_menu=current_menu,
         current_submenu=current_submenu,
     )
@@ -20490,6 +20690,381 @@ def download_dental_bv_allocation():
         flash(f"Error downloading Dental BV Allocation file: {str(e)}", "error")
         print(f"Dental BV Allocation Download Error: {error_trace}")
         return redirect("/?menu=allocations&submenu=dental-bv-allocation")
+
+
+@app.route("/upload_imagen_qc_staff", methods=["POST"])
+@admin_required
+def upload_imagen_qc_staff():
+    """Upload Imagen QC Staff Database file (reads 'Main' sheet)"""
+    global imagen_qc_staff_data, imagen_qc_staff_filename, imagen_qc_processing_result
+
+    if "file" not in request.files:
+        flash("No file provided", "error")
+        return redirect("/?menu=allocations&submenu=imagen-qc-allocation")
+
+    file = request.files["file"]
+    if file.filename == "":
+        flash("No file selected", "error")
+        return redirect("/?menu=allocations&submenu=imagen-qc-allocation")
+
+    try:
+        filename = secure_filename(file.filename)
+        file.save(filename)
+
+        all_sheets = pd.read_excel(filename, sheet_name=None, parse_dates=False)
+
+        # Look for "Main" sheet (case-insensitive)
+        target_sheet = None
+        for sheet_name in all_sheets:
+            if str(sheet_name).strip().lower() == "main":
+                target_sheet = sheet_name
+                break
+
+        if target_sheet:
+            imagen_qc_staff_data = all_sheets[target_sheet]
+        else:
+            imagen_qc_staff_data = list(all_sheets.values())[0]
+            flash(f"⚠️ 'Main' sheet not found, using first sheet: '{list(all_sheets.keys())[0]}'", "warning")
+
+        imagen_qc_staff_filename = filename
+        imagen_qc_processing_result = None
+
+        flash("✅ Staff Database file uploaded successfully!", "success")
+
+        if os.path.exists(filename):
+            os.remove(filename)
+
+        return redirect("/?menu=allocations&submenu=imagen-qc-allocation")
+
+    except Exception as e:
+        imagen_qc_processing_result = f"❌ Error uploading staff database file: {str(e)}"
+        flash(f"Error uploading staff database file: {str(e)}", "error")
+        if "filename" in locals() and os.path.exists(filename):
+            os.remove(filename)
+        return redirect("/?menu=allocations&submenu=imagen-qc-allocation")
+
+
+@app.route("/upload_imagen_qc_allocation_data", methods=["POST"])
+@admin_required
+def upload_imagen_qc_allocation_data():
+    """Upload Imagen QC Allocation Data file (reads 'Consolidate' sheet)"""
+    global imagen_qc_allocation_data, imagen_qc_allocation_filename, imagen_qc_processing_result
+
+    if "file" not in request.files:
+        flash("No file provided", "error")
+        return redirect("/?menu=allocations&submenu=imagen-qc-allocation")
+
+    file = request.files["file"]
+    if file.filename == "":
+        flash("No file selected", "error")
+        return redirect("/?menu=allocations&submenu=imagen-qc-allocation")
+
+    try:
+        filename = secure_filename(file.filename)
+        file.save(filename)
+
+        all_sheets = pd.read_excel(filename, sheet_name=None, parse_dates=False)
+
+        # Look for "Consolidate" sheet (case-insensitive)
+        target_sheet = None
+        for sheet_name in all_sheets:
+            if str(sheet_name).strip().lower() == "consolidate":
+                target_sheet = sheet_name
+                break
+
+        if target_sheet:
+            imagen_qc_allocation_data = all_sheets[target_sheet]
+        else:
+            imagen_qc_allocation_data = list(all_sheets.values())[0]
+            flash(f"⚠️ 'Consolidate' sheet not found, using first sheet: '{list(all_sheets.keys())[0]}'", "warning")
+
+        imagen_qc_allocation_filename = filename
+        imagen_qc_processing_result = None
+
+        flash("✅ QC Allocation Data file uploaded successfully!", "success")
+
+        if os.path.exists(filename):
+            os.remove(filename)
+
+        return redirect("/?menu=allocations&submenu=imagen-qc-allocation")
+
+    except Exception as e:
+        imagen_qc_processing_result = f"❌ Error uploading QC allocation data file: {str(e)}"
+        flash(f"Error uploading QC allocation data file: {str(e)}", "error")
+        if "filename" in locals() and os.path.exists(filename):
+            os.remove(filename)
+        return redirect("/?menu=allocations&submenu=imagen-qc-allocation")
+
+
+def match_imagen_qc_allocation(allocation_df, staff_df):
+    """
+    Two-pass matching for Imagen QC Allocation.
+
+    Pass 1: Match allocation "Agent Name" against each Auditor's "Agent Preference 1" list.
+    Pass 2: For unassigned rows, match against "Agent Preference 2" to fill remaining CC capacity.
+
+    Returns allocation DataFrame with "Auditor" column, stats, and auditor tracker.
+    """
+
+    def find_col(df, possible_names):
+        for col in df.columns:
+            col_lower = str(col).strip().lower()
+            for name in possible_names:
+                if col_lower == name.strip().lower():
+                    return col
+        for col in df.columns:
+            col_lower = str(col).strip().lower()
+            for name in possible_names:
+                name_lower = name.strip().lower()
+                if name_lower in col_lower or col_lower in name_lower:
+                    return col
+        return None
+
+    result_df = allocation_df.copy()
+    result_df["Auditor"] = ""
+
+    staff_auditor_col = find_col(staff_df, ["Auditors", "Auditor", "Auditor Name"])
+    staff_pref1_col = find_col(staff_df, ["Agent Preference 1", "AgentPreference1", "Preference 1", "Pref 1"])
+    staff_pref2_col = find_col(staff_df, ["Agent Preference 2", "AgentPreference2", "Preference 2", "Pref 2"])
+    staff_cc_col = find_col(staff_df, ["CC", "Count", "Capacity"])
+
+    alloc_agent_col = find_col(allocation_df, ["Agent Name", "AgentName", "Agent"])
+
+    staff_cols_str = ", ".join([f'"{str(c)}"' for c in staff_df.columns.tolist()])
+    alloc_cols_str = ", ".join([f'"{str(c)}"' for c in allocation_df.columns.tolist()])
+
+    missing = []
+    if not staff_auditor_col:
+        missing.append("Auditors (staff)")
+    if not staff_pref1_col:
+        missing.append("Agent Preference 1 (staff)")
+    if not staff_pref2_col:
+        missing.append("Agent Preference 2 (staff)")
+    if not staff_cc_col:
+        missing.append("CC (staff)")
+    if not alloc_agent_col:
+        missing.append("Agent Name (allocation)")
+
+    if missing:
+        raise ValueError(
+            f"Missing required columns: {', '.join(missing)}\n\n"
+            f"Staff DB columns found: [{staff_cols_str}]\n\n"
+            f"Allocation file columns found: [{alloc_cols_str}]"
+        )
+
+    print(f"[Imagen QC] Staff columns mapped: Auditors='{staff_auditor_col}', Pref1='{staff_pref1_col}', Pref2='{staff_pref2_col}', CC='{staff_cc_col}'")
+    print(f"[Imagen QC] Allocation columns mapped: Agent Name='{alloc_agent_col}'")
+
+    # Build auditor tracker
+    auditor_tracker = []
+    for _, row in staff_df.iterrows():
+        auditor_name = str(row[staff_auditor_col]).strip()
+        if not auditor_name or auditor_name.lower() == "nan":
+            continue
+
+        cc_limit = row[staff_cc_col]
+        try:
+            cc_limit = int(float(cc_limit))
+        except (ValueError, TypeError):
+            cc_limit = 0
+
+        pref1_raw = str(row[staff_pref1_col]).strip()
+        pref2_raw = str(row[staff_pref2_col]).strip()
+
+        pref1_list = [v.strip().lower() for v in pref1_raw.split(",") if v.strip()] if pref1_raw.lower() != "nan" else []
+        pref2_list = [v.strip().lower() for v in pref2_raw.split(",") if v.strip()] if pref2_raw.lower() != "nan" else []
+
+        auditor_tracker.append({
+            "name": auditor_name,
+            "cc_limit": cc_limit,
+            "current_count": 0,
+            "pref1_count": 0,
+            "pref2_count": 0,
+            "pref1_list": pref1_list,
+            "pref2_list": pref2_list,
+            "pref1_display": pref1_raw if pref1_raw.lower() != "nan" else "—",
+            "pref2_display": pref2_raw if pref2_raw.lower() != "nan" else "—",
+        })
+
+    matched_pref1 = 0
+    matched_pref2 = 0
+    unmatched_count = 0
+
+    # Pass 1: Match against Agent Preference 1
+    for idx, alloc_row in allocation_df.iterrows():
+        agent_name = str(alloc_row[alloc_agent_col]).strip().lower()
+        if not agent_name or agent_name == "nan":
+            continue
+
+        for auditor in auditor_tracker:
+            if auditor["current_count"] >= auditor["cc_limit"]:
+                continue
+
+            if agent_name in auditor["pref1_list"]:
+                result_df.at[idx, "Auditor"] = auditor["name"]
+                auditor["current_count"] += 1
+                auditor["pref1_count"] += 1
+                matched_pref1 += 1
+                break
+
+    # Pass 2: Match remaining unassigned rows against Agent Preference 2
+    for idx, alloc_row in allocation_df.iterrows():
+        if result_df.at[idx, "Auditor"] != "":
+            continue
+
+        agent_name = str(alloc_row[alloc_agent_col]).strip().lower()
+        if not agent_name or agent_name == "nan":
+            continue
+
+        for auditor in auditor_tracker:
+            if auditor["current_count"] >= auditor["cc_limit"]:
+                continue
+
+            if agent_name in auditor["pref2_list"]:
+                result_df.at[idx, "Auditor"] = auditor["name"]
+                auditor["current_count"] += 1
+                auditor["pref2_count"] += 1
+                matched_pref2 += 1
+                break
+
+    # Count unmatched
+    unmatched_count = len(result_df[result_df["Auditor"] == ""])
+
+    return result_df, matched_pref1, matched_pref2, unmatched_count, auditor_tracker
+
+
+@app.route("/process_imagen_qc_allocation", methods=["POST"])
+@admin_required
+def process_imagen_qc_allocation():
+    """Process Imagen QC Allocation"""
+    global imagen_qc_staff_data, imagen_qc_allocation_data, imagen_qc_processing_result
+
+    current_menu = request.form.get("current_menu", "allocations")
+    current_submenu = request.form.get("current_submenu", "imagen-qc-allocation")
+
+    if imagen_qc_staff_data is None or imagen_qc_allocation_data is None:
+        imagen_qc_processing_result = "❌ Error: Please upload both Staff Database and QC Allocation Data files first"
+        flash(imagen_qc_processing_result, "error")
+        return redirect(f"/?menu={current_menu}&submenu={current_submenu}")
+
+    try:
+        import time
+        start_time = time.time()
+
+        if not isinstance(imagen_qc_staff_data, pd.DataFrame):
+            imagen_qc_staff_data = pd.DataFrame(imagen_qc_staff_data)
+        if not isinstance(imagen_qc_allocation_data, pd.DataFrame):
+            imagen_qc_allocation_data = pd.DataFrame(imagen_qc_allocation_data)
+
+        result_df, matched_pref1, matched_pref2, unmatched_count, auditor_tracker = match_imagen_qc_allocation(
+            imagen_qc_allocation_data, imagen_qc_staff_data
+        )
+
+        imagen_qc_allocation_data = result_df
+
+        processing_time = time.time() - start_time
+
+        # Build auditor summary table
+        auditor_summary_rows = []
+        for i, auditor in enumerate(auditor_tracker):
+            bg = "#f8f9fa" if i % 2 else "#fff"
+            td = 'style="padding:8px 10px;"'
+            td_c = 'style="padding:8px 10px;text-align:center;"'
+            auditor_summary_rows.append(
+                f'<tr style="border-bottom:1px solid #e9ecef;background:{bg};">'
+                f'<td {td}>{auditor["name"]}</td>'
+                f'<td {td_c}>{auditor["current_count"]}</td>'
+                f'<td {td_c}>{auditor["cc_limit"]}</td>'
+                f'<td {td_c}>{auditor["pref1_count"]}</td>'
+                f'<td {td_c}>{auditor["pref2_count"]}</td>'
+                f'<td {td}>{auditor["pref1_display"]}</td>'
+                f'<td {td}>{auditor["pref2_display"]}</td></tr>'
+            )
+
+        auditor_summary_table = (
+            '<div style="overflow-x:auto;margin-top:10px;">'
+            '<table style="width:100%;border-collapse:collapse;font-size:13px;border-radius:8px;overflow:hidden;box-shadow:0 2px 4px rgba(0,0,0,0.1);">'
+            '<thead><tr style="background:linear-gradient(135deg,#667eea 0%,#764ba2 100%);color:#fff;">'
+            '<th style="padding:8px 10px;text-align:left;">Auditor</th>'
+            '<th style="padding:8px 10px;text-align:center;">Assigned</th>'
+            '<th style="padding:8px 10px;text-align:center;">CC Limit</th>'
+            '<th style="padding:8px 10px;text-align:center;">From Pref 1</th>'
+            '<th style="padding:8px 10px;text-align:center;">From Pref 2</th>'
+            '<th style="padding:8px 10px;text-align:left;">Agent Preference 1</th>'
+            '<th style="padding:8px 10px;text-align:left;">Agent Preference 2</th>'
+            '</tr></thead><tbody>'
+            + "".join(auditor_summary_rows)
+            + '</tbody></table></div>'
+        )
+
+        imagen_qc_processing_result = f"""✅ Imagen QC Allocation processing completed successfully!
+<br><br>
+<b>📊 Processing Statistics:</b><br>
+- Total rows processed: {len(imagen_qc_allocation_data)}<br>
+- Matched via Preference 1: {matched_pref1}<br>
+- Matched via Preference 2: {matched_pref2}<br>
+- Total matched: {matched_pref1 + matched_pref2}<br>
+- Unmatched rows: {unmatched_count}<br>
+- Processing time: {processing_time:.2f}s<br>
+<br>
+<b>👥 Auditor Summary:</b>
+{auditor_summary_table}
+<br>
+💾 Ready to download the processed result file!"""
+
+        flash("Imagen QC Allocation processed successfully!", "success")
+        return redirect(f"/?menu={current_menu}&submenu={current_submenu}")
+
+    except Exception as e:
+        import traceback
+        error_trace = traceback.format_exc()
+        imagen_qc_processing_result = f"❌ Error processing Imagen QC Allocation: {str(e)}\n\n{error_trace}"
+        flash(f"Error processing Imagen QC Allocation: {str(e)}", "error")
+        print(f"Imagen QC Allocation Processing Error: {error_trace}")
+        return redirect(f"/?menu={current_menu}&submenu={current_submenu}")
+
+
+@app.route("/download_imagen_qc_allocation", methods=["POST"])
+@admin_required
+def download_imagen_qc_allocation():
+    """Download Imagen QC Allocation processed result as Excel file"""
+    global imagen_qc_allocation_data, imagen_qc_allocation_filename
+
+    if imagen_qc_allocation_data is None:
+        flash("No processed data to download", "error")
+        return redirect("/?menu=allocations&submenu=imagen-qc-allocation")
+
+    try:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        if imagen_qc_allocation_filename:
+            base_name = os.path.splitext(imagen_qc_allocation_filename)[0]
+            filename = f"{base_name}_qc_allocation_{timestamp}.xlsx"
+        else:
+            filename = f"imagen_qc_allocation_result_{timestamp}.xlsx"
+
+        temp_fd, temp_path = tempfile.mkstemp(suffix=".xlsx")
+
+        try:
+            with pd.ExcelWriter(temp_path, engine="openpyxl") as writer:
+                imagen_qc_allocation_data.to_excel(writer, sheet_name="QC Allocation", index=False)
+
+            return send_file(
+                temp_path,
+                as_attachment=True,
+                download_name=filename,
+                mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+        finally:
+            os.close(temp_fd)
+            if os.path.exists(temp_path):
+                pass
+
+    except Exception as e:
+        import traceback
+        error_trace = traceback.format_exc()
+        flash(f"Error downloading Imagen QC Allocation file: {str(e)}", "error")
+        print(f"Imagen QC Allocation Download Error: {error_trace}")
+        return redirect("/?menu=allocations&submenu=imagen-qc-allocation")
 
 
 @app.route("/download_trackers", methods=["POST"])

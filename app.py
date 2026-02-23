@@ -808,6 +808,13 @@ ev_allocation_data = None
 ev_allocation_filename = None
 ev_processing_result = None
 
+# Dental BV Allocation data storage
+dental_bv_staff_data = None
+dental_bv_staff_filename = None
+dental_bv_allocation_data = None
+dental_bv_allocation_filename = None
+dental_bv_processing_result = None
+
 # Day Shift and Night Shift data storage (using global variables like allocation/data files)
 day_shift_allocation_data = None
 day_shift_allocation_filename = None
@@ -1649,7 +1656,6 @@ HTML_TEMPLATE = """
         .role-btn {
             padding: 12px 24px;
             border: none;
-            border-radius: 25px;
             background: rgba(255, 255, 255, 0.2);
             color: white;
             cursor: pointer;
@@ -2132,7 +2138,6 @@ HTML_TEMPLATE = """
             background: linear-gradient(135deg, #27ae60, #2ecc71);
             font-size: 18px;
             padding: 15px 40px;
-            border-radius: 25px;
             display: flex;
             align-items: center;
             gap: 10px;
@@ -2560,6 +2565,7 @@ HTML_TEMPLATE = """
             const names = {
                 'image-allocation': 'Imagen Allocation',
                 'ev-allocation': 'EV Allocation',
+                'dental-bv-allocation': 'Dental BV Allocation',
                 'day-shift': 'Day Shift',
                 'night-shift': 'Night Shift',
                 'ntbp': 'NTBP',
@@ -2619,6 +2625,11 @@ HTML_TEMPLATE = """
                     <li>
                         <div class="submenu-item {% if current_submenu == 'ev-allocation' %}active{% endif %}" onclick="switchAdminMenu('allocations', 'ev-allocation')">
                             <i class="fas fa-car"></i> EV Allocation
+                        </div>
+                    </li>
+                    <li>
+                        <div class="submenu-item {% if current_submenu == 'dental-bv-allocation' %}active{% endif %}" onclick="switchAdminMenu('allocations', 'dental-bv-allocation')">
+                            <i class="fas fa-tooth"></i> Dental BV Allocation
                         </div>
                     </li>
                 </ul>
@@ -2986,6 +2997,106 @@ HTML_TEMPLATE = """
                             <div class="progress-bar" id="ev-progress-bar" style="width: 100%;">Processing...</div>
                         </div>
                         <div class="progress-text" id="ev-progress-text">Please wait...</div>
+                    </div>
+                </div>
+
+                </div>
+
+                <!-- Dental BV Allocation Content (under Allocations menu) -->
+                <div id="dental-bv-allocation-content" class="admin-menu-content" style="display: {% if current_menu == 'allocations' and current_submenu == 'dental-bv-allocation' %}block{% else %}none{% endif %};">
+                <div class="upload-grid">
+                    <div class="upload-card">
+                        <form action="/upload_dental_bv_staff" method="post" enctype="multipart/form-data" id="dental-bv-staff-form">
+                            <div class="form-group">
+                                <input type="file" id="dental_bv_staff_file" name="file" accept=".xlsx,.xls" required>
+                            </div>
+                            <button type="submit" id="dental-bv-staff-btn">📤 Upload Staff Database</button>
+                        </form>
+                    </div>
+
+                    <div class="upload-card">
+                        <form action="/upload_dental_bv_allocation_data" method="post" enctype="multipart/form-data" id="dental-bv-allocation-form">
+                            <div class="form-group">
+                                <input type="file" id="dental_bv_allocation_file" name="file" accept=".xlsx,.xls" required>
+                            </div>
+                            <button type="submit" id="dental-bv-allocation-btn">📤 Upload Dental BV Allocation Data</button>
+                        </form>
+                    </div>
+                </div>
+
+                <!-- File Status -->
+                <div class="section">
+                    <h3>📊 File Status</h3>
+                    <div class="file-status">
+                        {% if dental_bv_staff_filename %}
+                            <div class="status-success">
+                                ✅ Staff Database File: {{ dental_bv_staff_filename }}
+                            </div>
+                        {% else %}
+                            <div class="status-info">
+                                ℹ️ No staff database file uploaded yet.
+                            </div>
+                        {% endif %}
+                        
+                        {% if dental_bv_allocation_filename %}
+                            <div class="status-success">
+                                ✅ Dental BV Allocation Data File: {{ dental_bv_allocation_filename }}
+                            </div>
+                        {% else %}
+                            <div class="status-info">
+                                ℹ️ No Dental BV allocation data file uploaded yet.
+                            </div>
+                        {% endif %}
+                    </div>
+                </div>
+
+                <!-- Processing Section -->
+                {% if dental_bv_staff_data is not none and dental_bv_allocation_data is not none %}
+                <div class="section">
+                    <h3>🔄 Process Dental BV Allocation</h3>
+                    <form action="/process_dental_bv_allocation" method="post" id="dental-bv-process-form">
+                        <input type="hidden" name="current_menu" value="allocations">
+                        <input type="hidden" name="current_submenu" value="dental-bv-allocation">
+                        <button type="submit" class="process-btn" id="dental-bv-process-btn">
+                            <i class="fas fa-cogs"></i> Process Dental BV Allocation
+                        </button>
+                    </form>
+                </div>
+                {% endif %}
+
+                <!-- Status Messages -->
+                {% if dental_bv_processing_result %}
+                <div class="section">
+                    <h3>📢 Processing Results</h3>
+                    <div class="status-message">
+                        {{ dental_bv_processing_result | safe }}
+                    </div>
+                </div>
+                {% endif %}
+
+                <!-- Download Section -->
+                {% if dental_bv_processing_result and 'successfully' in dental_bv_processing_result.lower() %}
+                <div class="section">
+                    <h3>💾 Download Dental BV Allocation Result</h3>
+                    <form action="/download_dental_bv_allocation" method="post" id="dental-bv-download-form">
+                        <input type="hidden" name="current_menu" value="allocations">
+                        <input type="hidden" name="current_submenu" value="dental-bv-allocation">
+                        <button type="submit" class="process-btn" id="dental-bv-download-btn" style="background: linear-gradient(135deg, #3498db, #2980b9);">
+                            <i class="fas fa-download"></i> Download Processed File
+                        </button>
+                    </form>
+                </div>
+                {% endif %}
+
+                <!-- Processing Modal -->
+                <div class="processing-status" id="dental-bv-processing-status" style="display: none;">
+                    <div class="processing-content">
+                        <div class="spinner"></div>
+                        <h3 id="dental-bv-processing-title">Processing...</h3>
+                        <div class="progress-container">
+                            <div class="progress-bar" id="dental-bv-progress-bar" style="width: 100%;">Processing...</div>
+                        </div>
+                        <div class="progress-text" id="dental-bv-progress-text">Please wait...</div>
                     </div>
                 </div>
 
@@ -3903,6 +4014,87 @@ HTML_TEMPLATE = """
             
             // Hide modal when page loads (in case it was left open)
             hideEVProcessingModal();
+        });
+        
+        // Handle Dental BV Allocation forms with processing modal
+        document.addEventListener('DOMContentLoaded', function() {
+            function showDentalBVProcessingModal(title, message) {
+                const modal = document.getElementById('dental-bv-processing-status');
+                const titleEl = document.getElementById('dental-bv-processing-title');
+                const textEl = document.getElementById('dental-bv-progress-text');
+                if (modal && titleEl && textEl) {
+                    titleEl.textContent = title;
+                    textEl.textContent = message;
+                    modal.style.display = 'flex';
+                }
+            }
+            
+            function hideDentalBVProcessingModal() {
+                const modal = document.getElementById('dental-bv-processing-status');
+                if (modal) {
+                    modal.style.display = 'none';
+                }
+            }
+            
+            const dentalBVStaffForm = document.getElementById('dental-bv-staff-form');
+            if (dentalBVStaffForm) {
+                dentalBVStaffForm.addEventListener('submit', function(e) {
+                    const btn = document.getElementById('dental-bv-staff-btn');
+                    if (btn) {
+                        btn.disabled = true;
+                        btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Uploading...';
+                    }
+                    showDentalBVProcessingModal('Uploading Staff Database', 'Please wait while we upload your staff database file...');
+                });
+            }
+            
+            const dentalBVAllocationForm = document.getElementById('dental-bv-allocation-form');
+            if (dentalBVAllocationForm) {
+                dentalBVAllocationForm.addEventListener('submit', function(e) {
+                    const btn = document.getElementById('dental-bv-allocation-btn');
+                    if (btn) {
+                        btn.disabled = true;
+                        btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Uploading...';
+                    }
+                    showDentalBVProcessingModal('Uploading Dental BV Allocation Data', 'Please wait while we upload your allocation data file...');
+                });
+            }
+            
+            const dentalBVProcessForm = document.getElementById('dental-bv-process-form');
+            if (dentalBVProcessForm) {
+                dentalBVProcessForm.addEventListener('submit', function(e) {
+                    const btn = document.getElementById('dental-bv-process-btn');
+                    if (btn) {
+                        btn.disabled = true;
+                        btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Processing...';
+                    }
+                    showDentalBVProcessingModal('Processing Dental BV Allocation', 'Matching allocation rows to agents... This may take a moment.');
+                });
+            }
+            
+            const dentalBVDownloadForm = document.getElementById('dental-bv-download-form');
+            if (dentalBVDownloadForm) {
+                dentalBVDownloadForm.addEventListener('submit', function(e) {
+                    const btn = document.getElementById('dental-bv-download-btn');
+                    if (btn) {
+                        btn.disabled = true;
+                        btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Downloading...';
+                    }
+                    showDentalBVProcessingModal('Preparing Download', 'Generating Excel file... Please wait.');
+                    
+                    setTimeout(function() {
+                        hideDentalBVProcessingModal();
+                        if (btn) {
+                            setTimeout(function() {
+                                btn.disabled = false;
+                                btn.innerHTML = '<i class="fas fa-download"></i> Download Processed File';
+                            }, 1000);
+                        }
+                    }, 2000);
+                });
+            }
+            
+            hideDentalBVProcessingModal();
         });
         
         // View agent allocation in modal (for Email Allocation tab)
@@ -16104,6 +16296,7 @@ def index():
     global email_allocation_data, email_allocation_filename, email_allocation_agents_list
     global tracker_data, tracker_filename, tracker_file_ready
     global ev_staff_data, ev_staff_filename, ev_allocation_data, ev_allocation_filename, ev_processing_result
+    global dental_bv_staff_data, dental_bv_staff_filename, dental_bv_allocation_data, dental_bv_allocation_filename, dental_bv_processing_result
 
     # Get current user
     user = get_user_by_username(session.get("user_id"))
@@ -16179,6 +16372,11 @@ def index():
         ev_allocation_data=ev_allocation_data,
         ev_allocation_filename=ev_allocation_filename,
         ev_processing_result=ev_processing_result,
+        dental_bv_staff_data=dental_bv_staff_data,
+        dental_bv_staff_filename=dental_bv_staff_filename,
+        dental_bv_allocation_data=dental_bv_allocation_data,
+        dental_bv_allocation_filename=dental_bv_allocation_filename,
+        dental_bv_processing_result=dental_bv_processing_result,
         current_menu=current_menu,
         current_submenu=current_submenu,
     )
@@ -19856,6 +20054,442 @@ def download_ev_allocation():
         flash(f"Error downloading EV Allocation file: {str(e)}", "error")
         print(f"EV Allocation Download Error: {error_trace}")
         return redirect("/?menu=allocations&submenu=ev-allocation")
+
+
+@app.route("/upload_dental_bv_staff", methods=["POST"])
+@admin_required
+def upload_dental_bv_staff():
+    """Upload Dental BV Staff Database file"""
+    global dental_bv_staff_data, dental_bv_staff_filename, dental_bv_processing_result
+
+    if "file" not in request.files:
+        flash("No file provided", "error")
+        return redirect("/?menu=allocations&submenu=dental-bv-allocation")
+
+    file = request.files["file"]
+    if file.filename == "":
+        flash("No file selected", "error")
+        return redirect("/?menu=allocations&submenu=dental-bv-allocation")
+
+    try:
+        filename = secure_filename(file.filename)
+        file.save(filename)
+
+        dental_bv_staff_data = pd.read_excel(filename, sheet_name=None, parse_dates=False)
+
+        if len(dental_bv_staff_data) == 1:
+            dental_bv_staff_data = list(dental_bv_staff_data.values())[0]
+        elif "main" in dental_bv_staff_data:
+            dental_bv_staff_data = dental_bv_staff_data["main"]
+        else:
+            dental_bv_staff_data = list(dental_bv_staff_data.values())[0]
+
+        dental_bv_staff_filename = filename
+        dental_bv_processing_result = None
+
+        flash("✅ Staff Database file uploaded successfully!", "success")
+
+        if os.path.exists(filename):
+            os.remove(filename)
+
+        return redirect("/?menu=allocations&submenu=dental-bv-allocation")
+
+    except Exception as e:
+        dental_bv_processing_result = f"❌ Error uploading staff database file: {str(e)}"
+        flash(f"Error uploading staff database file: {str(e)}", "error")
+        if "filename" in locals() and os.path.exists(filename):
+            os.remove(filename)
+        return redirect("/?menu=allocations&submenu=dental-bv-allocation")
+
+
+@app.route("/upload_dental_bv_allocation_data", methods=["POST"])
+@admin_required
+def upload_dental_bv_allocation_data():
+    """Upload Dental BV Allocation Data file"""
+    global dental_bv_allocation_data, dental_bv_allocation_filename, dental_bv_processing_result
+
+    if "file" not in request.files:
+        flash("No file provided", "error")
+        return redirect("/?menu=allocations&submenu=dental-bv-allocation")
+
+    file = request.files["file"]
+    if file.filename == "":
+        flash("No file selected", "error")
+        return redirect("/?menu=allocations&submenu=dental-bv-allocation")
+
+    try:
+        filename = secure_filename(file.filename)
+        file.save(filename)
+
+        dental_bv_allocation_data = pd.read_excel(filename, sheet_name=None, parse_dates=False)
+
+        if len(dental_bv_allocation_data) == 1:
+            dental_bv_allocation_data = list(dental_bv_allocation_data.values())[0]
+        elif "main" in dental_bv_allocation_data:
+            dental_bv_allocation_data = dental_bv_allocation_data["main"]
+        else:
+            dental_bv_allocation_data = list(dental_bv_allocation_data.values())[0]
+
+        dental_bv_allocation_filename = filename
+        dental_bv_processing_result = None
+
+        flash("✅ Dental BV Allocation Data file uploaded successfully!", "success")
+
+        if os.path.exists(filename):
+            os.remove(filename)
+
+        return redirect("/?menu=allocations&submenu=dental-bv-allocation")
+
+    except Exception as e:
+        dental_bv_processing_result = f"❌ Error uploading Dental BV allocation data file: {str(e)}"
+        flash(f"Error uploading Dental BV allocation data file: {str(e)}", "error")
+        if "filename" in locals() and os.path.exists(filename):
+            os.remove(filename)
+        return redirect("/?menu=allocations&submenu=dental-bv-allocation")
+
+
+def find_dental_bv_column(df, possible_names):
+    """Find a column in a DataFrame by checking multiple possible names (case-insensitive, partial match)."""
+    col_strings = {col: str(col).strip().lower() for col in df.columns}
+
+    # Pass 1: exact match
+    for col, col_lower in col_strings.items():
+        for name in possible_names:
+            if col_lower == name.strip().lower():
+                return col
+
+    # Pass 2: contains match (column contains the keyword or keyword contains the column)
+    for col, col_lower in col_strings.items():
+        for name in possible_names:
+            name_lower = name.strip().lower()
+            if name_lower in col_lower or col_lower in name_lower:
+                return col
+
+    return None
+
+
+def match_dental_bv_allocation(allocation_df, staff_df):
+    """
+    Match Dental BV allocation rows to agents from staff database.
+    Returns the allocation DataFrame with "Agent Name" column added, plus stats and agent summary.
+    """
+    result_df = allocation_df.copy()
+    result_df["Agent Name"] = ""
+
+    # Find columns in staff database with broad possible names
+    staff_doctor_office_col = find_dental_bv_column(staff_df, [
+        "Doctor Office", "Doctor_Office", "DoctorOffice", "Dr Office", "Office",
+        "Doctor office name", "Doc Office"
+    ])
+    staff_software_col = find_dental_bv_column(staff_df, [
+        "Software", "System", "SW"
+    ])
+    staff_insurance_col = find_dental_bv_column(staff_df, [
+        "Insurance List", "Insurance_List", "InsuranceList", "Insurance",
+        "Ins List", "Dental Insurance", "Insurance Carrier"
+    ])
+    staff_count_col = find_dental_bv_column(staff_df, [
+        "Count", "Allocation Count", "Max Count", "Limit", "Qty"
+    ])
+    staff_agent_col = find_dental_bv_column(staff_df, [
+        "Agent Name", "Agent_Name", "AgentName", "Agent", "Name", "Staff Name"
+    ])
+
+    # Find columns in allocation data with broad possible names
+    alloc_office_col = find_dental_bv_column(allocation_df, [
+        "Office Name", "Office_Name", "OfficeName", "Office",
+        "Doctor Office", "Doctor Name", "Practice Name", "Practice"
+    ])
+    alloc_software_col = find_dental_bv_column(allocation_df, [
+        "Software", "System", "SW"
+    ])
+    alloc_insurance_col = find_dental_bv_column(allocation_df, [
+        "Insurance", "Insurance Carrier", "Ins", "Dental Insurance",
+        "Insurance Name", "Ins Carrier", "Primary Insurance"
+    ])
+    alloc_remark_col = find_dental_bv_column(allocation_df, [
+        "Remark", "Remarks", "Comment", "Comments", "Note", "Notes", "Status"
+    ])
+
+    staff_cols_str = ", ".join([f'"{str(c)}"' for c in staff_df.columns.tolist()])
+    alloc_cols_str = ", ".join([f'"{str(c)}"' for c in allocation_df.columns.tolist()])
+
+    missing_cols = []
+    if not staff_doctor_office_col:
+        missing_cols.append("Doctor Office (staff)")
+    if not staff_software_col:
+        missing_cols.append("Software (staff)")
+    if not staff_insurance_col:
+        missing_cols.append("Insurance List (staff)")
+    if not staff_count_col:
+        missing_cols.append("Count (staff)")
+    if not staff_agent_col:
+        missing_cols.append("Agent Name (staff)")
+    if not alloc_office_col:
+        missing_cols.append("Office Name (allocation)")
+    if not alloc_software_col:
+        missing_cols.append("Software (allocation)")
+    if not alloc_insurance_col:
+        missing_cols.append("Insurance (allocation)")
+
+    if missing_cols:
+        raise ValueError(
+            f"Missing required columns: {', '.join(missing_cols)}\n\n"
+            f"Staff DB columns found: [{staff_cols_str}]\n\n"
+            f"Allocation file columns found: [{alloc_cols_str}]"
+        )
+
+    print(f"[Dental BV] Staff columns mapped: Doctor Office='{staff_doctor_office_col}', Software='{staff_software_col}', Insurance List='{staff_insurance_col}', Count='{staff_count_col}', Agent Name='{staff_agent_col}'")
+    print(f"[Dental BV] Allocation columns mapped: Office Name='{alloc_office_col}', Software='{alloc_software_col}', Insurance='{alloc_insurance_col}', Remark='{alloc_remark_col}'")
+
+    # Build agent tracking: {index: {"name": ..., "count_limit": ..., "current_count": 0, ...}}
+    agent_tracker = []
+    for _, staff_row in staff_df.iterrows():
+        agent_name = str(staff_row[staff_agent_col]).strip()
+        if not agent_name or agent_name.lower() == "nan":
+            continue
+
+        count_limit = staff_row[staff_count_col]
+        try:
+            count_limit = int(float(count_limit))
+        except (ValueError, TypeError):
+            count_limit = 0
+
+        doctor_offices_raw = str(staff_row[staff_doctor_office_col]).strip()
+        software_raw = str(staff_row[staff_software_col]).strip()
+        insurance_raw = str(staff_row[staff_insurance_col]).strip()
+
+        doctor_offices = [v.strip().lower() for v in doctor_offices_raw.split(",") if v.strip()] if doctor_offices_raw.lower() != "nan" else []
+        software_list = [v.strip().lower() for v in software_raw.split(",") if v.strip()] if software_raw.lower() != "nan" else []
+        insurance_list = [v.strip().lower() for v in insurance_raw.split(",") if v.strip()] if insurance_raw.lower() != "nan" else []
+
+        has_all_office = "all" in doctor_offices
+        has_all_insurance = "all" in insurance_list
+
+        agent_tracker.append({
+            "name": agent_name,
+            "count_limit": count_limit,
+            "current_count": 0,
+            "doctor_offices": doctor_offices,
+            "software_list": software_list,
+            "insurance_list": insurance_list,
+            "has_all_office": has_all_office,
+            "has_all_insurance": has_all_insurance,
+        })
+
+    matched_count = 0
+    unmatched_count = 0
+    no_info_count = 0
+
+    for idx, alloc_row in allocation_df.iterrows():
+        alloc_office = str(alloc_row[alloc_office_col]).strip().lower()
+        alloc_software = str(alloc_row[alloc_software_col]).strip().lower()
+        alloc_insurance = str(alloc_row[alloc_insurance_col]).strip().lower()
+
+        is_no_info = False
+        if alloc_remark_col:
+            remark_val = str(alloc_row[alloc_remark_col]).strip().lower()
+            if remark_val == "no info":
+                is_no_info = True
+
+        if alloc_office == "nan":
+            alloc_office = ""
+        if alloc_software == "nan":
+            alloc_software = ""
+        if alloc_insurance == "nan":
+            alloc_insurance = ""
+
+        assigned = False
+        for agent in agent_tracker:
+            if agent["current_count"] >= agent["count_limit"]:
+                continue
+
+            # Office match: "All" wildcard or comma-separated OR
+            office_match = False
+            if agent["has_all_office"]:
+                office_match = True
+            elif alloc_office:
+                for office in agent["doctor_offices"]:
+                    if office == alloc_office:
+                        office_match = True
+                        break
+
+            if not office_match:
+                continue
+
+            # Software match: comma-separated OR
+            software_match = False
+            if alloc_software:
+                for sw in agent["software_list"]:
+                    if sw == alloc_software:
+                        software_match = True
+                        break
+            else:
+                software_match = True
+
+            if not software_match:
+                continue
+
+            # Insurance match: "All" wildcard or comma-separated OR
+            insurance_match = False
+            if agent["has_all_insurance"]:
+                insurance_match = True
+            elif alloc_insurance:
+                for ins in agent["insurance_list"]:
+                    if ins == alloc_insurance:
+                        insurance_match = True
+                        break
+            else:
+                insurance_match = True
+
+            if not insurance_match:
+                continue
+
+            result_df.at[idx, "Agent Name"] = agent["name"]
+            agent["current_count"] += 1
+            if is_no_info:
+                no_info_count += 1
+            matched_count += 1
+            assigned = True
+            break
+
+        if not assigned:
+            unmatched_count += 1
+
+    return result_df, matched_count, unmatched_count, no_info_count, agent_tracker
+
+
+@app.route("/process_dental_bv_allocation", methods=["POST"])
+@admin_required
+def process_dental_bv_allocation():
+    """Process Dental BV Allocation - match allocation rows to agents"""
+    global dental_bv_staff_data, dental_bv_allocation_data, dental_bv_processing_result
+
+    current_menu = request.form.get("current_menu", "allocations")
+    current_submenu = request.form.get("current_submenu", "dental-bv-allocation")
+
+    if dental_bv_staff_data is None or dental_bv_allocation_data is None:
+        dental_bv_processing_result = "❌ Error: Please upload both Staff Database and Dental BV Allocation Data files first"
+        flash(dental_bv_processing_result, "error")
+        return redirect(f"/?menu={current_menu}&submenu={current_submenu}")
+
+    try:
+        import time
+        start_time = time.time()
+
+        if not isinstance(dental_bv_staff_data, pd.DataFrame):
+            dental_bv_staff_data = pd.DataFrame(dental_bv_staff_data)
+        if not isinstance(dental_bv_allocation_data, pd.DataFrame):
+            dental_bv_allocation_data = pd.DataFrame(dental_bv_allocation_data)
+
+        result_df, matched_count, unmatched_count, no_info_count, agent_tracker = match_dental_bv_allocation(
+            dental_bv_allocation_data, dental_bv_staff_data
+        )
+
+        dental_bv_allocation_data = result_df
+
+        processing_time = time.time() - start_time
+
+        agent_summary_rows = []
+        for i, agent in enumerate(agent_tracker):
+            offices = ", ".join(agent["doctor_offices"]) if not agent["has_all_office"] else "All"
+            software = ", ".join(agent["software_list"]) if agent["software_list"] else "—"
+            insurance = ", ".join(agent["insurance_list"]) if not agent["has_all_insurance"] else "All"
+            bg = "#f8f9fa" if i % 2 else "#fff"
+            td = 'style="padding:8px 10px;"'
+            td_c = 'style="padding:8px 10px;text-align:center;"'
+            agent_summary_rows.append(
+                f'<tr style="border-bottom:1px solid #e9ecef;background:{bg};">'
+                f'<td {td}>{agent["name"]}</td>'
+                f'<td {td_c}>{agent["current_count"]}</td>'
+                f'<td {td_c}>{agent["count_limit"]}</td>'
+                f'<td {td}>{offices}</td>'
+                f'<td {td}>{software}</td>'
+                f'<td {td}>{insurance}</td></tr>'
+            )
+
+        agent_summary_table = (
+            '<div style="overflow-x:auto;margin-top:10px;">'
+            '<table style="width:100%;border-collapse:collapse;font-size:13px;border-radius:8px;overflow:hidden;box-shadow:0 2px 4px rgba(0,0,0,0.1);">'
+            '<thead><tr style="background:linear-gradient(135deg,#667eea 0%,#764ba2 100%);color:#fff;">'
+            '<th style="padding:8px 10px;text-align:left;">Agent Name</th>'
+            '<th style="padding:8px 10px;text-align:center;">Assigned</th>'
+            '<th style="padding:8px 10px;text-align:center;">Count Limit</th>'
+            '<th style="padding:8px 10px;text-align:left;">Doctor Office</th>'
+            '<th style="padding:8px 10px;text-align:left;">Software</th>'
+            '<th style="padding:8px 10px;text-align:left;">Insurance List</th>'
+            '</tr></thead><tbody>'
+            + "".join(agent_summary_rows)
+            + '</tbody></table></div>'
+        )
+
+        dental_bv_processing_result = f"""✅ Dental BV Allocation processing completed successfully!
+<br><br>
+<b>📊 Processing Statistics:</b><br>
+- Total rows processed: {len(dental_bv_allocation_data)}<br>
+- Matched rows: {matched_count}<br>
+- Unmatched rows: {unmatched_count}<br>
+- "No info" rows (allocated, counted toward limit): {no_info_count}<br>
+- Processing time: {processing_time:.2f}s<br>
+<br>
+<b>👥 Agent Summary:</b>
+{agent_summary_table}
+<br>
+💾 Ready to download the processed result file!"""
+
+        flash("Dental BV Allocation processed successfully!", "success")
+        return redirect(f"/?menu={current_menu}&submenu={current_submenu}")
+
+    except Exception as e:
+        import traceback
+        error_trace = traceback.format_exc()
+        dental_bv_processing_result = f"❌ Error processing Dental BV Allocation: {str(e)}\n\n{error_trace}"
+        flash(f"Error processing Dental BV Allocation: {str(e)}", "error")
+        print(f"Dental BV Allocation Processing Error: {error_trace}")
+        return redirect(f"/?menu={current_menu}&submenu={current_submenu}")
+
+
+@app.route("/download_dental_bv_allocation", methods=["POST"])
+@admin_required
+def download_dental_bv_allocation():
+    """Download Dental BV Allocation processed result as Excel file"""
+    global dental_bv_allocation_data, dental_bv_allocation_filename
+
+    if dental_bv_allocation_data is None:
+        flash("No processed data to download", "error")
+        return redirect("/?menu=allocations&submenu=dental-bv-allocation")
+
+    try:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        if dental_bv_allocation_filename:
+            base_name = os.path.splitext(dental_bv_allocation_filename)[0]
+            filename = f"{base_name}_dental_bv_allocation_{timestamp}.xlsx"
+        else:
+            filename = f"dental_bv_allocation_result_{timestamp}.xlsx"
+
+        temp_fd, temp_path = tempfile.mkstemp(suffix=".xlsx")
+
+        try:
+            with pd.ExcelWriter(temp_path, engine="openpyxl") as writer:
+                dental_bv_allocation_data.to_excel(writer, sheet_name="Dental BV Allocation", index=False)
+
+            return send_file(
+                temp_path,
+                as_attachment=True,
+                download_name=filename,
+                mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+        finally:
+            os.close(temp_fd)
+            if os.path.exists(temp_path):
+                pass
+
+    except Exception as e:
+        import traceback
+        error_trace = traceback.format_exc()
+        flash(f"Error downloading Dental BV Allocation file: {str(e)}", "error")
+        print(f"Dental BV Allocation Download Error: {error_trace}")
+        return redirect("/?menu=allocations&submenu=dental-bv-allocation")
 
 
 @app.route("/download_trackers", methods=["POST"])

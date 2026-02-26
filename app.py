@@ -20798,10 +20798,15 @@ def upload_imagen_qc_allocation_data():
 
 def match_imagen_qc_allocation(allocation_df, staff_df):
     """
-    Two-pass matching for Imagen QC Allocation.
+    Four-pass matching for Imagen QC Allocation with appointment date prioritization.
 
-    Pass 1: Match allocation "Agent Name" against each Auditor's "Agent Preference 1" list.
-    Pass 2: For unassigned rows, match against "Agent Preference 2" to fill remaining CC capacity.
+    Future dates (tomorrow onward, nearest first) are allocated before past/today dates.
+    Within each date group, Preference 1 is tried before Preference 2.
+
+    Pass 1: Future rows → Agent Preference 1
+    Pass 2: Future rows → Agent Preference 2 (remaining unassigned)
+    Pass 3: Past/today rows → Agent Preference 1 (fill remaining CC)
+    Pass 4: Past/today rows → Agent Preference 2 (fill remaining CC)
 
     Returns allocation DataFrame with "Auditor" column, stats, and auditor tracker.
     """
@@ -20829,6 +20834,7 @@ def match_imagen_qc_allocation(allocation_df, staff_df):
     staff_cc_col = find_col(staff_df, ["CC", "Count", "Capacity"])
 
     alloc_agent_col = find_col(allocation_df, ["Agent Name", "AgentName", "Agent"])
+    alloc_date_col = find_col(allocation_df, ["Appointment Date", "Appt Date", "AppointmentDate", "Date"])
 
     staff_cols_str = ", ".join([f'"{str(c)}"' for c in staff_df.columns.tolist()])
     alloc_cols_str = ", ".join([f'"{str(c)}"' for c in allocation_df.columns.tolist()])
@@ -20844,6 +20850,8 @@ def match_imagen_qc_allocation(allocation_df, staff_df):
         missing.append("CC (staff)")
     if not alloc_agent_col:
         missing.append("Agent Name (allocation)")
+    if not alloc_date_col:
+        missing.append("Appointment Date (allocation)")
 
     if missing:
         raise ValueError(
@@ -20853,7 +20861,29 @@ def match_imagen_qc_allocation(allocation_df, staff_df):
         )
 
     print(f"[Imagen QC] Staff columns mapped: Auditors='{staff_auditor_col}', Pref1='{staff_pref1_col}', Pref2='{staff_pref2_col}', CC='{staff_cc_col}'")
-    print(f"[Imagen QC] Allocation columns mapped: Agent Name='{alloc_agent_col}'")
+    print(f"[Imagen QC] Allocation columns mapped: Agent Name='{alloc_agent_col}', Appointment Date='{alloc_date_col}'")
+
+    # Parse appointment dates and split into future vs past/today
+    today = pd.Timestamp.now().normalize()
+    tomorrow = today + pd.Timedelta(days=1)
+
+    parsed_dates = pd.to_datetime(allocation_df[alloc_date_col], errors="coerce")
+
+    future_indices = []
+    past_indices = []
+    for idx in allocation_df.index:
+        dt = parsed_dates.get(idx)
+        if pd.notna(dt) and dt >= tomorrow:
+            future_indices.append(idx)
+        else:
+            past_indices.append(idx)
+
+    # Sort future indices by date ascending (nearest first)
+    future_indices.sort(key=lambda i: parsed_dates.get(i, pd.NaT))
+    # Sort past indices by date descending (most recent first)
+    past_indices.sort(key=lambda i: parsed_dates.get(i, pd.NaT) if pd.notna(parsed_dates.get(i)) else pd.Timestamp.min, reverse=True)
+
+    print(f"[Imagen QC] Date split: {len(future_indices)} future rows, {len(past_indices)} past/today rows (cutoff: {tomorrow.strftime('%Y-%m-%d')})")
 
     # Build auditor tracker
     auditor_tracker = []
@@ -20880,6 +20910,8 @@ def match_imagen_qc_allocation(allocation_df, staff_df):
             "current_count": 0,
             "pref1_count": 0,
             "pref2_count": 0,
+            "future_count": 0,
+            "past_count": 0,
             "pref1_list": pref1_list,
             "pref2_list": pref2_list,
             "pref1_display": pref1_raw if pref1_raw.lower() != "nan" else "—",
@@ -20888,49 +20920,55 @@ def match_imagen_qc_allocation(allocation_df, staff_df):
 
     matched_pref1 = 0
     matched_pref2 = 0
-    unmatched_count = 0
+    future_matched = 0
+    past_matched = 0
 
-    # Pass 1: Match against Agent Preference 1
-    for idx, alloc_row in allocation_df.iterrows():
-        agent_name = str(alloc_row[alloc_agent_col]).strip().lower()
-        if not agent_name or agent_name == "nan":
-            continue
-
-        for auditor in auditor_tracker:
-            if auditor["current_count"] >= auditor["cc_limit"]:
+    def assign_rows(indices, pref_key, is_future):
+        nonlocal matched_pref1, matched_pref2, future_matched, past_matched
+        count = 0
+        for idx in indices:
+            if result_df.at[idx, "Auditor"] != "":
                 continue
 
-            if agent_name in auditor["pref1_list"]:
-                result_df.at[idx, "Auditor"] = auditor["name"]
-                auditor["current_count"] += 1
-                auditor["pref1_count"] += 1
-                matched_pref1 += 1
-                break
-
-    # Pass 2: Match remaining unassigned rows against Agent Preference 2
-    for idx, alloc_row in allocation_df.iterrows():
-        if result_df.at[idx, "Auditor"] != "":
-            continue
-
-        agent_name = str(alloc_row[alloc_agent_col]).strip().lower()
-        if not agent_name or agent_name == "nan":
-            continue
-
-        for auditor in auditor_tracker:
-            if auditor["current_count"] >= auditor["cc_limit"]:
+            agent_name = str(allocation_df.at[idx, alloc_agent_col]).strip().lower()
+            if not agent_name or agent_name == "nan":
                 continue
 
-            if agent_name in auditor["pref2_list"]:
-                result_df.at[idx, "Auditor"] = auditor["name"]
-                auditor["current_count"] += 1
-                auditor["pref2_count"] += 1
-                matched_pref2 += 1
-                break
+            for auditor in auditor_tracker:
+                if auditor["current_count"] >= auditor["cc_limit"]:
+                    continue
 
-    # Count unmatched
+                if agent_name in auditor[pref_key]:
+                    result_df.at[idx, "Auditor"] = auditor["name"]
+                    auditor["current_count"] += 1
+                    if pref_key == "pref1_list":
+                        auditor["pref1_count"] += 1
+                        matched_pref1 += 1
+                    else:
+                        auditor["pref2_count"] += 1
+                        matched_pref2 += 1
+                    if is_future:
+                        auditor["future_count"] += 1
+                        future_matched += 1
+                    else:
+                        auditor["past_count"] += 1
+                        past_matched += 1
+                    count += 1
+                    break
+        return count
+
+    # Pass 1: Future rows → Preference 1
+    assign_rows(future_indices, "pref1_list", True)
+    # Pass 2: Future rows → Preference 2
+    assign_rows(future_indices, "pref2_list", True)
+    # Pass 3: Past/today rows → Preference 1
+    assign_rows(past_indices, "pref1_list", False)
+    # Pass 4: Past/today rows → Preference 2
+    assign_rows(past_indices, "pref2_list", False)
+
     unmatched_count = len(result_df[result_df["Auditor"] == ""])
 
-    return result_df, matched_pref1, matched_pref2, unmatched_count, auditor_tracker
+    return result_df, matched_pref1, matched_pref2, unmatched_count, auditor_tracker, future_matched, past_matched, len(future_indices), len(past_indices)
 
 
 @app.route("/process_imagen_qc_allocation", methods=["POST"])
@@ -20956,7 +20994,7 @@ def process_imagen_qc_allocation():
         if not isinstance(imagen_qc_allocation_data, pd.DataFrame):
             imagen_qc_allocation_data = pd.DataFrame(imagen_qc_allocation_data)
 
-        result_df, matched_pref1, matched_pref2, unmatched_count, auditor_tracker = match_imagen_qc_allocation(
+        result_df, matched_pref1, matched_pref2, unmatched_count, auditor_tracker, future_matched, past_matched, total_future, total_past = match_imagen_qc_allocation(
             imagen_qc_allocation_data, imagen_qc_staff_data
         )
 
@@ -20977,6 +21015,8 @@ def process_imagen_qc_allocation():
                 f'<td {td_c}>{auditor["cc_limit"]}</td>'
                 f'<td {td_c}>{auditor["pref1_count"]}</td>'
                 f'<td {td_c}>{auditor["pref2_count"]}</td>'
+                f'<td {td_c}>{auditor["future_count"]}</td>'
+                f'<td {td_c}>{auditor["past_count"]}</td>'
                 f'<td {td}>{auditor["pref1_display"]}</td>'
                 f'<td {td}>{auditor["pref2_display"]}</td></tr>'
             )
@@ -20990,6 +21030,8 @@ def process_imagen_qc_allocation():
             '<th style="padding:8px 10px;text-align:center;">CC Limit</th>'
             '<th style="padding:8px 10px;text-align:center;">From Pref 1</th>'
             '<th style="padding:8px 10px;text-align:center;">From Pref 2</th>'
+            '<th style="padding:8px 10px;text-align:center;">Future Dates</th>'
+            '<th style="padding:8px 10px;text-align:center;">Past/Today</th>'
             '<th style="padding:8px 10px;text-align:left;">Agent Preference 1</th>'
             '<th style="padding:8px 10px;text-align:left;">Agent Preference 2</th>'
             '</tr></thead><tbody>'
@@ -21001,9 +21043,11 @@ def process_imagen_qc_allocation():
 <br><br>
 <b>📊 Processing Statistics:</b><br>
 - Total rows processed: {len(imagen_qc_allocation_data)}<br>
+- Future date rows (prioritized): {total_future}<br>
+- Past/today date rows: {total_past}<br>
 - Matched via Preference 1: {matched_pref1}<br>
 - Matched via Preference 2: {matched_pref2}<br>
-- Total matched: {matched_pref1 + matched_pref2}<br>
+- Total matched: {matched_pref1 + matched_pref2} (Future: {future_matched}, Past/Today: {past_matched})<br>
 - Unmatched rows: {unmatched_count}<br>
 - Processing time: {processing_time:.2f}s<br>
 <br>
@@ -21045,8 +21089,26 @@ def download_imagen_qc_allocation():
         temp_fd, temp_path = tempfile.mkstemp(suffix=".xlsx")
 
         try:
+            export_df = imagen_qc_allocation_data.copy()
+
+            # Find all date columns and convert to MM/DD/YYYY string format
+            for col in export_df.columns:
+                col_lower = str(col).strip().lower()
+                if "date" in col_lower:
+                    formatted = []
+                    for val in export_df[col]:
+                        try:
+                            dt = pd.to_datetime(val, errors="coerce")
+                            if pd.notna(dt):
+                                formatted.append(dt.strftime("%m/%d/%Y"))
+                            else:
+                                formatted.append(val)
+                        except Exception:
+                            formatted.append(val)
+                    export_df[col] = formatted
+
             with pd.ExcelWriter(temp_path, engine="openpyxl") as writer:
-                imagen_qc_allocation_data.to_excel(writer, sheet_name="QC Allocation", index=False)
+                export_df.to_excel(writer, sheet_name="QC Allocation", index=False)
 
             return send_file(
                 temp_path,

@@ -2562,8 +2562,7 @@ HTML_TEMPLATE = """
                 'allocations': 'Allocations',
                 'email-allocation': 'Email Allocation',
                 'agent-consolidation': 'Agent Consolidation',
-                'trackers': 'Trackers',
-                'system-setting': 'System Setting'
+                'trackers': 'Trackers'
             };
             return names[menuName] || menuName;
         }
@@ -2600,8 +2599,7 @@ HTML_TEMPLATE = """
                 'file-management': {menu: 'allocations', submenu: 'image-allocation'},
                 'email-allocation': {menu: 'email-allocation', submenu: ''},
                 'agent-consolidation': {menu: 'agent-consolidation', submenu: 'day-shift'},
-                'create-trackers': {menu: 'trackers', submenu: 'imagen-tracker'},
-                'system-settings': {menu: 'system-setting', submenu: ''}
+                'create-trackers': {menu: 'trackers', submenu: 'imagen-tracker'}
             };
             
             if (tabToMenuMap[tabName]) {
@@ -2695,11 +2693,6 @@ HTML_TEMPLATE = """
                         </div>
                     </li>
                 </ul>
-            </li>
-            <li>
-                <div class="menu-item {% if current_menu == 'system-setting' %}active{% endif %}" onclick="switchAdminMenu('system-setting', '')">
-                    <i class="fas fa-cog"></i> System Setting
-                </div>
             </li>
         </ul>
     </div>
@@ -2913,6 +2906,17 @@ HTML_TEMPLATE = """
                 </div>
                 {% endif %}
 
+                <!-- Reset Imagen Allocation -->
+                <div class="section" style="margin-top: 40px; border-top: 2px solid #e9ecef; padding-top: 20px;">
+                    <form action="/reset_imagen_allocation" method="post" onsubmit="return confirm('Are you sure you want to reset Imagen Allocation? All uploaded files and processed data will be cleared.')">
+                        <input type="hidden" name="current_menu" value="allocations">
+                        <input type="hidden" name="current_submenu" value="image-allocation">
+                        <button type="submit" class="process-btn" style="background: linear-gradient(135deg, #e74c3c, #c0392b);">
+                            <i class="fas fa-redo"></i> Reset Allocation
+                        </button>
+                    </form>
+                </div>
+
                 </div>
                 
                 <!-- EV Allocation Content (under Allocations menu) -->
@@ -3011,6 +3015,17 @@ HTML_TEMPLATE = """
                         </div>
                         <div class="progress-text" id="ev-progress-text">Please wait...</div>
                     </div>
+                </div>
+
+                <!-- Reset EV Allocation -->
+                <div class="section" style="margin-top: 40px; border-top: 2px solid #e9ecef; padding-top: 20px;">
+                    <form action="/reset_ev_allocation" method="post" onsubmit="return confirm('Are you sure you want to reset EV Allocation? All uploaded files and processed data will be cleared.')">
+                        <input type="hidden" name="current_menu" value="allocations">
+                        <input type="hidden" name="current_submenu" value="ev-allocation">
+                        <button type="submit" class="process-btn" style="background: linear-gradient(135deg, #e74c3c, #c0392b);">
+                            <i class="fas fa-redo"></i> Reset Allocation
+                        </button>
+                    </form>
                 </div>
 
                 </div>
@@ -3113,6 +3128,17 @@ HTML_TEMPLATE = """
                     </div>
                 </div>
 
+                <!-- Reset Dental BV Allocation -->
+                <div class="section" style="margin-top: 40px; border-top: 2px solid #e9ecef; padding-top: 20px;">
+                    <form action="/reset_dental_bv_allocation" method="post" onsubmit="return confirm('Are you sure you want to reset Dental BV Allocation? All uploaded files and processed data will be cleared.')">
+                        <input type="hidden" name="current_menu" value="allocations">
+                        <input type="hidden" name="current_submenu" value="dental-bv-allocation">
+                        <button type="submit" class="process-btn" style="background: linear-gradient(135deg, #e74c3c, #c0392b);">
+                            <i class="fas fa-redo"></i> Reset Allocation
+                        </button>
+                    </form>
+                </div>
+
                 </div>
 
                 <!-- Imagen QC Allocation Content (under Allocations menu) -->
@@ -3211,6 +3237,17 @@ HTML_TEMPLATE = """
                         </div>
                         <div class="progress-text" id="imagen-qc-progress-text">Please wait...</div>
                     </div>
+                </div>
+
+                <!-- Reset Imagen QC Allocation -->
+                <div class="section" style="margin-top: 40px; border-top: 2px solid #e9ecef; padding-top: 20px;">
+                    <form action="/reset_imagen_qc_allocation" method="post" onsubmit="return confirm('Are you sure you want to reset Imagen QC Allocation? All uploaded files and processed data will be cleared.')">
+                        <input type="hidden" name="current_menu" value="allocations">
+                        <input type="hidden" name="current_submenu" value="imagen-qc-allocation">
+                        <button type="submit" class="process-btn" style="background: linear-gradient(135deg, #e74c3c, #c0392b);">
+                            <i class="fas fa-redo"></i> Reset Allocation
+                        </button>
+                    </form>
                 </div>
 
                 </div>
@@ -3820,17 +3857,6 @@ HTML_TEMPLATE = """
                     </div>
                 </div>
                 
-                <!-- System Setting Content -->
-                <div id="system-setting-content" class="admin-menu-content" style="display: {% if current_menu == 'system-setting' %}block{% else %}none{% endif %};">
-                    <!-- Reset Section -->
-                    <div class="section">
-                        <h3>🔄 Reset Application</h3>
-                        <p>Clear all uploaded files and reset the application to start fresh. All agent work files will be preserved.</p>
-                        <form action="/reset_app" method="post" onsubmit="return confirm('Are you sure you want to reset the application? This will clear all uploaded files and data. All agent work files will be preserved.')">
-                            <button type="submit" class="reset-btn">🗑️ Reset Application</button>
-                        </form>
-                    </div>
-                </div>
             </div>
         </div>
     </div>
@@ -25370,6 +25396,71 @@ def reset_app():
         db.session.rollback()
         processing_result = f"❌ Error resetting application: {str(e)}"
         return redirect("/")
+
+
+@app.route("/reset_imagen_allocation", methods=["POST"])
+@admin_required
+def reset_imagen_allocation():
+    global allocation_data, data_file_data, allocation_filename, data_filename, processing_result
+    global agent_allocations_data
+
+    try:
+        Allocation.query.delete()
+        allocation_data = None
+        data_file_data = None
+        allocation_filename = None
+        data_filename = None
+        processing_result = None
+        agent_allocations_data = None
+        db.session.commit()
+        flash("✅ Imagen Allocation has been reset successfully!", "success")
+    except Exception as e:
+        db.session.rollback()
+        flash(f"❌ Error resetting Imagen Allocation: {str(e)}", "error")
+
+    return redirect("/?menu=allocations&submenu=image-allocation")
+
+
+@app.route("/reset_ev_allocation", methods=["POST"])
+@admin_required
+def reset_ev_allocation():
+    global ev_staff_data, ev_staff_filename, ev_allocation_data, ev_allocation_filename, ev_processing_result
+
+    ev_staff_data = None
+    ev_staff_filename = None
+    ev_allocation_data = None
+    ev_allocation_filename = None
+    ev_processing_result = None
+    flash("✅ EV Allocation has been reset successfully!", "success")
+    return redirect("/?menu=allocations&submenu=ev-allocation")
+
+
+@app.route("/reset_dental_bv_allocation", methods=["POST"])
+@admin_required
+def reset_dental_bv_allocation():
+    global dental_bv_staff_data, dental_bv_staff_filename, dental_bv_allocation_data, dental_bv_allocation_filename, dental_bv_processing_result
+
+    dental_bv_staff_data = None
+    dental_bv_staff_filename = None
+    dental_bv_allocation_data = None
+    dental_bv_allocation_filename = None
+    dental_bv_processing_result = None
+    flash("✅ Dental BV Allocation has been reset successfully!", "success")
+    return redirect("/?menu=allocations&submenu=dental-bv-allocation")
+
+
+@app.route("/reset_imagen_qc_allocation", methods=["POST"])
+@admin_required
+def reset_imagen_qc_allocation():
+    global imagen_qc_staff_data, imagen_qc_staff_filename, imagen_qc_allocation_data, imagen_qc_allocation_filename, imagen_qc_processing_result
+
+    imagen_qc_staff_data = None
+    imagen_qc_staff_filename = None
+    imagen_qc_allocation_data = None
+    imagen_qc_allocation_filename = None
+    imagen_qc_processing_result = None
+    flash("✅ Imagen QC Allocation has been reset successfully!", "success")
+    return redirect("/?menu=allocations&submenu=imagen-qc-allocation")
 
 
 # ============================================================================

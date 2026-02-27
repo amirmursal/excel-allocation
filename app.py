@@ -20789,21 +20789,55 @@ def upload_imagen_qc_allocation_data():
         filename = secure_filename(file.filename)
         file.save(filename)
 
+        expected_cols = ["agent name", "appointment date", "office name", "patient name", "status code"]
+
+        def sheet_has_expected_columns(df):
+            cols_lower = [str(c).strip().lower() for c in df.columns]
+            matches = sum(1 for ec in expected_cols if any(ec in cl for cl in cols_lower))
+            return matches >= 3
+
+        def try_find_header_in_sheet(df, sheet_name_to_read):
+            """Scan first 20 rows for the real header row containing expected column names."""
+            for i in range(min(20, len(df))):
+                row_vals = [str(v).strip().lower() for v in df.iloc[i].values if pd.notna(v)]
+                matches = sum(1 for ec in expected_cols if any(ec in rv for rv in row_vals))
+                if matches >= 3:
+                    reread_df = pd.read_excel(filename, sheet_name=sheet_name_to_read, header=i + 1, parse_dates=False)
+                    print(f"[Imagen QC] Auto-detected header at row {i + 2} in sheet '{sheet_name_to_read}', columns: {list(reread_df.columns)}")
+                    return reread_df
+            return None
+
         all_sheets = pd.read_excel(filename, sheet_name=None, parse_dates=False)
 
-        # Look for "Consolidate" sheet (case-insensitive)
-        target_sheet = None
-        for sheet_name in all_sheets:
-            if str(sheet_name).strip().lower() == "consolidate":
-                target_sheet = sheet_name
+        df = None
+        matched_sheet = None
+
+        # Pass 1: check each sheet's columns directly
+        for sheet_name, sheet_df in all_sheets.items():
+            if sheet_has_expected_columns(sheet_df):
+                df = sheet_df
+                matched_sheet = sheet_name
+                print(f"[Imagen QC] Found matching sheet: '{sheet_name}' (direct column match)")
                 break
 
-        if target_sheet:
-            imagen_qc_allocation_data = all_sheets[target_sheet]
-        else:
-            imagen_qc_allocation_data = list(all_sheets.values())[0]
-            flash(f"⚠️ 'Consolidate' sheet not found, using first sheet: '{list(all_sheets.keys())[0]}'", "warning")
+        # Pass 2: if no direct match, scan rows for header in each sheet
+        if df is None:
+            for sheet_name, sheet_df in all_sheets.items():
+                result = try_find_header_in_sheet(sheet_df, sheet_name)
+                if result is not None:
+                    df = result
+                    matched_sheet = sheet_name
+                    break
 
+        if df is None:
+            all_sheet_names = ", ".join([f'"{s}"' for s in all_sheets.keys()])
+            raise ValueError(
+                f"No sheet found with expected columns (Agent Name, Appointment Date, Office Name, etc.). "
+                f"Sheets in file: [{all_sheet_names}]"
+            )
+
+        flash(f"✅ QC Allocation Data file uploaded successfully! Using sheet: '{matched_sheet}'", "success")
+        imagen_qc_allocation_data = df
         imagen_qc_allocation_filename = filename
         imagen_qc_processing_result = None
 

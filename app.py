@@ -821,6 +821,7 @@ imagen_qc_staff_filename = None
 imagen_qc_allocation_data = None
 imagen_qc_allocation_filename = None
 imagen_qc_processing_result = None
+imagen_qc_selected_dates = None
 
 # Day Shift and Night Shift data storage (using global variables like allocation/data files)
 day_shift_allocation_data = None
@@ -2907,7 +2908,7 @@ HTML_TEMPLATE = """
                 {% endif %}
 
                 <!-- Reset Imagen Allocation -->
-                <div class="section" style="margin-top: 40px; border-top: 2px solid #e9ecef; padding-top: 20px;">
+                <div class="section" style="margin-top: 40px; border-top: 2px solid #e9ecef; padding-top: 20px; text-align: left;">
                     <form action="/reset_imagen_allocation" method="post" onsubmit="return confirm('Are you sure you want to reset Imagen Allocation? All uploaded files and processed data will be cleared.')">
                         <input type="hidden" name="current_menu" value="allocations">
                         <input type="hidden" name="current_submenu" value="image-allocation">
@@ -3018,7 +3019,7 @@ HTML_TEMPLATE = """
                 </div>
 
                 <!-- Reset EV Allocation -->
-                <div class="section" style="margin-top: 40px; border-top: 2px solid #e9ecef; padding-top: 20px;">
+                <div class="section" style="margin-top: 40px; border-top: 2px solid #e9ecef; padding-top: 20px; text-align: left;">
                     <form action="/reset_ev_allocation" method="post" onsubmit="return confirm('Are you sure you want to reset EV Allocation? All uploaded files and processed data will be cleared.')">
                         <input type="hidden" name="current_menu" value="allocations">
                         <input type="hidden" name="current_submenu" value="ev-allocation">
@@ -3129,7 +3130,7 @@ HTML_TEMPLATE = """
                 </div>
 
                 <!-- Reset Dental BV Allocation -->
-                <div class="section" style="margin-top: 40px; border-top: 2px solid #e9ecef; padding-top: 20px;">
+                <div class="section" style="margin-top: 40px; border-top: 2px solid #e9ecef; padding-top: 20px; text-align: left;">
                     <form action="/reset_dental_bv_allocation" method="post" onsubmit="return confirm('Are you sure you want to reset Dental BV Allocation? All uploaded files and processed data will be cleared.')">
                         <input type="hidden" name="current_menu" value="allocations">
                         <input type="hidden" name="current_submenu" value="dental-bv-allocation">
@@ -3189,13 +3190,75 @@ HTML_TEMPLATE = """
                     </div>
                 </div>
 
-                <!-- Processing Section -->
+                <!-- Situational Override Section -->
+                {% if imagen_qc_staff_data is not none and imagen_qc_allocation_data is not none %}
+                <div class="section" id="qc-override-section">
+                    <h3 style="margin-bottom: 5px;">🎯 Situational Override <span style="font-size: 12px; font-weight: 400; color: #999;">(Optional)</span></h3>
+                    <p style="color: #666; margin-bottom: 15px; font-size: 13px;">Select auditors and pick specific dates for each one. These auditor+date combinations get highest allocation priority. Leave empty for normal allocation.</p>
+                    
+                    <!-- Auditor Multi-Select Dropdown -->
+                    <div style="margin-bottom: 15px;">
+                        <label style="font-weight: 600; margin-bottom: 8px; display: block; font-size: 13px; color: #555;">Select Auditors</label>
+                        <div id="qc-override-auditor-dropdown" style="position: relative; width: 100%; max-width: 400px;">
+                            <div id="qc-override-auditor-trigger" style="border: 2px solid #ddd; border-radius: 8px; padding: 10px 14px; cursor: pointer; display: flex; justify-content: space-between; align-items: center; background: white; min-height: 42px; transition: border-color 0.2s;">
+                                <span id="qc-override-auditor-text" style="color: #999; font-size: 13px;">Select auditors...</span>
+                                <i class="fas fa-chevron-down" style="color: #999; font-size: 12px; transition: transform 0.2s;" id="qc-override-chevron"></i>
+                            </div>
+                            <div id="qc-override-auditor-options" style="display: none; position: absolute; top: 100%; left: 0; right: 0; background: white; border: 2px solid #ddd; border-top: none; border-radius: 0 0 8px 8px; max-height: 250px; overflow-y: auto; z-index: 100; box-shadow: 0 4px 12px rgba(0,0,0,0.1);">
+                                {% for auditor in imagen_qc_auditor_list %}
+                                <label style="display: flex; align-items: center; gap: 8px; padding: 10px 14px; cursor: pointer; font-size: 13px; border-bottom: 1px solid #f0f0f0; transition: background 0.15s;" onmouseover="this.style.background='#f8f9fa'" onmouseout="this.style.background='white'">
+                                    <input type="checkbox" value="{{ auditor }}" class="qc-override-auditor-cb" style="width: 16px; height: 16px; cursor: pointer;">
+                                    {{ auditor }}
+                                </label>
+                                {% endfor %}
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Per-auditor date panels rendered dynamically by JS -->
+                    <div id="qc-override-per-auditor-container"></div>
+
+                    <!-- Available dates stored as data for JS to use -->
+                    <script type="application/json" id="qc-all-dates-data">{{ imagen_qc_all_dates | tojson }}</script>
+
+                    <div id="qc-override-summary" style="display: none; margin-top: 12px; padding: 10px 14px; background: #fff3e0; border-radius: 6px; border: 1px solid #ffe0b2; font-size: 13px;">
+                        <i class="fas fa-bolt" style="color: #f57c00;"></i> <strong>Override active:</strong> <span id="qc-override-summary-text"></span>
+                    </div>
+                </div>
+                {% endif %}
+
+                <!-- Priority Date Selection & Processing Section -->
                 {% if imagen_qc_staff_data is not none and imagen_qc_allocation_data is not none %}
                 <div class="section">
-                    <h3>🔄 Process Imagen QC Allocation</h3>
+                    <h3>📅 Priority Date Selection</h3>
+                    <p style="color: #666; margin-bottom: 15px;">The next 3 days are shown below and selected by default. Checked dates will be allocated first. Uncheck to deprioritize.</p>
+                    
+                    {% if imagen_qc_available_dates and imagen_qc_available_dates|length > 0 %}
+                    <div id="qc-priority-dates-container" style="display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 20px; padding: 15px; background: #f8f9fa; border-radius: 8px; border: 1px solid #e9ecef;">
+                        {% for date_str in imagen_qc_available_dates %}
+                        {% if imagen_qc_selected_dates is not none %}
+                            {% set is_checked = date_str in imagen_qc_selected_dates %}
+                        {% else %}
+                            {% set is_checked = true %}
+                        {% endif %}
+                        <label style="display: flex; align-items: center; gap: 6px; padding: 8px 14px; background: {% if is_checked %}#e8f5e9{% else %}white{% endif %}; border: 2px solid {% if is_checked %}#27ae60{% else %}#ddd{% endif %}; border-radius: 6px; cursor: pointer; font-size: 13px; transition: all 0.2s;" class="qc-date-label">
+                            <input type="checkbox" value="{{ date_str }}" class="qc-priority-date-cb" style="width: 16px; height: 16px; cursor: pointer;" {% if is_checked %}checked{% endif %}>
+                            {{ date_str }}
+                        </label>
+                        {% endfor %}
+                    </div>
+                    <div style="margin-bottom: 15px; padding: 10px; background: #e8f5e9; border-radius: 5px; border: 1px solid #c8e6c9;">
+                        <strong>Priority dates selected:</strong> <span id="qc-priority-count">0</span> | <strong>Non-priority dates:</strong> <span id="qc-nonpriority-count">0</span>
+                    </div>
+                    {% else %}
+                    <div class="status-info">ℹ️ No appointment dates found in the allocation file.</div>
+                    {% endif %}
+
                     <form action="/process_imagen_qc_allocation" method="post" id="imagen-qc-process-form">
                         <input type="hidden" name="current_menu" value="allocations">
                         <input type="hidden" name="current_submenu" value="imagen-qc-allocation">
+                        <input type="hidden" name="priority_dates" id="qc-priority-dates-hidden" value="">
+                        <input type="hidden" name="override_data" id="qc-override-data-hidden" value="">
                         <button type="submit" class="process-btn" id="imagen-qc-process-btn">
                             <i class="fas fa-cogs"></i> Process Imagen QC Allocation
                         </button>
@@ -3240,7 +3303,7 @@ HTML_TEMPLATE = """
                 </div>
 
                 <!-- Reset Imagen QC Allocation -->
-                <div class="section" style="margin-top: 40px; border-top: 2px solid #e9ecef; padding-top: 20px;">
+                <div class="section" style="margin-top: 40px; border-top: 2px solid #e9ecef; padding-top: 20px; text-align: left;">
                     <form action="/reset_imagen_qc_allocation" method="post" onsubmit="return confirm('Are you sure you want to reset Imagen QC Allocation? All uploaded files and processed data will be cleared.')">
                         <input type="hidden" name="current_menu" value="allocations">
                         <input type="hidden" name="current_submenu" value="imagen-qc-allocation">
@@ -4315,6 +4378,199 @@ HTML_TEMPLATE = """
             }
             
             hideImagenQCProcessingModal();
+
+            // QC Priority Date Checkboxes
+            function qcUpdatePriorityCounts() {
+                const cbs = document.querySelectorAll('.qc-priority-date-cb');
+                let checked = 0;
+                cbs.forEach(function(cb) {
+                    if (cb.checked) {
+                        checked++;
+                        cb.closest('label').style.borderColor = '#27ae60';
+                        cb.closest('label').style.background = '#e8f5e9';
+                    } else {
+                        cb.closest('label').style.borderColor = '#ddd';
+                        cb.closest('label').style.background = 'white';
+                    }
+                });
+                const countEl = document.getElementById('qc-priority-count');
+                const nonEl = document.getElementById('qc-nonpriority-count');
+                if (countEl) countEl.textContent = checked;
+                if (nonEl) nonEl.textContent = cbs.length - checked;
+            }
+
+            // --- Situational Override Logic (per-auditor dates) ---
+            const overrideTrigger = document.getElementById('qc-override-auditor-trigger');
+            const overrideOptions = document.getElementById('qc-override-auditor-options');
+            const overrideChevron = document.getElementById('qc-override-chevron');
+            const overrideSummary = document.getElementById('qc-override-summary');
+            const perAuditorContainer = document.getElementById('qc-override-per-auditor-container');
+            let overrideDropdownOpen = false;
+
+            var allDatesForOverride = [];
+            try {
+                const datesEl = document.getElementById('qc-all-dates-data');
+                if (datesEl) allDatesForOverride = JSON.parse(datesEl.textContent);
+            } catch(e) {}
+
+            if (overrideTrigger) {
+                overrideTrigger.addEventListener('click', function(e) {
+                    e.stopPropagation();
+                    overrideDropdownOpen = !overrideDropdownOpen;
+                    overrideOptions.style.display = overrideDropdownOpen ? 'block' : 'none';
+                    overrideTrigger.style.borderRadius = overrideDropdownOpen ? '8px 8px 0 0' : '8px';
+                    overrideTrigger.style.borderColor = overrideDropdownOpen ? '#3498db' : '#ddd';
+                    if (overrideChevron) overrideChevron.style.transform = overrideDropdownOpen ? 'rotate(180deg)' : 'rotate(0)';
+                });
+            }
+
+            document.addEventListener('click', function(e) {
+                const dropdown = document.getElementById('qc-override-auditor-dropdown');
+                if (dropdown && !dropdown.contains(e.target) && overrideDropdownOpen) {
+                    overrideDropdownOpen = false;
+                    if (overrideOptions) overrideOptions.style.display = 'none';
+                    if (overrideTrigger) { overrideTrigger.style.borderRadius = '8px'; overrideTrigger.style.borderColor = '#ddd'; }
+                    if (overrideChevron) overrideChevron.style.transform = 'rotate(0)';
+                }
+            });
+
+            function sanitizeId(name) {
+                return name.replace(/[^a-zA-Z0-9]/g, '_');
+            }
+
+            function buildAuditorDatePanel(auditorName) {
+                var panelId = 'qc-override-panel-' + sanitizeId(auditorName);
+                if (document.getElementById(panelId)) return;
+
+                var panel = document.createElement('div');
+                panel.id = panelId;
+                panel.style.cssText = 'margin-bottom: 12px; padding: 14px; background: #fafafa; border: 1px solid #e0e0e0; border-radius: 8px; border-left: 4px solid #f57c00;';
+
+                var header = document.createElement('div');
+                header.style.cssText = 'font-weight: 600; font-size: 13px; color: #333; margin-bottom: 10px; display: flex; align-items: center; gap: 8px;';
+                header.innerHTML = '<i class="fas fa-user" style="color: #f57c00;"></i> ' + auditorName + ' <span style="font-weight:400;color:#999;font-size:12px;">— select dates</span>';
+                panel.appendChild(header);
+
+                var datesWrap = document.createElement('div');
+                datesWrap.style.cssText = 'display: flex; flex-wrap: wrap; gap: 6px;';
+
+                for (var i = 0; i < allDatesForOverride.length; i++) {
+                    var dateStr = allDatesForOverride[i];
+                    var lbl = document.createElement('label');
+                    lbl.style.cssText = 'display: flex; align-items: center; gap: 5px; padding: 6px 12px; background: white; border: 2px solid #ddd; border-radius: 6px; cursor: pointer; font-size: 12px; transition: all 0.2s;';
+
+                    var cb = document.createElement('input');
+                    cb.type = 'checkbox';
+                    cb.value = dateStr;
+                    cb.className = 'qc-override-per-date-cb';
+                    cb.setAttribute('data-auditor', auditorName);
+                    cb.style.cssText = 'width: 14px; height: 14px; cursor: pointer;';
+                    cb.addEventListener('change', function() {
+                        var l = this.closest('label');
+                        if (this.checked) { l.style.borderColor = '#f57c00'; l.style.background = '#fff3e0'; }
+                        else { l.style.borderColor = '#ddd'; l.style.background = 'white'; }
+                        updateOverrideSummary();
+                    });
+
+                    lbl.appendChild(cb);
+                    lbl.appendChild(document.createTextNode(' ' + dateStr));
+                    datesWrap.appendChild(lbl);
+                }
+
+                panel.appendChild(datesWrap);
+                if (perAuditorContainer) perAuditorContainer.appendChild(panel);
+            }
+
+            function removeAuditorDatePanel(auditorName) {
+                var panelId = 'qc-override-panel-' + sanitizeId(auditorName);
+                var panel = document.getElementById(panelId);
+                if (panel) panel.remove();
+            }
+
+            function updateOverrideUI() {
+                var auditorCbs = document.querySelectorAll('.qc-override-auditor-cb');
+                var selected = [];
+                auditorCbs.forEach(function(cb) {
+                    if (cb.checked) {
+                        selected.push(cb.value);
+                        buildAuditorDatePanel(cb.value);
+                    } else {
+                        removeAuditorDatePanel(cb.value);
+                    }
+                });
+
+                var textEl = document.getElementById('qc-override-auditor-text');
+                if (selected.length === 0) {
+                    if (textEl) { textEl.textContent = 'Select auditors...'; textEl.style.color = '#999'; }
+                } else {
+                    if (textEl) { textEl.textContent = selected.join(', '); textEl.style.color = '#333'; }
+                }
+                updateOverrideSummary();
+            }
+
+            function updateOverrideSummary() {
+                var auditorCbs = document.querySelectorAll('.qc-override-auditor-cb:checked');
+                if (auditorCbs.length === 0) {
+                    if (overrideSummary) overrideSummary.style.display = 'none';
+                    return;
+                }
+
+                var lines = [];
+                var anyDates = false;
+                auditorCbs.forEach(function(cb) {
+                    var name = cb.value;
+                    var dateCbs = document.querySelectorAll('.qc-override-per-date-cb[data-auditor="' + name + '"]:checked');
+                    var dateCount = dateCbs.length;
+                    if (dateCount > 0) {
+                        anyDates = true;
+                        var dateList = [];
+                        dateCbs.forEach(function(d) { dateList.push(d.value); });
+                        lines.push('<b>' + name + '</b>: ' + dateList.join(', '));
+                    }
+                });
+
+                var summaryText = document.getElementById('qc-override-summary-text');
+                if (anyDates && summaryText) {
+                    summaryText.innerHTML = lines.join(' | ');
+                    overrideSummary.style.display = 'block';
+                } else {
+                    if (overrideSummary) overrideSummary.style.display = 'none';
+                }
+            }
+
+            document.querySelectorAll('.qc-override-auditor-cb').forEach(function(cb) {
+                cb.addEventListener('change', updateOverrideUI);
+            });
+
+            // Collect all data into hidden fields before form submit
+            const qcProcessForm = document.getElementById('imagen-qc-process-form');
+            if (qcProcessForm) {
+                qcProcessForm.addEventListener('submit', function() {
+                    var cbs = document.querySelectorAll('.qc-priority-date-cb:checked');
+                    var dates = [];
+                    cbs.forEach(function(cb) { dates.push(cb.value); });
+                    document.getElementById('qc-priority-dates-hidden').value = dates.join(',');
+
+                    // Collect per-auditor override data as JSON
+                    var overrideData = {};
+                    document.querySelectorAll('.qc-override-auditor-cb:checked').forEach(function(cb) {
+                        var auditorName = cb.value;
+                        var dateCbs = document.querySelectorAll('.qc-override-per-date-cb[data-auditor="' + auditorName + '"]:checked');
+                        var auditorDates = [];
+                        dateCbs.forEach(function(d) { auditorDates.push(d.value); });
+                        if (auditorDates.length > 0) {
+                            overrideData[auditorName] = auditorDates;
+                        }
+                    });
+                    document.getElementById('qc-override-data-hidden').value = JSON.stringify(overrideData);
+                });
+            }
+
+            // Initialize counts on page load and attach change listeners
+            qcUpdatePriorityCounts();
+            document.querySelectorAll('.qc-priority-date-cb').forEach(function(cb) {
+                cb.addEventListener('change', qcUpdatePriorityCounts);
+            });
         });
         
         // View agent allocation in modal (for Email Allocation tab)
@@ -16507,6 +16763,76 @@ def process_allocation_files_with_dates(
         return f"❌ Error during processing: {str(e)}", None
 
 
+def _get_imagen_qc_auditors():
+    """Extract auditor names from QC staff data (excluding 'No allocation' status)."""
+    if imagen_qc_staff_data is None or not isinstance(imagen_qc_staff_data, pd.DataFrame):
+        return []
+    auditor_col = None
+    status_col = None
+    for col in imagen_qc_staff_data.columns:
+        cl = str(col).strip().lower()
+        if cl in ("auditors", "auditor", "auditor name"):
+            auditor_col = col
+        if cl == "status":
+            status_col = col
+    if not auditor_col:
+        return []
+    auditors = []
+    for _, row in imagen_qc_staff_data.iterrows():
+        name = str(row[auditor_col]).strip()
+        if not name or name.lower() == "nan":
+            continue
+        if status_col:
+            status = str(row[status_col]).strip().lower()
+            if status == "no allocation":
+                continue
+        auditors.append(name)
+    return auditors
+
+
+def _get_imagen_qc_all_dates():
+    """Return all unique dates from the Appointment Date column (sorted ascending)."""
+    if imagen_qc_allocation_data is None or not isinstance(imagen_qc_allocation_data, pd.DataFrame):
+        return []
+    date_col = None
+    for col in imagen_qc_allocation_data.columns:
+        if "appointment" in str(col).strip().lower() and "date" in str(col).strip().lower():
+            date_col = col
+            break
+    if not date_col:
+        for col in imagen_qc_allocation_data.columns:
+            if "date" in str(col).strip().lower():
+                date_col = col
+                break
+    if not date_col:
+        return []
+    parsed = pd.to_datetime(imagen_qc_allocation_data[date_col], errors="coerce")
+    unique_dates = sorted(set(d.normalize() for d in parsed.dropna()))
+    return [d.strftime("%m/%d/%Y") for d in unique_dates]
+
+
+def _get_imagen_qc_dates():
+    """Return the next 3 future dates that actually exist in the Appointment Date column."""
+    if imagen_qc_allocation_data is None or not isinstance(imagen_qc_allocation_data, pd.DataFrame):
+        return []
+    date_col = None
+    for col in imagen_qc_allocation_data.columns:
+        if "appointment" in str(col).strip().lower() and "date" in str(col).strip().lower():
+            date_col = col
+            break
+    if not date_col:
+        for col in imagen_qc_allocation_data.columns:
+            if "date" in str(col).strip().lower():
+                date_col = col
+                break
+    if not date_col:
+        return []
+    today = pd.Timestamp.now().normalize()
+    parsed = pd.to_datetime(imagen_qc_allocation_data[date_col], errors="coerce")
+    future_dates = sorted(set(d.normalize() for d in parsed.dropna() if d.normalize() > today))
+    return [d.strftime("%m/%d/%Y") for d in future_dates[:3]]
+
+
 @app.route("/")
 @login_required
 def index():
@@ -16603,6 +16929,10 @@ def index():
         imagen_qc_allocation_data=imagen_qc_allocation_data,
         imagen_qc_allocation_filename=imagen_qc_allocation_filename,
         imagen_qc_processing_result=imagen_qc_processing_result,
+        imagen_qc_available_dates=_get_imagen_qc_dates(),
+        imagen_qc_selected_dates=imagen_qc_selected_dates,
+        imagen_qc_auditor_list=_get_imagen_qc_auditors(),
+        imagen_qc_all_dates=_get_imagen_qc_all_dates(),
         current_menu=current_menu,
         current_submenu=current_submenu,
     )
@@ -20722,7 +21052,7 @@ def download_dental_bv_allocation():
 @admin_required
 def upload_imagen_qc_staff():
     """Upload Imagen QC Staff Database file (reads 'Main' sheet)"""
-    global imagen_qc_staff_data, imagen_qc_staff_filename, imagen_qc_processing_result
+    global imagen_qc_staff_data, imagen_qc_staff_filename, imagen_qc_processing_result, imagen_qc_selected_dates
 
     if "file" not in request.files:
         flash("No file provided", "error")
@@ -20754,6 +21084,7 @@ def upload_imagen_qc_staff():
 
         imagen_qc_staff_filename = filename
         imagen_qc_processing_result = None
+        imagen_qc_selected_dates = None
 
         flash("✅ Staff Database file uploaded successfully!", "success")
 
@@ -20774,7 +21105,7 @@ def upload_imagen_qc_staff():
 @admin_required
 def upload_imagen_qc_allocation_data():
     """Upload Imagen QC Allocation Data file (reads 'Consolidate' sheet)"""
-    global imagen_qc_allocation_data, imagen_qc_allocation_filename, imagen_qc_processing_result
+    global imagen_qc_allocation_data, imagen_qc_allocation_filename, imagen_qc_processing_result, imagen_qc_selected_dates
 
     if "file" not in request.files:
         flash("No file provided", "error")
@@ -20840,6 +21171,7 @@ def upload_imagen_qc_allocation_data():
         imagen_qc_allocation_data = df
         imagen_qc_allocation_filename = filename
         imagen_qc_processing_result = None
+        imagen_qc_selected_dates = None
 
         flash("✅ QC Allocation Data file uploaded successfully!", "success")
 
@@ -20856,19 +21188,18 @@ def upload_imagen_qc_allocation_data():
         return redirect("/?menu=allocations&submenu=imagen-qc-allocation")
 
 
-def match_imagen_qc_allocation(allocation_df, staff_df):
+def match_imagen_qc_allocation(allocation_df, staff_df, priority_dates=None, override_map=None):
     """
-    Four-pass matching for Imagen QC Allocation with appointment date prioritization.
+    Multi-pass matching for Imagen QC Allocation with per-auditor situational override and priority dates.
 
-    Future dates (tomorrow onward, nearest first) are allocated before past/today dates.
-    Within each date group, Preference 1 is tried before Preference 2.
+    Pass 0 (if override active): For each auditor in override_map, rows matching their specific dates
+           are assigned to that auditor first (Pref1 then Pref2), respecting CC limits.
+    Pass 1: Priority date rows → Agent Preference 1
+    Pass 2: Priority date rows → Agent Preference 2
+    Pass 3: Non-priority rows → Agent Preference 1
+    Pass 4: Non-priority rows → Agent Preference 2
 
-    Pass 1: Future rows → Agent Preference 1
-    Pass 2: Future rows → Agent Preference 2 (remaining unassigned)
-    Pass 3: Past/today rows → Agent Preference 1 (fill remaining CC)
-    Pass 4: Past/today rows → Agent Preference 2 (fill remaining CC)
-
-    Returns allocation DataFrame with "Auditor" column, stats, and auditor tracker.
+    CC limits are always respected. Returns allocation DataFrame with "Auditor" column, stats, and auditor tracker.
     """
 
     def find_col(df, possible_names):
@@ -20920,37 +21251,55 @@ def match_imagen_qc_allocation(allocation_df, staff_df):
             f"Allocation file columns found: [{alloc_cols_str}]"
         )
 
-    print(f"[Imagen QC] Staff columns mapped: Auditors='{staff_auditor_col}', Pref1='{staff_pref1_col}', Pref2='{staff_pref2_col}', CC='{staff_cc_col}'")
+    staff_status_col = find_col(staff_df, ["Status"])
+
+    print(f"[Imagen QC] Staff columns mapped: Auditors='{staff_auditor_col}', Pref1='{staff_pref1_col}', Pref2='{staff_pref2_col}', CC='{staff_cc_col}', Status='{staff_status_col}'")
     print(f"[Imagen QC] Allocation columns mapped: Agent Name='{alloc_agent_col}', Appointment Date='{alloc_date_col}'")
 
-    # Parse appointment dates and split into future vs past/today
-    today = pd.Timestamp.now().normalize()
-    tomorrow = today + pd.Timedelta(days=1)
-
+    # Parse appointment dates and split into priority vs non-priority
     parsed_dates = pd.to_datetime(allocation_df[alloc_date_col], errors="coerce")
 
-    future_indices = []
-    past_indices = []
+    # Build set of priority date timestamps from user selection
+    priority_date_set = set()
+    if priority_dates:
+        for d_str in priority_dates:
+            try:
+                dt = pd.to_datetime(d_str, errors="coerce")
+                if pd.notna(dt):
+                    priority_date_set.add(dt.normalize())
+            except Exception:
+                pass
+
+    priority_indices = []
+    nonpriority_indices = []
     for idx in allocation_df.index:
         dt = parsed_dates.get(idx)
-        if pd.notna(dt) and dt >= tomorrow:
-            future_indices.append(idx)
+        if pd.notna(dt) and dt.normalize() in priority_date_set:
+            priority_indices.append(idx)
         else:
-            past_indices.append(idx)
+            nonpriority_indices.append(idx)
 
-    # Sort future indices by date ascending (nearest first)
-    future_indices.sort(key=lambda i: parsed_dates.get(i, pd.NaT))
-    # Sort past indices by date descending (most recent first)
-    past_indices.sort(key=lambda i: parsed_dates.get(i, pd.NaT) if pd.notna(parsed_dates.get(i)) else pd.Timestamp.min, reverse=True)
+    # Sort priority indices by date ascending (nearest first)
+    priority_indices.sort(key=lambda i: parsed_dates.get(i, pd.NaT))
+    # Sort non-priority indices by date descending (most recent first)
+    nonpriority_indices.sort(key=lambda i: parsed_dates.get(i, pd.NaT) if pd.notna(parsed_dates.get(i)) else pd.Timestamp.min, reverse=True)
 
-    print(f"[Imagen QC] Date split: {len(future_indices)} future rows, {len(past_indices)} past/today rows (cutoff: {tomorrow.strftime('%Y-%m-%d')})")
+    print(f"[Imagen QC] Date split: {len(priority_indices)} priority rows, {len(nonpriority_indices)} non-priority rows ({len(priority_date_set)} priority dates selected)")
 
     # Build auditor tracker
     auditor_tracker = []
+    skipped_auditors = []
     for _, row in staff_df.iterrows():
         auditor_name = str(row[staff_auditor_col]).strip()
         if not auditor_name or auditor_name.lower() == "nan":
             continue
+
+        # Skip auditors with "No allocation" status
+        if staff_status_col:
+            status_val = str(row[staff_status_col]).strip().lower()
+            if status_val == "no allocation":
+                skipped_auditors.append(auditor_name)
+                continue
 
         cc_limit = row[staff_cc_col]
         try:
@@ -20970,8 +21319,9 @@ def match_imagen_qc_allocation(allocation_df, staff_df):
             "current_count": 0,
             "pref1_count": 0,
             "pref2_count": 0,
-            "future_count": 0,
-            "past_count": 0,
+            "override_count": 0,
+            "priority_count": 0,
+            "nonpriority_count": 0,
             "pref1_list": pref1_list,
             "pref2_list": pref2_list,
             "pref1_display": pref1_raw if pref1_raw.lower() != "nan" else "—",
@@ -20980,12 +21330,14 @@ def match_imagen_qc_allocation(allocation_df, staff_df):
 
     matched_pref1 = 0
     matched_pref2 = 0
-    future_matched = 0
-    past_matched = 0
+    priority_matched = 0
+    nonpriority_matched = 0
+    override_matched = 0
 
-    def assign_rows(indices, pref_key, is_future):
-        nonlocal matched_pref1, matched_pref2, future_matched, past_matched
+    def assign_rows(indices, pref_key, is_priority, auditor_subset=None):
+        nonlocal matched_pref1, matched_pref2, priority_matched, nonpriority_matched
         count = 0
+        search_list = auditor_subset if auditor_subset is not None else auditor_tracker
         for idx in indices:
             if result_df.at[idx, "Auditor"] != "":
                 continue
@@ -20994,7 +21346,7 @@ def match_imagen_qc_allocation(allocation_df, staff_df):
             if not agent_name or agent_name == "nan":
                 continue
 
-            for auditor in auditor_tracker:
+            for auditor in search_list:
                 if auditor["current_count"] >= auditor["cc_limit"]:
                     continue
 
@@ -21007,35 +21359,96 @@ def match_imagen_qc_allocation(allocation_df, staff_df):
                     else:
                         auditor["pref2_count"] += 1
                         matched_pref2 += 1
-                    if is_future:
-                        auditor["future_count"] += 1
-                        future_matched += 1
+                    if is_priority:
+                        auditor["priority_count"] += 1
+                        priority_matched += 1
                     else:
-                        auditor["past_count"] += 1
-                        past_matched += 1
+                        auditor["nonpriority_count"] += 1
+                        nonpriority_matched += 1
                     count += 1
                     break
         return count
 
-    # Pass 1: Future rows → Preference 1
-    assign_rows(future_indices, "pref1_list", True)
-    # Pass 2: Future rows → Preference 2
-    assign_rows(future_indices, "pref2_list", True)
-    # Pass 3: Past/today rows → Preference 1
-    assign_rows(past_indices, "pref1_list", False)
-    # Pass 4: Past/today rows → Preference 2
-    assign_rows(past_indices, "pref2_list", False)
+    # --- Pass 0: Situational Override (highest priority, per-auditor dates) ---
+    override_active = override_map and len(override_map) > 0
+    if override_active:
+        for override_auditor_name, override_date_list in override_map.items():
+            if not override_date_list:
+                continue
+
+            auditor_name_lower = override_auditor_name.strip().lower()
+            target_auditor = None
+            for a in auditor_tracker:
+                if a["name"].strip().lower() == auditor_name_lower:
+                    target_auditor = a
+                    break
+            if not target_auditor:
+                print(f"[Imagen QC] Override: auditor '{override_auditor_name}' not found in tracker, skipping")
+                continue
+
+            auditor_date_set = set()
+            for d_str in override_date_list:
+                try:
+                    dt = pd.to_datetime(d_str, errors="coerce")
+                    if pd.notna(dt):
+                        auditor_date_set.add(dt.normalize())
+                except Exception:
+                    pass
+
+            if not auditor_date_set:
+                continue
+
+            override_indices = []
+            for idx in allocation_df.index:
+                dt = parsed_dates.get(idx)
+                if pd.notna(dt) and dt.normalize() in auditor_date_set:
+                    override_indices.append(idx)
+
+            override_indices.sort(key=lambda i: parsed_dates.get(i, pd.NaT))
+            print(f"[Imagen QC] Override: {len(override_indices)} candidate rows for auditor '{override_auditor_name}'")
+
+            for pref_key in ["pref1_list", "pref2_list"]:
+                for idx in override_indices:
+                    if result_df.at[idx, "Auditor"] != "":
+                        continue
+                    if target_auditor["current_count"] >= target_auditor["cc_limit"]:
+                        break
+                    agent_name = str(allocation_df.at[idx, alloc_agent_col]).strip().lower()
+                    if not agent_name or agent_name == "nan":
+                        continue
+                    if agent_name in target_auditor[pref_key]:
+                        result_df.at[idx, "Auditor"] = target_auditor["name"]
+                        target_auditor["current_count"] += 1
+                        target_auditor["override_count"] += 1
+                        if pref_key == "pref1_list":
+                            target_auditor["pref1_count"] += 1
+                            matched_pref1 += 1
+                        else:
+                            target_auditor["pref2_count"] += 1
+                            matched_pref2 += 1
+                        override_matched += 1
+
+        print(f"[Imagen QC] Override total matched: {override_matched}")
+
+    # Pass 1: Priority rows → Preference 1
+    assign_rows(priority_indices, "pref1_list", True)
+    # Pass 2: Priority rows → Preference 2
+    assign_rows(priority_indices, "pref2_list", True)
+    # Pass 3: Non-priority rows → Preference 1
+    assign_rows(nonpriority_indices, "pref1_list", False)
+    # Pass 4: Non-priority rows → Preference 2
+    assign_rows(nonpriority_indices, "pref2_list", False)
 
     unmatched_count = len(result_df[result_df["Auditor"] == ""])
 
-    return result_df, matched_pref1, matched_pref2, unmatched_count, auditor_tracker, future_matched, past_matched, len(future_indices), len(past_indices)
+    return result_df, matched_pref1, matched_pref2, unmatched_count, auditor_tracker, priority_matched, nonpriority_matched, len(priority_indices), len(nonpriority_indices), skipped_auditors, override_matched
 
 
 @app.route("/process_imagen_qc_allocation", methods=["POST"])
 @admin_required
 def process_imagen_qc_allocation():
     """Process Imagen QC Allocation"""
-    global imagen_qc_staff_data, imagen_qc_allocation_data, imagen_qc_processing_result
+    global imagen_qc_staff_data, imagen_qc_allocation_data, imagen_qc_processing_result, imagen_qc_selected_dates
 
     current_menu = request.form.get("current_menu", "allocations")
     current_submenu = request.form.get("current_submenu", "imagen-qc-allocation")
@@ -21054,13 +21467,45 @@ def process_imagen_qc_allocation():
         if not isinstance(imagen_qc_allocation_data, pd.DataFrame):
             imagen_qc_allocation_data = pd.DataFrame(imagen_qc_allocation_data)
 
-        result_df, matched_pref1, matched_pref2, unmatched_count, auditor_tracker, future_matched, past_matched, total_future, total_past = match_imagen_qc_allocation(
-            imagen_qc_allocation_data, imagen_qc_staff_data
+        # Get selected priority dates from form
+        priority_dates_str = request.form.get("priority_dates", "")
+        priority_dates = [d.strip() for d in priority_dates_str.split(",") if d.strip()]
+        imagen_qc_selected_dates = priority_dates
+        print(f"[Imagen QC] Priority dates received: {priority_dates}")
+
+        # Get per-auditor situational override data (JSON: {"AuditorName": ["date1","date2"], ...})
+        import json as json_module
+        override_data_str = request.form.get("override_data", "")
+        override_map = {}
+        if override_data_str:
+            try:
+                override_map = json_module.loads(override_data_str)
+            except Exception:
+                override_map = {}
+        print(f"[Imagen QC] Override map: {override_map}")
+
+        result_df, matched_pref1, matched_pref2, unmatched_count, auditor_tracker, future_matched, past_matched, total_future, total_past, skipped_auditors, override_matched = match_imagen_qc_allocation(
+            imagen_qc_allocation_data, imagen_qc_staff_data, priority_dates,
+            override_map=override_map
         )
 
         imagen_qc_allocation_data = result_df
 
         processing_time = time.time() - start_time
+
+        # Build override info
+        override_info = ""
+        if override_map and override_matched > 0:
+            override_details = []
+            for aud_name, aud_dates in override_map.items():
+                if aud_dates:
+                    override_details.append(f'{aud_name} ({", ".join(aud_dates)})')
+            override_info = f'<br><b>🎯 Situational Override:</b> {override_matched} rows assigned — {"; ".join(override_details)}<br>'
+
+        # Build skipped auditors info
+        skipped_info = ""
+        if skipped_auditors:
+            skipped_info = f'<br><b>🚫 Skipped Auditors (No Allocation):</b> {", ".join(skipped_auditors)}<br>'
 
         # Build auditor summary table
         auditor_summary_rows = []
@@ -21075,8 +21520,9 @@ def process_imagen_qc_allocation():
                 f'<td {td_c}>{auditor["cc_limit"]}</td>'
                 f'<td {td_c}>{auditor["pref1_count"]}</td>'
                 f'<td {td_c}>{auditor["pref2_count"]}</td>'
-                f'<td {td_c}>{auditor["future_count"]}</td>'
-                f'<td {td_c}>{auditor["past_count"]}</td>'
+                f'<td {td_c}>{auditor.get("override_count", 0)}</td>'
+                f'<td {td_c}>{auditor["priority_count"]}</td>'
+                f'<td {td_c}>{auditor["nonpriority_count"]}</td>'
                 f'<td {td}>{auditor["pref1_display"]}</td>'
                 f'<td {td}>{auditor["pref2_display"]}</td></tr>'
             )
@@ -21090,8 +21536,9 @@ def process_imagen_qc_allocation():
             '<th style="padding:8px 10px;text-align:center;">CC Limit</th>'
             '<th style="padding:8px 10px;text-align:center;">From Pref 1</th>'
             '<th style="padding:8px 10px;text-align:center;">From Pref 2</th>'
-            '<th style="padding:8px 10px;text-align:center;">Future Dates</th>'
-            '<th style="padding:8px 10px;text-align:center;">Past/Today</th>'
+            '<th style="padding:8px 10px;text-align:center;">Override</th>'
+            '<th style="padding:8px 10px;text-align:center;">Priority</th>'
+            '<th style="padding:8px 10px;text-align:center;">Non-Priority</th>'
             '<th style="padding:8px 10px;text-align:left;">Agent Preference 1</th>'
             '<th style="padding:8px 10px;text-align:left;">Agent Preference 2</th>'
             '</tr></thead><tbody>'
@@ -21103,13 +21550,15 @@ def process_imagen_qc_allocation():
 <br><br>
 <b>📊 Processing Statistics:</b><br>
 - Total rows processed: {len(imagen_qc_allocation_data)}<br>
-- Future date rows (prioritized): {total_future}<br>
-- Past/today date rows: {total_past}<br>
+{override_info}
+- Priority date rows: {total_future}<br>
+- Non-priority date rows: {total_past}<br>
 - Matched via Preference 1: {matched_pref1}<br>
 - Matched via Preference 2: {matched_pref2}<br>
-- Total matched: {matched_pref1 + matched_pref2} (Future: {future_matched}, Past/Today: {past_matched})<br>
+- Total matched: {matched_pref1 + matched_pref2} (Priority: {future_matched}, Non-Priority: {past_matched})<br>
 - Unmatched rows: {unmatched_count}<br>
 - Processing time: {processing_time:.2f}s<br>
+{skipped_info}
 <br>
 <b>👥 Auditor Summary:</b>
 {auditor_summary_table}
@@ -25493,6 +25942,7 @@ def reset_imagen_qc_allocation():
     imagen_qc_allocation_data = None
     imagen_qc_allocation_filename = None
     imagen_qc_processing_result = None
+    imagen_qc_selected_dates = None
     flash("✅ Imagen QC Allocation has been reset successfully!", "success")
     return redirect("/?menu=allocations&submenu=imagen-qc-allocation")
 

@@ -2577,7 +2577,7 @@ HTML_TEMPLATE = """
                 'day-shift': 'Day Shift',
                 'night-shift': 'Night Shift',
                 'ntbp': 'NTBP',
-                'qcp': 'QCP',
+                'qcp': 'Auditor',
                 'daily-consolidate': 'Daily Consolidate',
                 'imagen-tracker': 'Imagen Tracker'
             };
@@ -2673,7 +2673,7 @@ HTML_TEMPLATE = """
                     </li>
                     <li>
                         <div class="submenu-item {% if current_submenu == 'qcp' %}active{% endif %}" onclick="switchAdminMenu('agent-consolidation', 'qcp')">
-                            <i class="fas fa-check-double"></i> QCP
+                            <i class="fas fa-check-double"></i> Auditor
                         </div>
                     </li>
                     <li>
@@ -3747,7 +3747,7 @@ HTML_TEMPLATE = """
                     <div class="section">
                             {% if qcp_files %}
                             <div style="background: #f8f9fa; padding: 20px; border-radius: 10px; margin-bottom: 20px;">
-                                <h4>Available QCP Files:</h4>
+                                <h4>Available Auditor Files:</h4>
                                 {% for file in qcp_files %}
                                 <div style="border-bottom: {% if loop.last %}none{% else %}1px solid #dee2e6{% endif %}; padding: 10px 0; display: flex; justify-content: space-between; align-items: center;">
                                     <div style="flex: 1;">
@@ -3781,10 +3781,10 @@ HTML_TEMPLATE = """
                             <div style="display: flex; gap: 10px; flex-wrap: wrap;">
                                 <form action="/consolidate_qcp_files" method="post" style="margin: 0;">
                                     <button type="submit" class="process-btn" style="background: linear-gradient(135deg, #28a745, #20c997);">
-                                        <i class="fas fa-compress-arrows-alt"></i> Consolidate All QCP Files
+                                        <i class="fas fa-compress-arrows-alt"></i> Consolidate All Auditor Files
                                     </button>
                                 </form>
-                                <form action="/clear_qcp_files" method="post" style="margin: 0;" onsubmit="return confirm('Are you sure you want to delete all QCP files? This action cannot be undone.');">
+                                <form action="/clear_qcp_files" method="post" style="margin: 0;" onsubmit="return confirm('Are you sure you want to delete all Auditor files? This action cannot be undone.');">
                                     <input type="hidden" name="subtab" value="qcp">
                                     <input type="hidden" name="current_menu" value="agent-consolidation">
                                     <input type="hidden" name="current_submenu" value="qcp">
@@ -3795,7 +3795,7 @@ HTML_TEMPLATE = """
                             </div>
                             {% else %}
                             <div style="background: #f8f9fa; padding: 20px; border-radius: 10px;">
-                                <p style="color: #666;">No QCP files uploaded yet.</p>
+                                <p style="color: #666;">No Auditor files uploaded yet.</p>
                     </div>
                     {% endif %}
                     </div>
@@ -23427,7 +23427,7 @@ def consolidate_ntbp_files():
 @admin_required
 def consolidate_qcp_files():
     """Consolidate all QCP files"""
-    return consolidate_files_helper(QCPFile, "QCP")
+    return consolidate_files_helper(QCPFile, "Auditor")
 
 
 @app.route("/consolidate_daily_consolidate_files", methods=["POST"])
@@ -23505,7 +23505,7 @@ def download_ntbp_file(file_id):
 @admin_required
 def download_qcp_file(file_id):
     """Download a single QCP file"""
-    return download_file_helper(QCPFile, file_id, "QCP")
+    return download_file_helper(QCPFile, file_id, "Auditor")
 
 
 @app.route("/download_daily_consolidate_file/<int:file_id>", methods=["GET"])
@@ -23564,7 +23564,7 @@ def delete_ntbp_file(file_id):
 def delete_qcp_file(file_id):
     """Delete a single QCP file"""
     subtab = request.form.get("subtab", "qcp")
-    return delete_file_helper(QCPFile, file_id, "QCP", subtab)
+    return delete_file_helper(QCPFile, file_id, "Auditor", subtab)
 
 
 @app.route("/delete_daily_consolidate_file/<int:file_id>", methods=["POST"])
@@ -23633,7 +23633,7 @@ def clear_ntbp_files():
 def clear_qcp_files():
     """Clear all QCP files"""
     subtab = request.form.get("subtab", "qcp")
-    return clear_files_helper(QCPFile, "QCP", subtab)
+    return clear_files_helper(QCPFile, "Auditor", subtab)
 
 
 @app.route("/clear_daily_consolidate_files", methods=["POST"])
@@ -25417,7 +25417,7 @@ def daily_consolidate_all_subtabs_and_email():
                 (DayShiftFile, "Day Shift"),
                 (NightShiftFile, "Night Shift"),
                 (NTBPFile, "NTBP"),
-                (QCPFile, "QCP"),
+                (QCPFile, "Auditor"),
                 (DailyConsolidateFile, "Daily Consolidate"),
             ]
 
@@ -25479,7 +25479,7 @@ def daily_consolidate_all_subtabs_and_email():
                         (DayShiftFile, "Day Shift"),
                         (NightShiftFile, "Night Shift"),
                         (NTBPFile, "NTBP"),
-                        (QCPFile, "QCP"),
+                        (QCPFile, "Auditor"),
                         (DailyConsolidateFile, "Daily Consolidate"),
                     ]
 
@@ -26170,7 +26170,7 @@ AGENT_TEMPLATE_WITH_SIDEBAR = """
                 <i class="fas fa-file-upload"></i> NTBP
             </a></li>
             <li><a href="/qcp" class="{{ 'active' if current_page == 'qcp' else '' }}">
-                <i class="fas fa-check-circle"></i> QCP
+                <i class="fas fa-check-circle"></i> Auditor
             </a></li>
             <li><a href="/daily-consolidate" class="{{ 'active' if current_page == 'daily_consolidate' else '' }}">
                 <i class="fas fa-archive"></i> Daily Consolidate
@@ -26366,14 +26366,14 @@ def qcp():
     user_name = user.name if user else "Agent"
 
     content = """
-    <h2>QCP File Upload</h2>
-    <p>Upload your QCP work file.</p>
+    <h2>Auditor File Upload</h2>
+    <p>Upload your Auditor work file.</p>
     
     <div style="border: 2px dashed #ddd; padding: 30px; border-radius: 10px; text-align: center; margin-top: 30px; max-width: 500px;">
         <form action="/upload_qcp" method="post" enctype="multipart/form-data" id="qcp-form">
             <input type="file" name="file" accept=".xlsx,.xls" required style="margin-bottom: 15px; width: 100%; padding: 10px;">
             <button type="submit" style="padding: 10px 20px; background: #667eea; color: white; border: none; border-radius: 5px; cursor: pointer;">
-                <i class="fas fa-upload"></i> Upload QCP File
+                <i class="fas fa-upload"></i> Upload Auditor File
             </button>
         </form>
     </div>
@@ -26381,7 +26381,7 @@ def qcp():
 
     return render_template_string(
         AGENT_TEMPLATE_WITH_SIDEBAR,
-        page_title="QCP",
+        page_title="Auditor",
         current_page="qcp",
         user_name=user_name,
         content=content,
@@ -26674,7 +26674,7 @@ def upload_qcp():
             return jsonify(
                 {
                     "success": True,
-                    "message": f"QCP file '{filename}' uploaded successfully",
+                    "message": f"Auditor file '{filename}' uploaded successfully",
                     "file_id": qcp_file.id,
                 }
             )

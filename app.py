@@ -2146,10 +2146,10 @@ HTML_TEMPLATE = """
             background: linear-gradient(135deg, #27ae60, #2ecc71);
             font-size: 18px;
             padding: 15px 40px;
-            display: flex;
+            display: inline-flex;
             align-items: center;
             gap: 10px;
-            margin: 20px auto;
+            margin: 20px 0;
         }
         
         .file-status { 
@@ -3194,7 +3194,7 @@ HTML_TEMPLATE = """
                 {% if imagen_qc_staff_data is not none and imagen_qc_allocation_data is not none %}
                 <div class="section" id="qc-override-section">
                     <h3 style="margin-bottom: 5px;">🎯 Situational Override <span style="font-size: 12px; font-weight: 400; color: #999;">(Optional)</span></h3>
-                    <p style="color: #666; margin-bottom: 15px; font-size: 13px;">Select auditors and pick specific dates for each one. These auditor+date combinations get highest allocation priority. Leave empty for normal allocation.</p>
+                    <p style="color: #666; margin-bottom: 15px; font-size: 13px;">Select auditors, pick specific agents and dates for each. These combinations get highest allocation priority. Leave empty for normal allocation.</p>
                     
                     <!-- Auditor Multi-Select Dropdown -->
                     <div style="margin-bottom: 15px;">
@@ -3218,8 +3218,9 @@ HTML_TEMPLATE = """
                     <!-- Per-auditor date panels rendered dynamically by JS -->
                     <div id="qc-override-per-auditor-container"></div>
 
-                    <!-- Available dates stored as data for JS to use -->
+                    <!-- Data for JS -->
                     <script type="application/json" id="qc-all-dates-data">{{ imagen_qc_all_dates | tojson }}</script>
+                    <script type="application/json" id="qc-auditor-agents-data">{{ imagen_qc_auditor_agents | tojson }}</script>
 
                     <div id="qc-override-summary" style="display: none; margin-top: 12px; padding: 10px 14px; background: #fff3e0; border-radius: 6px; border: 1px solid #ffe0b2; font-size: 13px;">
                         <i class="fas fa-bolt" style="color: #f57c00;"></i> <strong>Override active:</strong> <span id="qc-override-summary-text"></span>
@@ -4408,9 +4409,12 @@ HTML_TEMPLATE = """
             let overrideDropdownOpen = false;
 
             var allDatesForOverride = [];
+            var auditorAgentsMap = {};
             try {
-                const datesEl = document.getElementById('qc-all-dates-data');
+                var datesEl = document.getElementById('qc-all-dates-data');
                 if (datesEl) allDatesForOverride = JSON.parse(datesEl.textContent);
+                var agentsEl = document.getElementById('qc-auditor-agents-data');
+                if (agentsEl) auditorAgentsMap = JSON.parse(agentsEl.textContent);
             } catch(e) {}
 
             if (overrideTrigger) {
@@ -4425,7 +4429,7 @@ HTML_TEMPLATE = """
             }
 
             document.addEventListener('click', function(e) {
-                const dropdown = document.getElementById('qc-override-auditor-dropdown');
+                var dropdown = document.getElementById('qc-override-auditor-dropdown');
                 if (dropdown && !dropdown.contains(e.target) && overrideDropdownOpen) {
                     overrideDropdownOpen = false;
                     if (overrideOptions) overrideOptions.style.display = 'none';
@@ -4438,7 +4442,27 @@ HTML_TEMPLATE = """
                 return name.replace(/[^a-zA-Z0-9]/g, '_');
             }
 
-            function buildAuditorDatePanel(auditorName) {
+            function makeCheckboxLabel(value, className, dataAttr, dataVal, colorChecked, bgChecked) {
+                var lbl = document.createElement('label');
+                lbl.style.cssText = 'display: flex; align-items: center; gap: 5px; padding: 6px 12px; background: white; border: 2px solid #ddd; border-radius: 6px; cursor: pointer; font-size: 12px; transition: all 0.2s;';
+                var cb = document.createElement('input');
+                cb.type = 'checkbox';
+                cb.value = value;
+                cb.className = className;
+                cb.setAttribute(dataAttr, dataVal);
+                cb.style.cssText = 'width: 14px; height: 14px; cursor: pointer;';
+                cb.addEventListener('change', function() {
+                    var l = this.closest('label');
+                    if (this.checked) { l.style.borderColor = colorChecked; l.style.background = bgChecked; }
+                    else { l.style.borderColor = '#ddd'; l.style.background = 'white'; }
+                    updateOverrideSummary();
+                });
+                lbl.appendChild(cb);
+                lbl.appendChild(document.createTextNode(' ' + value));
+                return lbl;
+            }
+
+            function buildAuditorPanel(auditorName) {
                 var panelId = 'qc-override-panel-' + sanitizeId(auditorName);
                 if (document.getElementById(panelId)) return;
 
@@ -4447,41 +4471,43 @@ HTML_TEMPLATE = """
                 panel.style.cssText = 'margin-bottom: 12px; padding: 14px; background: #fafafa; border: 1px solid #e0e0e0; border-radius: 8px; border-left: 4px solid #f57c00;';
 
                 var header = document.createElement('div');
-                header.style.cssText = 'font-weight: 600; font-size: 13px; color: #333; margin-bottom: 10px; display: flex; align-items: center; gap: 8px;';
-                header.innerHTML = '<i class="fas fa-user" style="color: #f57c00;"></i> ' + auditorName + ' <span style="font-weight:400;color:#999;font-size:12px;">— select dates</span>';
+                header.style.cssText = 'font-weight: 600; font-size: 14px; color: #333; margin-bottom: 12px; display: flex; align-items: center; gap: 8px;';
+                header.innerHTML = '<i class="fas fa-user" style="color: #f57c00;"></i> ' + auditorName;
                 panel.appendChild(header);
+
+                // Agent selection
+                var agents = auditorAgentsMap[auditorName] || [];
+                if (agents.length > 0) {
+                    var agentLabel = document.createElement('div');
+                    agentLabel.style.cssText = 'font-size: 12px; color: #555; font-weight: 600; margin-bottom: 6px;';
+                    agentLabel.textContent = 'Select Agents:';
+                    panel.appendChild(agentLabel);
+
+                    var agentsWrap = document.createElement('div');
+                    agentsWrap.style.cssText = 'display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px;';
+                    for (var i = 0; i < agents.length; i++) {
+                        agentsWrap.appendChild(makeCheckboxLabel(agents[i], 'qc-override-per-agent-cb', 'data-auditor', auditorName, '#1976d2', '#e3f2fd'));
+                    }
+                    panel.appendChild(agentsWrap);
+                }
+
+                // Date selection
+                var dateLabel = document.createElement('div');
+                dateLabel.style.cssText = 'font-size: 12px; color: #555; font-weight: 600; margin-bottom: 6px;';
+                dateLabel.textContent = 'Select Dates:';
+                panel.appendChild(dateLabel);
 
                 var datesWrap = document.createElement('div');
                 datesWrap.style.cssText = 'display: flex; flex-wrap: wrap; gap: 6px;';
-
-                for (var i = 0; i < allDatesForOverride.length; i++) {
-                    var dateStr = allDatesForOverride[i];
-                    var lbl = document.createElement('label');
-                    lbl.style.cssText = 'display: flex; align-items: center; gap: 5px; padding: 6px 12px; background: white; border: 2px solid #ddd; border-radius: 6px; cursor: pointer; font-size: 12px; transition: all 0.2s;';
-
-                    var cb = document.createElement('input');
-                    cb.type = 'checkbox';
-                    cb.value = dateStr;
-                    cb.className = 'qc-override-per-date-cb';
-                    cb.setAttribute('data-auditor', auditorName);
-                    cb.style.cssText = 'width: 14px; height: 14px; cursor: pointer;';
-                    cb.addEventListener('change', function() {
-                        var l = this.closest('label');
-                        if (this.checked) { l.style.borderColor = '#f57c00'; l.style.background = '#fff3e0'; }
-                        else { l.style.borderColor = '#ddd'; l.style.background = 'white'; }
-                        updateOverrideSummary();
-                    });
-
-                    lbl.appendChild(cb);
-                    lbl.appendChild(document.createTextNode(' ' + dateStr));
-                    datesWrap.appendChild(lbl);
+                for (var j = 0; j < allDatesForOverride.length; j++) {
+                    datesWrap.appendChild(makeCheckboxLabel(allDatesForOverride[j], 'qc-override-per-date-cb', 'data-auditor', auditorName, '#f57c00', '#fff3e0'));
                 }
-
                 panel.appendChild(datesWrap);
+
                 if (perAuditorContainer) perAuditorContainer.appendChild(panel);
             }
 
-            function removeAuditorDatePanel(auditorName) {
+            function removeAuditorPanel(auditorName) {
                 var panelId = 'qc-override-panel-' + sanitizeId(auditorName);
                 var panel = document.getElementById(panelId);
                 if (panel) panel.remove();
@@ -4493,9 +4519,9 @@ HTML_TEMPLATE = """
                 auditorCbs.forEach(function(cb) {
                     if (cb.checked) {
                         selected.push(cb.value);
-                        buildAuditorDatePanel(cb.value);
+                        buildAuditorPanel(cb.value);
                     } else {
-                        removeAuditorDatePanel(cb.value);
+                        removeAuditorPanel(cb.value);
                     }
                 });
 
@@ -4516,22 +4542,22 @@ HTML_TEMPLATE = """
                 }
 
                 var lines = [];
-                var anyDates = false;
+                var anyActive = false;
                 auditorCbs.forEach(function(cb) {
                     var name = cb.value;
+                    var agentCbs = document.querySelectorAll('.qc-override-per-agent-cb[data-auditor="' + name + '"]:checked');
                     var dateCbs = document.querySelectorAll('.qc-override-per-date-cb[data-auditor="' + name + '"]:checked');
-                    var dateCount = dateCbs.length;
-                    if (dateCount > 0) {
-                        anyDates = true;
-                        var dateList = [];
-                        dateCbs.forEach(function(d) { dateList.push(d.value); });
-                        lines.push('<b>' + name + '</b>: ' + dateList.join(', '));
+                    if (agentCbs.length > 0 && dateCbs.length > 0) {
+                        anyActive = true;
+                        var agentList = []; agentCbs.forEach(function(a) { agentList.push(a.value); });
+                        var dateList = []; dateCbs.forEach(function(d) { dateList.push(d.value); });
+                        lines.push('<b>' + name + '</b>: agents [' + agentList.join(', ') + '] on ' + dateList.join(', '));
                     }
                 });
 
                 var summaryText = document.getElementById('qc-override-summary-text');
-                if (anyDates && summaryText) {
-                    summaryText.innerHTML = lines.join(' | ');
+                if (anyActive && summaryText) {
+                    summaryText.innerHTML = lines.join(' <br> ');
                     overrideSummary.style.display = 'block';
                 } else {
                     if (overrideSummary) overrideSummary.style.display = 'none';
@@ -4551,15 +4577,16 @@ HTML_TEMPLATE = """
                     cbs.forEach(function(cb) { dates.push(cb.value); });
                     document.getElementById('qc-priority-dates-hidden').value = dates.join(',');
 
-                    // Collect per-auditor override data as JSON
+                    // Collect per-auditor override data as JSON: {auditor: {agents: [...], dates: [...]}}
                     var overrideData = {};
                     document.querySelectorAll('.qc-override-auditor-cb:checked').forEach(function(cb) {
                         var auditorName = cb.value;
+                        var agentCbs = document.querySelectorAll('.qc-override-per-agent-cb[data-auditor="' + auditorName + '"]:checked');
                         var dateCbs = document.querySelectorAll('.qc-override-per-date-cb[data-auditor="' + auditorName + '"]:checked');
-                        var auditorDates = [];
-                        dateCbs.forEach(function(d) { auditorDates.push(d.value); });
-                        if (auditorDates.length > 0) {
-                            overrideData[auditorName] = auditorDates;
+                        var auditorAgents = []; agentCbs.forEach(function(a) { auditorAgents.push(a.value); });
+                        var auditorDates = []; dateCbs.forEach(function(d) { auditorDates.push(d.value); });
+                        if (auditorAgents.length > 0 && auditorDates.length > 0) {
+                            overrideData[auditorName] = { agents: auditorAgents, dates: auditorDates };
                         }
                     });
                     document.getElementById('qc-override-data-hidden').value = JSON.stringify(overrideData);
@@ -16765,7 +16792,9 @@ def process_allocation_files_with_dates(
 
 def _get_imagen_qc_auditors():
     """Extract auditor names from QC staff data (excluding 'No allocation' status)."""
-    if imagen_qc_staff_data is None or not isinstance(imagen_qc_staff_data, pd.DataFrame):
+    if imagen_qc_staff_data is None or not isinstance(
+        imagen_qc_staff_data, pd.DataFrame
+    ):
         return []
     auditor_col = None
     status_col = None
@@ -16790,13 +16819,62 @@ def _get_imagen_qc_auditors():
     return auditors
 
 
+def _get_imagen_qc_auditor_agents():
+    """Return dict mapping each active auditor to their combined agent list (Pref1 + Pref2)."""
+    if imagen_qc_staff_data is None or not isinstance(
+        imagen_qc_staff_data, pd.DataFrame
+    ):
+        return {}
+    auditor_col = None
+    pref1_col = None
+    pref2_col = None
+    status_col = None
+    for col in imagen_qc_staff_data.columns:
+        cl = str(col).strip().lower()
+        if cl in ("auditors", "auditor", "auditor name"):
+            auditor_col = col
+        if cl in ("agent preference 1", "agentpreference1", "preference 1", "pref 1"):
+            pref1_col = col
+        if cl in ("agent preference 2", "agentpreference2", "preference 2", "pref 2"):
+            pref2_col = col
+        if cl == "status":
+            status_col = col
+    if not auditor_col:
+        return {}
+    result = {}
+    for _, row in imagen_qc_staff_data.iterrows():
+        name = str(row[auditor_col]).strip()
+        if not name or name.lower() == "nan":
+            continue
+        if status_col:
+            status = str(row[status_col]).strip().lower()
+            if status == "no allocation":
+                continue
+        agents = []
+        for pcol in [pref1_col, pref2_col]:
+            if pcol:
+                raw = str(row[pcol]).strip()
+                if raw.lower() != "nan" and raw:
+                    for a in raw.split(","):
+                        a = a.strip()
+                        if a and a not in agents:
+                            agents.append(a)
+        result[name] = agents
+    return result
+
+
 def _get_imagen_qc_all_dates():
     """Return all unique dates from the Appointment Date column (sorted ascending)."""
-    if imagen_qc_allocation_data is None or not isinstance(imagen_qc_allocation_data, pd.DataFrame):
+    if imagen_qc_allocation_data is None or not isinstance(
+        imagen_qc_allocation_data, pd.DataFrame
+    ):
         return []
     date_col = None
     for col in imagen_qc_allocation_data.columns:
-        if "appointment" in str(col).strip().lower() and "date" in str(col).strip().lower():
+        if (
+            "appointment" in str(col).strip().lower()
+            and "date" in str(col).strip().lower()
+        ):
             date_col = col
             break
     if not date_col:
@@ -16813,11 +16891,16 @@ def _get_imagen_qc_all_dates():
 
 def _get_imagen_qc_dates():
     """Return the next 3 future dates that actually exist in the Appointment Date column."""
-    if imagen_qc_allocation_data is None or not isinstance(imagen_qc_allocation_data, pd.DataFrame):
+    if imagen_qc_allocation_data is None or not isinstance(
+        imagen_qc_allocation_data, pd.DataFrame
+    ):
         return []
     date_col = None
     for col in imagen_qc_allocation_data.columns:
-        if "appointment" in str(col).strip().lower() and "date" in str(col).strip().lower():
+        if (
+            "appointment" in str(col).strip().lower()
+            and "date" in str(col).strip().lower()
+        ):
             date_col = col
             break
     if not date_col:
@@ -16829,7 +16912,9 @@ def _get_imagen_qc_dates():
         return []
     today = pd.Timestamp.now().normalize()
     parsed = pd.to_datetime(imagen_qc_allocation_data[date_col], errors="coerce")
-    future_dates = sorted(set(d.normalize() for d in parsed.dropna() if d.normalize() > today))
+    future_dates = sorted(
+        set(d.normalize() for d in parsed.dropna() if d.normalize() > today)
+    )
     return [d.strftime("%m/%d/%Y") for d in future_dates[:3]]
 
 
@@ -16933,6 +17018,7 @@ def index():
         imagen_qc_selected_dates=imagen_qc_selected_dates,
         imagen_qc_auditor_list=_get_imagen_qc_auditors(),
         imagen_qc_all_dates=_get_imagen_qc_all_dates(),
+        imagen_qc_auditor_agents=_get_imagen_qc_auditor_agents(),
         current_menu=current_menu,
         current_submenu=current_submenu,
     )
@@ -18102,7 +18188,7 @@ def upload_ev_staff():
 
         # Load Excel file
         ev_staff_data = pd.read_excel(filename, sheet_name=None, parse_dates=False)
-        
+
         # Use first sheet if multiple sheets, or get the main sheet
         if len(ev_staff_data) == 1:
             ev_staff_data = list(ev_staff_data.values())[0]
@@ -18153,7 +18239,7 @@ def upload_ev_allocation_data():
 
         # Load Excel file
         ev_allocation_data = pd.read_excel(filename, sheet_name=None, parse_dates=False)
-        
+
         # Use first sheet if multiple sheets, or get the main sheet
         if len(ev_allocation_data) == 1:
             ev_allocation_data = list(ev_allocation_data.values())[0]
@@ -18186,7 +18272,7 @@ def match_ev_allocation_row(allocation_row, allocation_df, staff_df):
     """
     Match an EV allocation row to an agent from staff details.
     Returns agent name if match found, None otherwise.
-    
+
     Matching criteria (all case-insensitive):
     - Office/Doctor Name: OR logic (staff "ABC Clinic, XYZ Hospital" matches allocation "ABC Clinic" OR "XYZ Hospital")
       Special: If staff has "All", it matches any Office/Doctor Name value
@@ -18194,6 +18280,7 @@ def match_ev_allocation_row(allocation_row, allocation_df, staff_df):
     - Reference: OR logic (staff "MCD+Commercial" matches allocation "MCD" OR "Commercial")
     - Source: OR logic (staff "Evening+Morning" matches allocation "Evening" OR "Morning")
     """
+
     # Find column names (case-insensitive)
     def find_column(df, possible_names):
         for col in df.columns:
@@ -18202,68 +18289,124 @@ def match_ev_allocation_row(allocation_row, allocation_df, staff_df):
                 if name.lower() in col_lower:
                     return col
         return None
-    
+
     # Find columns in allocation data (use the DataFrame, not a single row)
-    office_col = find_column(allocation_df, ["Office/Doctor Name", "Office", "Doctor Name"])
+    office_col = find_column(
+        allocation_df, ["Office/Doctor Name", "Office", "Doctor Name"]
+    )
     system_col = find_column(allocation_df, ["System"])
     reference_col = find_column(allocation_df, ["Reference"])
     source_col = find_column(allocation_df, ["Source"])
-    
+
     if not all([office_col, system_col, reference_col, source_col]):
         return None
-    
+
     # Get values from allocation row
-    allocation_office = str(allocation_row[office_col]).strip().lower() if pd.notna(allocation_row[office_col]) else ""
-    allocation_system = str(allocation_row[system_col]).strip().lower() if pd.notna(allocation_row[system_col]) else ""
-    allocation_reference = str(allocation_row[reference_col]).strip().lower() if pd.notna(allocation_row[reference_col]) else ""
-    allocation_source = str(allocation_row[source_col]).strip().lower() if pd.notna(allocation_row[source_col]) else ""
-    
+    allocation_office = (
+        str(allocation_row[office_col]).strip().lower()
+        if pd.notna(allocation_row[office_col])
+        else ""
+    )
+    allocation_system = (
+        str(allocation_row[system_col]).strip().lower()
+        if pd.notna(allocation_row[system_col])
+        else ""
+    )
+    allocation_reference = (
+        str(allocation_row[reference_col]).strip().lower()
+        if pd.notna(allocation_row[reference_col])
+        else ""
+    )
+    allocation_source = (
+        str(allocation_row[source_col]).strip().lower()
+        if pd.notna(allocation_row[source_col])
+        else ""
+    )
+
     # Find columns in staff data
-    staff_office_col = find_column(staff_df, ["Office/Doctor Name", "Office", "Doctor Name"])
+    staff_office_col = find_column(
+        staff_df, ["Office/Doctor Name", "Office", "Doctor Name"]
+    )
     staff_system_col = find_column(staff_df, ["System"])
     staff_reference_col = find_column(staff_df, ["Reference"])
     staff_source_col = find_column(staff_df, ["Source"])
     staff_agent_col = find_column(staff_df, ["Agent Name", "Agent"])
-    
-    if not all([staff_office_col, staff_system_col, staff_reference_col, staff_source_col, staff_agent_col]):
+
+    if not all(
+        [
+            staff_office_col,
+            staff_system_col,
+            staff_reference_col,
+            staff_source_col,
+            staff_agent_col,
+        ]
+    ):
         return None
-    
+
     # Iterate through staff to find first match
     for idx, staff_row in staff_df.iterrows():
-        staff_office = str(staff_row[staff_office_col]).strip().lower() if pd.notna(staff_row[staff_office_col]) else ""
-        staff_system = str(staff_row[staff_system_col]).strip().lower() if pd.notna(staff_row[staff_system_col]) else ""
-        staff_reference = str(staff_row[staff_reference_col]).strip().lower() if pd.notna(staff_row[staff_reference_col]) else ""
-        staff_source = str(staff_row[staff_source_col]).strip().lower() if pd.notna(staff_row[staff_source_col]) else ""
-        
+        staff_office = (
+            str(staff_row[staff_office_col]).strip().lower()
+            if pd.notna(staff_row[staff_office_col])
+            else ""
+        )
+        staff_system = (
+            str(staff_row[staff_system_col]).strip().lower()
+            if pd.notna(staff_row[staff_system_col])
+            else ""
+        )
+        staff_reference = (
+            str(staff_row[staff_reference_col]).strip().lower()
+            if pd.notna(staff_row[staff_reference_col])
+            else ""
+        )
+        staff_source = (
+            str(staff_row[staff_source_col]).strip().lower()
+            if pd.notna(staff_row[staff_source_col])
+            else ""
+        )
+
         # Check Office/Doctor Name (OR logic with comma separator, case-insensitive)
         # Split staff office by comma and check if allocation office matches any part
         # Special case: "All" matches any Office/Doctor Name value
-        staff_offices = [o.strip().lower() for o in staff_office.split(",") if o.strip()]
+        staff_offices = [
+            o.strip().lower() for o in staff_office.split(",") if o.strip()
+        ]
         if "all" not in staff_offices and allocation_office not in staff_offices:
             continue
-        
+
         # Check System (OR logic with comma separator, case-insensitive)
         # Split staff system by comma and check if allocation system matches any part
-        staff_systems = [s.strip().lower() for s in staff_system.split(",") if s.strip()]
+        staff_systems = [
+            s.strip().lower() for s in staff_system.split(",") if s.strip()
+        ]
         if allocation_system not in staff_systems:
             continue
-        
+
         # Check Reference (OR logic, case-insensitive)
         # Split staff reference by "+" and check if allocation reference matches any part
-        staff_refs = [r.strip().lower() for r in staff_reference.split("+") if r.strip()]
+        staff_refs = [
+            r.strip().lower() for r in staff_reference.split("+") if r.strip()
+        ]
         if allocation_reference not in staff_refs:
             continue
-        
+
         # Check Source (OR logic, case-insensitive)
         # Split staff source by "+" and check if allocation source matches any part
-        staff_sources = [s.strip().lower() for s in staff_source.split("+") if s.strip()]
+        staff_sources = [
+            s.strip().lower() for s in staff_source.split("+") if s.strip()
+        ]
         if allocation_source not in staff_sources:
             continue
-        
+
         # All criteria matched! Return agent name
-        agent_name = str(staff_row[staff_agent_col]).strip() if pd.notna(staff_row[staff_agent_col]) else ""
+        agent_name = (
+            str(staff_row[staff_agent_col]).strip()
+            if pd.notna(staff_row[staff_agent_col])
+            else ""
+        )
         return agent_name
-    
+
     return None
 
 
@@ -18284,6 +18427,7 @@ def process_ev_allocation():
 
     try:
         import time
+
         start_time = time.time()
 
         # Ensure we have DataFrames
@@ -18294,13 +18438,13 @@ def process_ev_allocation():
 
         # Create a copy of allocation data for processing
         result_df = ev_allocation_data.copy()
-        
+
         # Add Agent Name column
         result_df["Agent Name"] = ""
-        
+
         matched_count = 0
         unmatched_count = 0
-        
+
         # Process each allocation row
         for idx, row in ev_allocation_data.iterrows():
             agent_name = match_ev_allocation_row(row, ev_allocation_data, ev_staff_data)
@@ -18309,12 +18453,12 @@ def process_ev_allocation():
                 matched_count += 1
             else:
                 unmatched_count += 1
-        
+
         # Store the result
         ev_allocation_data = result_df
-        
+
         processing_time = time.time() - start_time
-        
+
         ev_processing_result = f"""✅ EV Allocation processing completed successfully!
 
 📊 Processing Statistics:
@@ -18324,14 +18468,17 @@ def process_ev_allocation():
 - Processing time: {processing_time:.2f}s
 
 💾 Ready to download the processed result file!"""
-        
+
         flash("EV Allocation processed successfully!", "success")
         return redirect(f"/?menu={current_menu}&submenu={current_submenu}")
 
     except Exception as e:
         import traceback
+
         error_trace = traceback.format_exc()
-        ev_processing_result = f"❌ Error processing EV Allocation: {str(e)}\n\n{error_trace}"
+        ev_processing_result = (
+            f"❌ Error processing EV Allocation: {str(e)}\n\n{error_trace}"
+        )
         flash(f"Error processing EV Allocation: {str(e)}", "error")
         print(f"EV Allocation Processing Error: {error_trace}")
         return redirect(f"/?menu={current_menu}&submenu={current_submenu}")
@@ -20588,14 +20735,16 @@ def download_ev_allocation():
         try:
             # Write DataFrame to Excel
             with pd.ExcelWriter(temp_path, engine="openpyxl") as writer:
-                ev_allocation_data.to_excel(writer, sheet_name="EV Allocation", index=False)
-            
+                ev_allocation_data.to_excel(
+                    writer, sheet_name="EV Allocation", index=False
+                )
+
             # Send file
             return send_file(
                 temp_path,
                 as_attachment=True,
                 download_name=filename,
-                mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             )
         finally:
             # Clean up temp file after sending
@@ -20606,6 +20755,7 @@ def download_ev_allocation():
 
     except Exception as e:
         import traceback
+
         error_trace = traceback.format_exc()
         flash(f"Error downloading EV Allocation file: {str(e)}", "error")
         print(f"EV Allocation Download Error: {error_trace}")
@@ -20631,7 +20781,9 @@ def upload_dental_bv_staff():
         filename = secure_filename(file.filename)
         file.save(filename)
 
-        dental_bv_staff_data = pd.read_excel(filename, sheet_name=None, parse_dates=False)
+        dental_bv_staff_data = pd.read_excel(
+            filename, sheet_name=None, parse_dates=False
+        )
 
         if len(dental_bv_staff_data) == 1:
             dental_bv_staff_data = list(dental_bv_staff_data.values())[0]
@@ -20651,7 +20803,9 @@ def upload_dental_bv_staff():
         return redirect("/?menu=allocations&submenu=dental-bv-allocation")
 
     except Exception as e:
-        dental_bv_processing_result = f"❌ Error uploading staff database file: {str(e)}"
+        dental_bv_processing_result = (
+            f"❌ Error uploading staff database file: {str(e)}"
+        )
         flash(f"Error uploading staff database file: {str(e)}", "error")
         if "filename" in locals() and os.path.exists(filename):
             os.remove(filename)
@@ -20677,7 +20831,9 @@ def upload_dental_bv_allocation_data():
         filename = secure_filename(file.filename)
         file.save(filename)
 
-        dental_bv_allocation_data = pd.read_excel(filename, sheet_name=None, parse_dates=False)
+        dental_bv_allocation_data = pd.read_excel(
+            filename, sheet_name=None, parse_dates=False
+        )
 
         if len(dental_bv_allocation_data) == 1:
             dental_bv_allocation_data = list(dental_bv_allocation_data.values())[0]
@@ -20697,7 +20853,9 @@ def upload_dental_bv_allocation_data():
         return redirect("/?menu=allocations&submenu=dental-bv-allocation")
 
     except Exception as e:
-        dental_bv_processing_result = f"❌ Error uploading Dental BV allocation data file: {str(e)}"
+        dental_bv_processing_result = (
+            f"❌ Error uploading Dental BV allocation data file: {str(e)}"
+        )
         flash(f"Error uploading Dental BV allocation data file: {str(e)}", "error")
         if "filename" in locals() and os.path.exists(filename):
             os.remove(filename)
@@ -20733,39 +20891,72 @@ def match_dental_bv_allocation(allocation_df, staff_df):
     result_df["Agent Name"] = ""
 
     # Find columns in staff database with broad possible names
-    staff_doctor_office_col = find_dental_bv_column(staff_df, [
-        "Doctor Office", "Doctor_Office", "DoctorOffice", "Dr Office", "Office",
-        "Doctor office name", "Doc Office"
-    ])
-    staff_software_col = find_dental_bv_column(staff_df, [
-        "Software", "System", "SW"
-    ])
-    staff_insurance_col = find_dental_bv_column(staff_df, [
-        "Insurance List", "Insurance_List", "InsuranceList", "Insurance",
-        "Ins List", "Dental Insurance", "Insurance Carrier"
-    ])
-    staff_count_col = find_dental_bv_column(staff_df, [
-        "Count", "Allocation Count", "Max Count", "Limit", "Qty"
-    ])
-    staff_agent_col = find_dental_bv_column(staff_df, [
-        "Agent Name", "Agent_Name", "AgentName", "Agent", "Name", "Staff Name"
-    ])
+    staff_doctor_office_col = find_dental_bv_column(
+        staff_df,
+        [
+            "Doctor Office",
+            "Doctor_Office",
+            "DoctorOffice",
+            "Dr Office",
+            "Office",
+            "Doctor office name",
+            "Doc Office",
+        ],
+    )
+    staff_software_col = find_dental_bv_column(staff_df, ["Software", "System", "SW"])
+    staff_insurance_col = find_dental_bv_column(
+        staff_df,
+        [
+            "Insurance List",
+            "Insurance_List",
+            "InsuranceList",
+            "Insurance",
+            "Ins List",
+            "Dental Insurance",
+            "Insurance Carrier",
+        ],
+    )
+    staff_count_col = find_dental_bv_column(
+        staff_df, ["Count", "Allocation Count", "Max Count", "Limit", "Qty"]
+    )
+    staff_agent_col = find_dental_bv_column(
+        staff_df,
+        ["Agent Name", "Agent_Name", "AgentName", "Agent", "Name", "Staff Name"],
+    )
 
     # Find columns in allocation data with broad possible names
-    alloc_office_col = find_dental_bv_column(allocation_df, [
-        "Office Name", "Office_Name", "OfficeName", "Office",
-        "Doctor Office", "Doctor Name", "Practice Name", "Practice"
-    ])
-    alloc_software_col = find_dental_bv_column(allocation_df, [
-        "Software", "System", "SW"
-    ])
-    alloc_insurance_col = find_dental_bv_column(allocation_df, [
-        "Insurance", "Insurance Carrier", "Ins", "Dental Insurance",
-        "Insurance Name", "Ins Carrier", "Primary Insurance"
-    ])
-    alloc_remark_col = find_dental_bv_column(allocation_df, [
-        "Remark", "Remarks", "Comment", "Comments", "Note", "Notes", "Status"
-    ])
+    alloc_office_col = find_dental_bv_column(
+        allocation_df,
+        [
+            "Office Name",
+            "Office_Name",
+            "OfficeName",
+            "Office",
+            "Doctor Office",
+            "Doctor Name",
+            "Practice Name",
+            "Practice",
+        ],
+    )
+    alloc_software_col = find_dental_bv_column(
+        allocation_df, ["Software", "System", "SW"]
+    )
+    alloc_insurance_col = find_dental_bv_column(
+        allocation_df,
+        [
+            "Insurance",
+            "Insurance Carrier",
+            "Ins",
+            "Dental Insurance",
+            "Insurance Name",
+            "Ins Carrier",
+            "Primary Insurance",
+        ],
+    )
+    alloc_remark_col = find_dental_bv_column(
+        allocation_df,
+        ["Remark", "Remarks", "Comment", "Comments", "Note", "Notes", "Status"],
+    )
 
     staff_cols_str = ", ".join([f'"{str(c)}"' for c in staff_df.columns.tolist()])
     alloc_cols_str = ", ".join([f'"{str(c)}"' for c in allocation_df.columns.tolist()])
@@ -20795,8 +20986,12 @@ def match_dental_bv_allocation(allocation_df, staff_df):
             f"Allocation file columns found: [{alloc_cols_str}]"
         )
 
-    print(f"[Dental BV] Staff columns mapped: Doctor Office='{staff_doctor_office_col}', Software='{staff_software_col}', Insurance List='{staff_insurance_col}', Count='{staff_count_col}', Agent Name='{staff_agent_col}'")
-    print(f"[Dental BV] Allocation columns mapped: Office Name='{alloc_office_col}', Software='{alloc_software_col}', Insurance='{alloc_insurance_col}', Remark='{alloc_remark_col}'")
+    print(
+        f"[Dental BV] Staff columns mapped: Doctor Office='{staff_doctor_office_col}', Software='{staff_software_col}', Insurance List='{staff_insurance_col}', Count='{staff_count_col}', Agent Name='{staff_agent_col}'"
+    )
+    print(
+        f"[Dental BV] Allocation columns mapped: Office Name='{alloc_office_col}', Software='{alloc_software_col}', Insurance='{alloc_insurance_col}', Remark='{alloc_remark_col}'"
+    )
 
     # Build agent tracking: {index: {"name": ..., "count_limit": ..., "current_count": 0, ...}}
     agent_tracker = []
@@ -20815,23 +21010,37 @@ def match_dental_bv_allocation(allocation_df, staff_df):
         software_raw = str(staff_row[staff_software_col]).strip()
         insurance_raw = str(staff_row[staff_insurance_col]).strip()
 
-        doctor_offices = [v.strip().lower() for v in doctor_offices_raw.split(",") if v.strip()] if doctor_offices_raw.lower() != "nan" else []
-        software_list = [v.strip().lower() for v in software_raw.split(",") if v.strip()] if software_raw.lower() != "nan" else []
-        insurance_list = [v.strip().lower() for v in insurance_raw.split(",") if v.strip()] if insurance_raw.lower() != "nan" else []
+        doctor_offices = (
+            [v.strip().lower() for v in doctor_offices_raw.split(",") if v.strip()]
+            if doctor_offices_raw.lower() != "nan"
+            else []
+        )
+        software_list = (
+            [v.strip().lower() for v in software_raw.split(",") if v.strip()]
+            if software_raw.lower() != "nan"
+            else []
+        )
+        insurance_list = (
+            [v.strip().lower() for v in insurance_raw.split(",") if v.strip()]
+            if insurance_raw.lower() != "nan"
+            else []
+        )
 
         has_all_office = "all" in doctor_offices
         has_all_insurance = "all" in insurance_list
 
-        agent_tracker.append({
-            "name": agent_name,
-            "count_limit": count_limit,
-            "current_count": 0,
-            "doctor_offices": doctor_offices,
-            "software_list": software_list,
-            "insurance_list": insurance_list,
-            "has_all_office": has_all_office,
-            "has_all_insurance": has_all_insurance,
-        })
+        agent_tracker.append(
+            {
+                "name": agent_name,
+                "count_limit": count_limit,
+                "current_count": 0,
+                "doctor_offices": doctor_offices,
+                "software_list": software_list,
+                "insurance_list": insurance_list,
+                "has_all_office": has_all_office,
+                "has_all_insurance": has_all_insurance,
+            }
+        )
 
     matched_count = 0
     unmatched_count = 0
@@ -20931,6 +21140,7 @@ def process_dental_bv_allocation():
 
     try:
         import time
+
         start_time = time.time()
 
         if not isinstance(dental_bv_staff_data, pd.DataFrame):
@@ -20938,8 +21148,8 @@ def process_dental_bv_allocation():
         if not isinstance(dental_bv_allocation_data, pd.DataFrame):
             dental_bv_allocation_data = pd.DataFrame(dental_bv_allocation_data)
 
-        result_df, matched_count, unmatched_count, no_info_count, agent_tracker = match_dental_bv_allocation(
-            dental_bv_allocation_data, dental_bv_staff_data
+        result_df, matched_count, unmatched_count, no_info_count, agent_tracker = (
+            match_dental_bv_allocation(dental_bv_allocation_data, dental_bv_staff_data)
         )
 
         dental_bv_allocation_data = result_df
@@ -20948,9 +21158,19 @@ def process_dental_bv_allocation():
 
         agent_summary_rows = []
         for i, agent in enumerate(agent_tracker):
-            offices = ", ".join(agent["doctor_offices"]) if not agent["has_all_office"] else "All"
-            software = ", ".join(agent["software_list"]) if agent["software_list"] else "—"
-            insurance = ", ".join(agent["insurance_list"]) if not agent["has_all_insurance"] else "All"
+            offices = (
+                ", ".join(agent["doctor_offices"])
+                if not agent["has_all_office"]
+                else "All"
+            )
+            software = (
+                ", ".join(agent["software_list"]) if agent["software_list"] else "—"
+            )
+            insurance = (
+                ", ".join(agent["insurance_list"])
+                if not agent["has_all_insurance"]
+                else "All"
+            )
             bg = "#f8f9fa" if i % 2 else "#fff"
             td = 'style="padding:8px 10px;"'
             td_c = 'style="padding:8px 10px;text-align:center;"'
@@ -20959,9 +21179,9 @@ def process_dental_bv_allocation():
                 f'<td {td}>{agent["name"]}</td>'
                 f'<td {td_c}>{agent["current_count"]}</td>'
                 f'<td {td_c}>{agent["count_limit"]}</td>'
-                f'<td {td}>{offices}</td>'
-                f'<td {td}>{software}</td>'
-                f'<td {td}>{insurance}</td></tr>'
+                f"<td {td}>{offices}</td>"
+                f"<td {td}>{software}</td>"
+                f"<td {td}>{insurance}</td></tr>"
             )
 
         agent_summary_table = (
@@ -20974,9 +21194,9 @@ def process_dental_bv_allocation():
             '<th style="padding:8px 10px;text-align:left;">Doctor Office</th>'
             '<th style="padding:8px 10px;text-align:left;">Software</th>'
             '<th style="padding:8px 10px;text-align:left;">Insurance List</th>'
-            '</tr></thead><tbody>'
+            "</tr></thead><tbody>"
             + "".join(agent_summary_rows)
-            + '</tbody></table></div>'
+            + "</tbody></table></div>"
         )
 
         dental_bv_processing_result = f"""✅ Dental BV Allocation processing completed successfully!
@@ -20998,8 +21218,11 @@ def process_dental_bv_allocation():
 
     except Exception as e:
         import traceback
+
         error_trace = traceback.format_exc()
-        dental_bv_processing_result = f"❌ Error processing Dental BV Allocation: {str(e)}\n\n{error_trace}"
+        dental_bv_processing_result = (
+            f"❌ Error processing Dental BV Allocation: {str(e)}\n\n{error_trace}"
+        )
         flash(f"Error processing Dental BV Allocation: {str(e)}", "error")
         print(f"Dental BV Allocation Processing Error: {error_trace}")
         return redirect(f"/?menu={current_menu}&submenu={current_submenu}")
@@ -21027,13 +21250,15 @@ def download_dental_bv_allocation():
 
         try:
             with pd.ExcelWriter(temp_path, engine="openpyxl") as writer:
-                dental_bv_allocation_data.to_excel(writer, sheet_name="Dental BV Allocation", index=False)
+                dental_bv_allocation_data.to_excel(
+                    writer, sheet_name="Dental BV Allocation", index=False
+                )
 
             return send_file(
                 temp_path,
                 as_attachment=True,
                 download_name=filename,
-                mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             )
         finally:
             os.close(temp_fd)
@@ -21042,6 +21267,7 @@ def download_dental_bv_allocation():
 
     except Exception as e:
         import traceback
+
         error_trace = traceback.format_exc()
         flash(f"Error downloading Dental BV Allocation file: {str(e)}", "error")
         print(f"Dental BV Allocation Download Error: {error_trace}")
@@ -21080,7 +21306,10 @@ def upload_imagen_qc_staff():
             imagen_qc_staff_data = all_sheets[target_sheet]
         else:
             imagen_qc_staff_data = list(all_sheets.values())[0]
-            flash(f"⚠️ 'Main' sheet not found, using first sheet: '{list(all_sheets.keys())[0]}'", "warning")
+            flash(
+                f"⚠️ 'Main' sheet not found, using first sheet: '{list(all_sheets.keys())[0]}'",
+                "warning",
+            )
 
         imagen_qc_staff_filename = filename
         imagen_qc_processing_result = None
@@ -21094,7 +21323,9 @@ def upload_imagen_qc_staff():
         return redirect("/?menu=allocations&submenu=imagen-qc-allocation")
 
     except Exception as e:
-        imagen_qc_processing_result = f"❌ Error uploading staff database file: {str(e)}"
+        imagen_qc_processing_result = (
+            f"❌ Error uploading staff database file: {str(e)}"
+        )
         flash(f"Error uploading staff database file: {str(e)}", "error")
         if "filename" in locals() and os.path.exists(filename):
             os.remove(filename)
@@ -21120,21 +21351,40 @@ def upload_imagen_qc_allocation_data():
         filename = secure_filename(file.filename)
         file.save(filename)
 
-        expected_cols = ["agent name", "appointment date", "office name", "patient name", "status code"]
+        expected_cols = [
+            "agent name",
+            "appointment date",
+            "office name",
+            "patient name",
+            "status code",
+        ]
 
         def sheet_has_expected_columns(df):
             cols_lower = [str(c).strip().lower() for c in df.columns]
-            matches = sum(1 for ec in expected_cols if any(ec in cl for cl in cols_lower))
+            matches = sum(
+                1 for ec in expected_cols if any(ec in cl for cl in cols_lower)
+            )
             return matches >= 3
 
         def try_find_header_in_sheet(df, sheet_name_to_read):
             """Scan first 20 rows for the real header row containing expected column names."""
             for i in range(min(20, len(df))):
-                row_vals = [str(v).strip().lower() for v in df.iloc[i].values if pd.notna(v)]
-                matches = sum(1 for ec in expected_cols if any(ec in rv for rv in row_vals))
+                row_vals = [
+                    str(v).strip().lower() for v in df.iloc[i].values if pd.notna(v)
+                ]
+                matches = sum(
+                    1 for ec in expected_cols if any(ec in rv for rv in row_vals)
+                )
                 if matches >= 3:
-                    reread_df = pd.read_excel(filename, sheet_name=sheet_name_to_read, header=i + 1, parse_dates=False)
-                    print(f"[Imagen QC] Auto-detected header at row {i + 2} in sheet '{sheet_name_to_read}', columns: {list(reread_df.columns)}")
+                    reread_df = pd.read_excel(
+                        filename,
+                        sheet_name=sheet_name_to_read,
+                        header=i + 1,
+                        parse_dates=False,
+                    )
+                    print(
+                        f"[Imagen QC] Auto-detected header at row {i + 2} in sheet '{sheet_name_to_read}', columns: {list(reread_df.columns)}"
+                    )
                     return reread_df
             return None
 
@@ -21148,7 +21398,9 @@ def upload_imagen_qc_allocation_data():
             if sheet_has_expected_columns(sheet_df):
                 df = sheet_df
                 matched_sheet = sheet_name
-                print(f"[Imagen QC] Found matching sheet: '{sheet_name}' (direct column match)")
+                print(
+                    f"[Imagen QC] Found matching sheet: '{sheet_name}' (direct column match)"
+                )
                 break
 
         # Pass 2: if no direct match, scan rows for header in each sheet
@@ -21167,7 +21419,10 @@ def upload_imagen_qc_allocation_data():
                 f"Sheets in file: [{all_sheet_names}]"
             )
 
-        flash(f"✅ QC Allocation Data file uploaded successfully! Using sheet: '{matched_sheet}'", "success")
+        flash(
+            f"✅ QC Allocation Data file uploaded successfully! Using sheet: '{matched_sheet}'",
+            "success",
+        )
         imagen_qc_allocation_data = df
         imagen_qc_allocation_filename = filename
         imagen_qc_processing_result = None
@@ -21181,14 +21436,18 @@ def upload_imagen_qc_allocation_data():
         return redirect("/?menu=allocations&submenu=imagen-qc-allocation")
 
     except Exception as e:
-        imagen_qc_processing_result = f"❌ Error uploading QC allocation data file: {str(e)}"
+        imagen_qc_processing_result = (
+            f"❌ Error uploading QC allocation data file: {str(e)}"
+        )
         flash(f"Error uploading QC allocation data file: {str(e)}", "error")
         if "filename" in locals() and os.path.exists(filename):
             os.remove(filename)
         return redirect("/?menu=allocations&submenu=imagen-qc-allocation")
 
 
-def match_imagen_qc_allocation(allocation_df, staff_df, priority_dates=None, override_map=None):
+def match_imagen_qc_allocation(
+    allocation_df, staff_df, priority_dates=None, override_map=None
+):
     """
     Multi-pass matching for Imagen QC Allocation with per-auditor situational override and priority dates.
 
@@ -21220,12 +21479,18 @@ def match_imagen_qc_allocation(allocation_df, staff_df, priority_dates=None, ove
     result_df["Auditor"] = ""
 
     staff_auditor_col = find_col(staff_df, ["Auditors", "Auditor", "Auditor Name"])
-    staff_pref1_col = find_col(staff_df, ["Agent Preference 1", "AgentPreference1", "Preference 1", "Pref 1"])
-    staff_pref2_col = find_col(staff_df, ["Agent Preference 2", "AgentPreference2", "Preference 2", "Pref 2"])
+    staff_pref1_col = find_col(
+        staff_df, ["Agent Preference 1", "AgentPreference1", "Preference 1", "Pref 1"]
+    )
+    staff_pref2_col = find_col(
+        staff_df, ["Agent Preference 2", "AgentPreference2", "Preference 2", "Pref 2"]
+    )
     staff_cc_col = find_col(staff_df, ["CC", "Count", "Capacity"])
 
     alloc_agent_col = find_col(allocation_df, ["Agent Name", "AgentName", "Agent"])
-    alloc_date_col = find_col(allocation_df, ["Appointment Date", "Appt Date", "AppointmentDate", "Date"])
+    alloc_date_col = find_col(
+        allocation_df, ["Appointment Date", "Appt Date", "AppointmentDate", "Date"]
+    )
 
     staff_cols_str = ", ".join([f'"{str(c)}"' for c in staff_df.columns.tolist()])
     alloc_cols_str = ", ".join([f'"{str(c)}"' for c in allocation_df.columns.tolist()])
@@ -21253,8 +21518,12 @@ def match_imagen_qc_allocation(allocation_df, staff_df, priority_dates=None, ove
 
     staff_status_col = find_col(staff_df, ["Status"])
 
-    print(f"[Imagen QC] Staff columns mapped: Auditors='{staff_auditor_col}', Pref1='{staff_pref1_col}', Pref2='{staff_pref2_col}', CC='{staff_cc_col}', Status='{staff_status_col}'")
-    print(f"[Imagen QC] Allocation columns mapped: Agent Name='{alloc_agent_col}', Appointment Date='{alloc_date_col}'")
+    print(
+        f"[Imagen QC] Staff columns mapped: Auditors='{staff_auditor_col}', Pref1='{staff_pref1_col}', Pref2='{staff_pref2_col}', CC='{staff_cc_col}', Status='{staff_status_col}'"
+    )
+    print(
+        f"[Imagen QC] Allocation columns mapped: Agent Name='{alloc_agent_col}', Appointment Date='{alloc_date_col}'"
+    )
 
     # Parse appointment dates and split into priority vs non-priority
     parsed_dates = pd.to_datetime(allocation_df[alloc_date_col], errors="coerce")
@@ -21282,9 +21551,18 @@ def match_imagen_qc_allocation(allocation_df, staff_df, priority_dates=None, ove
     # Sort priority indices by date ascending (nearest first)
     priority_indices.sort(key=lambda i: parsed_dates.get(i, pd.NaT))
     # Sort non-priority indices by date descending (most recent first)
-    nonpriority_indices.sort(key=lambda i: parsed_dates.get(i, pd.NaT) if pd.notna(parsed_dates.get(i)) else pd.Timestamp.min, reverse=True)
+    nonpriority_indices.sort(
+        key=lambda i: (
+            parsed_dates.get(i, pd.NaT)
+            if pd.notna(parsed_dates.get(i))
+            else pd.Timestamp.min
+        ),
+        reverse=True,
+    )
 
-    print(f"[Imagen QC] Date split: {len(priority_indices)} priority rows, {len(nonpriority_indices)} non-priority rows ({len(priority_date_set)} priority dates selected)")
+    print(
+        f"[Imagen QC] Date split: {len(priority_indices)} priority rows, {len(nonpriority_indices)} non-priority rows ({len(priority_date_set)} priority dates selected)"
+    )
 
     # Build auditor tracker
     auditor_tracker = []
@@ -21310,23 +21588,33 @@ def match_imagen_qc_allocation(allocation_df, staff_df, priority_dates=None, ove
         pref1_raw = str(row[staff_pref1_col]).strip()
         pref2_raw = str(row[staff_pref2_col]).strip()
 
-        pref1_list = [v.strip().lower() for v in pref1_raw.split(",") if v.strip()] if pref1_raw.lower() != "nan" else []
-        pref2_list = [v.strip().lower() for v in pref2_raw.split(",") if v.strip()] if pref2_raw.lower() != "nan" else []
+        pref1_list = (
+            [v.strip().lower() for v in pref1_raw.split(",") if v.strip()]
+            if pref1_raw.lower() != "nan"
+            else []
+        )
+        pref2_list = (
+            [v.strip().lower() for v in pref2_raw.split(",") if v.strip()]
+            if pref2_raw.lower() != "nan"
+            else []
+        )
 
-        auditor_tracker.append({
-            "name": auditor_name,
-            "cc_limit": cc_limit,
-            "current_count": 0,
-            "pref1_count": 0,
-            "pref2_count": 0,
-            "override_count": 0,
-            "priority_count": 0,
-            "nonpriority_count": 0,
-            "pref1_list": pref1_list,
-            "pref2_list": pref2_list,
-            "pref1_display": pref1_raw if pref1_raw.lower() != "nan" else "—",
-            "pref2_display": pref2_raw if pref2_raw.lower() != "nan" else "—",
-        })
+        auditor_tracker.append(
+            {
+                "name": auditor_name,
+                "cc_limit": cc_limit,
+                "current_count": 0,
+                "pref1_count": 0,
+                "pref2_count": 0,
+                "override_count": 0,
+                "priority_count": 0,
+                "nonpriority_count": 0,
+                "pref1_list": pref1_list,
+                "pref2_list": pref2_list,
+                "pref1_display": pref1_raw if pref1_raw.lower() != "nan" else "—",
+                "pref2_display": pref2_raw if pref2_raw.lower() != "nan" else "—",
+            }
+        )
 
     matched_pref1 = 0
     matched_pref2 = 0
@@ -21369,11 +21657,21 @@ def match_imagen_qc_allocation(allocation_df, staff_df, priority_dates=None, ove
                     break
         return count
 
-    # --- Pass 0: Situational Override (highest priority, per-auditor dates) ---
+    # --- Pass 0: Situational Override (highest priority, per-auditor agents + dates) ---
+    # override_map format: {auditor_name: {agents: [...], dates: [...]}} or legacy {auditor_name: [dates]}
     override_active = override_map and len(override_map) > 0
     if override_active:
-        for override_auditor_name, override_date_list in override_map.items():
-            if not override_date_list:
+        for override_auditor_name, override_config in override_map.items():
+            if isinstance(override_config, dict):
+                override_agent_list = override_config.get("agents", [])
+                override_date_list = override_config.get("dates", [])
+            else:
+                override_agent_list = []
+                override_date_list = (
+                    override_config if isinstance(override_config, list) else []
+                )
+
+            if not override_date_list or not override_agent_list:
                 continue
 
             auditor_name_lower = override_auditor_name.strip().lower()
@@ -21383,8 +21681,14 @@ def match_imagen_qc_allocation(allocation_df, staff_df, priority_dates=None, ove
                     target_auditor = a
                     break
             if not target_auditor:
-                print(f"[Imagen QC] Override: auditor '{override_auditor_name}' not found in tracker, skipping")
+                print(
+                    f"[Imagen QC] Override: auditor '{override_auditor_name}' not found in tracker, skipping"
+                )
                 continue
+
+            override_agents_lower = set(
+                a.strip().lower() for a in override_agent_list if a.strip()
+            )
 
             auditor_date_set = set()
             for d_str in override_date_list:
@@ -21399,36 +21703,58 @@ def match_imagen_qc_allocation(allocation_df, staff_df, priority_dates=None, ove
                 continue
 
             override_indices = []
+            date_match_count = 0
+            agent_match_count = 0
             for idx in allocation_df.index:
                 dt = parsed_dates.get(idx)
-                if pd.notna(dt) and dt.normalize() in auditor_date_set:
+                agent_val = str(allocation_df.at[idx, alloc_agent_col]).strip().lower()
+                date_matches = pd.notna(dt) and dt.normalize() in auditor_date_set
+                agent_matches = agent_val in override_agents_lower
+                if date_matches:
+                    date_match_count += 1
+                if agent_matches:
+                    agent_match_count += 1
+                if date_matches and agent_matches:
                     override_indices.append(idx)
 
             override_indices.sort(key=lambda i: parsed_dates.get(i, pd.NaT))
-            print(f"[Imagen QC] Override: {len(override_indices)} candidate rows for auditor '{override_auditor_name}'")
+            print(
+                f"[Imagen QC] Override: {len(override_indices)} candidate rows for auditor '{override_auditor_name}' (agents: {override_agent_list}, dates: {override_date_list})",
+                flush=True,
+            )
+            print(
+                f"[Imagen QC] Override: date_set={auditor_date_set}, agents_lower={override_agents_lower}",
+                flush=True,
+            )
+            print(
+                f"[Imagen QC] Override: rows matching dates only={date_match_count}, rows matching agents only={agent_match_count}",
+                flush=True,
+            )
 
-            for pref_key in ["pref1_list", "pref2_list"]:
-                for idx in override_indices:
-                    if result_df.at[idx, "Auditor"] != "":
-                        continue
-                    if target_auditor["current_count"] >= target_auditor["cc_limit"]:
-                        break
-                    agent_name = str(allocation_df.at[idx, alloc_agent_col]).strip().lower()
-                    if not agent_name or agent_name == "nan":
-                        continue
-                    if agent_name in target_auditor[pref_key]:
-                        result_df.at[idx, "Auditor"] = target_auditor["name"]
-                        target_auditor["current_count"] += 1
-                        target_auditor["override_count"] += 1
-                        if pref_key == "pref1_list":
-                            target_auditor["pref1_count"] += 1
-                            matched_pref1 += 1
-                        else:
-                            target_auditor["pref2_count"] += 1
-                            matched_pref2 += 1
-                        override_matched += 1
+            for idx in override_indices:
+                if result_df.at[idx, "Auditor"] != "":
+                    continue
+                if target_auditor["current_count"] >= target_auditor["cc_limit"]:
+                    break
+                agent_name = str(allocation_df.at[idx, alloc_agent_col]).strip().lower()
+                if not agent_name or agent_name == "nan":
+                    continue
+                if (
+                    agent_name in target_auditor["pref1_list"]
+                    or agent_name in target_auditor["pref2_list"]
+                ):
+                    result_df.at[idx, "Auditor"] = target_auditor["name"]
+                    target_auditor["current_count"] += 1
+                    target_auditor["override_count"] += 1
+                    if agent_name in target_auditor["pref1_list"]:
+                        target_auditor["pref1_count"] += 1
+                        matched_pref1 += 1
+                    else:
+                        target_auditor["pref2_count"] += 1
+                        matched_pref2 += 1
+                    override_matched += 1
 
-        print(f"[Imagen QC] Override total matched: {override_matched}")
+        print(f"[Imagen QC] Override total matched: {override_matched}", flush=True)
 
     # Pass 1: Priority rows → Preference 1
     assign_rows(priority_indices, "pref1_list", True)
@@ -21441,7 +21767,19 @@ def match_imagen_qc_allocation(allocation_df, staff_df, priority_dates=None, ove
 
     unmatched_count = len(result_df[result_df["Auditor"] == ""])
 
-    return result_df, matched_pref1, matched_pref2, unmatched_count, auditor_tracker, priority_matched, nonpriority_matched, len(priority_indices), len(nonpriority_indices), skipped_auditors, override_matched
+    return (
+        result_df,
+        matched_pref1,
+        matched_pref2,
+        unmatched_count,
+        auditor_tracker,
+        priority_matched,
+        nonpriority_matched,
+        len(priority_indices),
+        len(nonpriority_indices),
+        skipped_auditors,
+        override_matched,
+    )
 
 
 @app.route("/process_imagen_qc_allocation", methods=["POST"])
@@ -21460,6 +21798,7 @@ def process_imagen_qc_allocation():
 
     try:
         import time
+
         start_time = time.time()
 
         if not isinstance(imagen_qc_staff_data, pd.DataFrame):
@@ -21475,6 +21814,7 @@ def process_imagen_qc_allocation():
 
         # Get per-auditor situational override data (JSON: {"AuditorName": ["date1","date2"], ...})
         import json as json_module
+
         override_data_str = request.form.get("override_data", "")
         override_map = {}
         if override_data_str:
@@ -21482,11 +21822,30 @@ def process_imagen_qc_allocation():
                 override_map = json_module.loads(override_data_str)
             except Exception:
                 override_map = {}
-        print(f"[Imagen QC] Override map: {override_map}")
+        import sys
 
-        result_df, matched_pref1, matched_pref2, unmatched_count, auditor_tracker, future_matched, past_matched, total_future, total_past, skipped_auditors, override_matched = match_imagen_qc_allocation(
-            imagen_qc_allocation_data, imagen_qc_staff_data, priority_dates,
-            override_map=override_map
+        print(f"[Imagen QC] Override map: {override_map}", flush=True)
+        print(
+            f"[Imagen QC] Override data raw string: '{override_data_str}'", flush=True
+        )
+
+        (
+            result_df,
+            matched_pref1,
+            matched_pref2,
+            unmatched_count,
+            auditor_tracker,
+            future_matched,
+            past_matched,
+            total_future,
+            total_past,
+            skipped_auditors,
+            override_matched,
+        ) = match_imagen_qc_allocation(
+            imagen_qc_allocation_data,
+            imagen_qc_staff_data,
+            priority_dates,
+            override_map=override_map,
         )
 
         imagen_qc_allocation_data = result_df
@@ -21497,9 +21856,16 @@ def process_imagen_qc_allocation():
         override_info = ""
         if override_map and override_matched > 0:
             override_details = []
-            for aud_name, aud_dates in override_map.items():
-                if aud_dates:
-                    override_details.append(f'{aud_name} ({", ".join(aud_dates)})')
+            for aud_name, aud_config in override_map.items():
+                if isinstance(aud_config, dict):
+                    agents = aud_config.get("agents", [])
+                    dates = aud_config.get("dates", [])
+                    if agents and dates:
+                        override_details.append(
+                            f'{aud_name}: agents [{", ".join(agents)}] on {", ".join(dates)}'
+                        )
+                elif aud_config:
+                    override_details.append(f'{aud_name} ({", ".join(aud_config)})')
             override_info = f'<br><b>🎯 Situational Override:</b> {override_matched} rows assigned — {"; ".join(override_details)}<br>'
 
         # Build skipped auditors info
@@ -21541,9 +21907,9 @@ def process_imagen_qc_allocation():
             '<th style="padding:8px 10px;text-align:center;">Non-Priority</th>'
             '<th style="padding:8px 10px;text-align:left;">Agent Preference 1</th>'
             '<th style="padding:8px 10px;text-align:left;">Agent Preference 2</th>'
-            '</tr></thead><tbody>'
+            "</tr></thead><tbody>"
             + "".join(auditor_summary_rows)
-            + '</tbody></table></div>'
+            + "</tbody></table></div>"
         )
 
         imagen_qc_processing_result = f"""✅ Imagen QC Allocation processing completed successfully!
@@ -21570,8 +21936,11 @@ def process_imagen_qc_allocation():
 
     except Exception as e:
         import traceback
+
         error_trace = traceback.format_exc()
-        imagen_qc_processing_result = f"❌ Error processing Imagen QC Allocation: {str(e)}\n\n{error_trace}"
+        imagen_qc_processing_result = (
+            f"❌ Error processing Imagen QC Allocation: {str(e)}\n\n{error_trace}"
+        )
         flash(f"Error processing Imagen QC Allocation: {str(e)}", "error")
         print(f"Imagen QC Allocation Processing Error: {error_trace}")
         return redirect(f"/?menu={current_menu}&submenu={current_submenu}")
@@ -21623,7 +21992,7 @@ def download_imagen_qc_allocation():
                 temp_path,
                 as_attachment=True,
                 download_name=filename,
-                mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             )
         finally:
             os.close(temp_fd)
@@ -21632,6 +22001,7 @@ def download_imagen_qc_allocation():
 
     except Exception as e:
         import traceback
+
         error_trace = traceback.format_exc()
         flash(f"Error downloading Imagen QC Allocation file: {str(e)}", "error")
         print(f"Imagen QC Allocation Download Error: {error_trace}")

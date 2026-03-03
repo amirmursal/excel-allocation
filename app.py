@@ -5171,7 +5171,6 @@ HTML_TEMPLATE = """
                     body: formData
                 })
                 .then(response => {
-                    console.log('Response status:', response.status);
                     const contentType = response.headers.get('content-type') || '';
                     
                     // Check if it's a JSON response (success or error)
@@ -5314,10 +5313,6 @@ HTML_TEMPLATE = """
             shiftSelect.style.appearance = 'menulist';
             shiftSelect.setAttribute('tabindex', '0');
             
-            console.log('Loading shifts...');
-            console.log('Shift select element:', shiftSelect);
-            console.log('Is disabled?', shiftSelect.disabled);
-            
             fetch('/get_shifts')
                 .then(response => {
                     if (!response.ok) {
@@ -5326,9 +5321,7 @@ HTML_TEMPLATE = """
                     return response.json();
                 })
                 .then(data => {
-                    console.log('Shifts data received:', data);
                     if (data.error) {
-                        console.log('No shifts available:', data.error);
                         // Show error in dropdown
                         shiftSelect.innerHTML = '<option value="">-- ' + data.error + ' --</option>';
                         return;
@@ -5347,8 +5340,6 @@ HTML_TEMPLATE = """
                             option.textContent = shift.label;
                             shiftSelect.appendChild(option);
                         });
-                        console.log('Loaded', data.shifts.length, 'shifts into dropdown');
-                        console.log('Dropdown now has', shiftSelect.options.length, 'options');
                         
                         // Ensure dropdown is still enabled after populating
                         shiftSelect.disabled = false;
@@ -5397,16 +5388,10 @@ HTML_TEMPLATE = """
             shiftSelect.style.appearance = 'menulist';
             shiftSelect.setAttribute('tabindex', '0');
             
-            console.log('Setting up shift select handler');
-            console.log('Shift select element:', shiftSelect);
-            console.log('Is disabled?', shiftSelect.disabled);
-            console.log('Has options?', shiftSelect.options.length);
-            
             // Only attach handler once
             if (shiftSelectHandlerAttached) {
                 // Check if handler is still attached by checking for a data attribute
                 if (shiftSelect.dataset.handlerAttached === 'true') {
-                    console.log('Handler already attached, skipping');
                     return;
                 }
             }
@@ -5458,19 +5443,11 @@ HTML_TEMPLATE = """
                 const zIndex = window.getComputedStyle(el).zIndex;
                 if (zIndex && parseInt(zIndex) > 10000 && el.id !== 'shift-select' && !el.closest('#shift-select')) {
                     // Don't modify the shift-select itself or its parents
-                    if (!el.id.includes('shift') && !el.closest('.form-group')) {
-                        console.log('Found potential blocking element:', el.id || el.className, 'z-index:', zIndex);
-                    }
                 }
             });
             
             // Add mousedown handler to ensure dropdown opens (mousedown fires before click)
             shiftSelect.addEventListener('mousedown', function(e) {
-                console.log('Shift dropdown mousedown!', e);
-                console.log('Current value:', this.value);
-                console.log('Options count:', this.options.length);
-                console.log('Is disabled?', this.disabled);
-                
                 // Ensure it's enabled - critical for dropdown to open
                 this.disabled = false;
                 this.removeAttribute('disabled');
@@ -5484,8 +5461,6 @@ HTML_TEMPLATE = """
             
             // Add click handler for debugging
             shiftSelect.addEventListener('click', function(e) {
-                console.log('Shift dropdown clicked!', e);
-                console.log('Is disabled after click?', this.disabled);
                 // Ensure still enabled
                 this.disabled = false;
                 this.removeAttribute('disabled');
@@ -5493,7 +5468,6 @@ HTML_TEMPLATE = """
             
             // Attach change event listener
             shiftSelect.addEventListener('change', function() {
-                console.log('Shift selected:', this.value);
                 const selectedShift = this.value;
                 const agentExclusionContainer = document.getElementById('agent-exclusion-container');
                 const excludeAgentsSelect = document.getElementById('exclude-agents');
@@ -5556,12 +5530,9 @@ HTML_TEMPLATE = """
         
         // Call setup when Imagen Allocation content is shown
         function initializeImageAllocationContent() {
-            console.log('Initializing Imagen Allocation content');
-            
             // Ensure loader is not blocking - make it non-interactive
             const loader = document.getElementById('loader-overlay');
             if (loader) {
-                console.log('Loader found, ensuring it does not block dropdown');
                 loader.classList.remove('show');
                 loader.style.pointerEvents = 'none';
                 loader.style.zIndex = '1';
@@ -18444,6 +18415,35 @@ def process_ev_allocation():
 
         matched_count = 0
         unmatched_count = 0
+        agent_stats = {}
+
+        # Build agent criteria lookup from staff data
+        def find_column(df, possible_names):
+            for col in df.columns:
+                col_lower = str(col).strip().lower()
+                for name in possible_names:
+                    if name.lower() in col_lower:
+                        return col
+            return None
+
+        staff_agent_col = find_column(ev_staff_data, ["Agent Name", "Agent"])
+        staff_office_col = find_column(ev_staff_data, ["Office/Doctor Name", "Office", "Doctor Name"])
+        staff_system_col = find_column(ev_staff_data, ["System"])
+        staff_reference_col = find_column(ev_staff_data, ["Reference"])
+        staff_source_col = find_column(ev_staff_data, ["Source"])
+
+        if staff_agent_col:
+            for _, srow in ev_staff_data.iterrows():
+                aname = str(srow[staff_agent_col]).strip() if pd.notna(srow[staff_agent_col]) else ""
+                if not aname or aname.lower() == "nan":
+                    continue
+                agent_stats[aname] = {
+                    "count": 0,
+                    "office": str(srow[staff_office_col]).strip() if staff_office_col and pd.notna(srow[staff_office_col]) else "—",
+                    "system": str(srow[staff_system_col]).strip() if staff_system_col and pd.notna(srow[staff_system_col]) else "—",
+                    "reference": str(srow[staff_reference_col]).strip() if staff_reference_col and pd.notna(srow[staff_reference_col]) else "—",
+                    "source": str(srow[staff_source_col]).strip() if staff_source_col and pd.notna(srow[staff_source_col]) else "—",
+                }
 
         # Process each allocation row
         for idx, row in ev_allocation_data.iterrows():
@@ -18451,6 +18451,10 @@ def process_ev_allocation():
             if agent_name:
                 result_df.at[idx, "Agent Name"] = agent_name
                 matched_count += 1
+                if agent_name in agent_stats:
+                    agent_stats[agent_name]["count"] += 1
+                else:
+                    agent_stats[agent_name] = {"count": 1, "office": "—", "system": "—", "reference": "—", "source": "—"}
             else:
                 unmatched_count += 1
 
@@ -18459,14 +18463,48 @@ def process_ev_allocation():
 
         processing_time = time.time() - start_time
 
+        # Build agent summary table
+        agent_summary_rows = []
+        for i, (aname, stats) in enumerate(agent_stats.items()):
+            bg = "#f8f9fa" if i % 2 else "#fff"
+            td = 'style="padding:8px 10px;"'
+            td_c = 'style="padding:8px 10px;text-align:center;"'
+            agent_summary_rows.append(
+                f'<tr style="border-bottom:1px solid #e9ecef;background:{bg};">'
+                f'<td {td}>{aname}</td>'
+                f'<td {td_c}>{stats["count"]}</td>'
+                f'<td {td}>{stats["office"]}</td>'
+                f'<td {td}>{stats["system"]}</td>'
+                f'<td {td}>{stats["reference"]}</td>'
+                f'<td {td}>{stats["source"]}</td></tr>'
+            )
+
+        agent_summary_table = (
+            '<div style="overflow-x:auto;margin-top:10px;">'
+            '<table style="width:100%;border-collapse:collapse;font-size:13px;border-radius:8px;overflow:hidden;box-shadow:0 2px 4px rgba(0,0,0,0.1);">'
+            '<thead><tr style="background:linear-gradient(135deg,#667eea 0%,#764ba2 100%);color:#fff;">'
+            '<th style="padding:8px 10px;text-align:left;">Agent Name</th>'
+            '<th style="padding:8px 10px;text-align:center;">Assigned</th>'
+            '<th style="padding:8px 10px;text-align:left;">Office/Doctor Name</th>'
+            '<th style="padding:8px 10px;text-align:left;">System</th>'
+            '<th style="padding:8px 10px;text-align:left;">Reference</th>'
+            '<th style="padding:8px 10px;text-align:left;">Source</th>'
+            '</tr></thead><tbody>'
+            + "".join(agent_summary_rows)
+            + '</tbody></table></div>'
+        )
+
         ev_processing_result = f"""✅ EV Allocation processing completed successfully!
-
-📊 Processing Statistics:
-- Total rows processed: {len(ev_allocation_data)}
-- Matched rows: {matched_count}
-- Unmatched rows: {unmatched_count}
-- Processing time: {processing_time:.2f}s
-
+<br><br>
+<b>📊 Processing Statistics:</b><br>
+- Total rows processed: {len(ev_allocation_data)}<br>
+- Matched rows: {matched_count}<br>
+- Unmatched rows: {unmatched_count}<br>
+- Processing time: {processing_time:.2f}s<br>
+<br>
+<b>👥 Agent Summary:</b>
+{agent_summary_table}
+<br>
 💾 Ready to download the processed result file!"""
 
         flash("EV Allocation processed successfully!", "success")
@@ -21968,6 +22006,35 @@ def download_imagen_qc_allocation():
 
         try:
             export_df = imagen_qc_allocation_data.copy()
+
+            # Remove "Unnamed" columns
+            unnamed_cols = [c for c in export_df.columns if str(c).strip().lower().startswith("unnamed")]
+            if unnamed_cols:
+                export_df = export_df.drop(columns=unnamed_cols)
+
+            # Ensure "Plan Number" column exists right after "Plan Name"
+            plan_name_col = None
+            for col in export_df.columns:
+                if str(col).strip().lower() == "plan name":
+                    plan_name_col = col
+                    break
+            if plan_name_col is not None:
+                plan_num_exists = any(str(c).strip().lower() == "plan number" for c in export_df.columns)
+                if not plan_num_exists:
+                    plan_name_idx = list(export_df.columns).index(plan_name_col)
+                    export_df.insert(plan_name_idx + 1, "Plan Number", "")
+                else:
+                    plan_num_col = None
+                    for c in export_df.columns:
+                        if str(c).strip().lower() == "plan number":
+                            plan_num_col = c
+                            break
+                    if plan_num_col:
+                        cols = list(export_df.columns)
+                        cols.remove(plan_num_col)
+                        plan_name_idx = cols.index(plan_name_col)
+                        cols.insert(plan_name_idx + 1, plan_num_col)
+                        export_df = export_df[cols]
 
             # Find all date columns and convert to MM/DD/YYYY string format
             for col in export_df.columns:

@@ -831,6 +831,13 @@ imagen_qc_allocation_filename = None
 imagen_qc_processing_result = None
 imagen_qc_selected_dates = None
 
+# NH Allocation data storage
+nh_staff_data = None
+nh_staff_filename = None
+nh_allocation_data = None
+nh_allocation_filename = None
+nh_processing_result = None
+
 # Day Shift and Night Shift data storage (using global variables like allocation/data files)
 day_shift_allocation_data = None
 day_shift_allocation_filename = None
@@ -2582,6 +2589,7 @@ HTML_TEMPLATE = """
                 'ev-allocation': 'EV Allocation',
                 'dental-bv-allocation': 'Dental BV Allocation',
                 'imagen-qc-allocation': 'Imagen QC Allocation',
+                'nh-allocation': 'NH Allocation',
                 'day-shift': 'Day Shift',
                 'night-shift': 'Night Shift',
                 'ntbp': 'NTBP',
@@ -2650,6 +2658,11 @@ HTML_TEMPLATE = """
                     <li>
                         <div class="submenu-item {% if current_submenu == 'imagen-qc-allocation' %}active{% endif %}" onclick="switchAdminMenu('allocations', 'imagen-qc-allocation')">
                             <i class="fas fa-check-double"></i> Imagen QC Allocation
+                        </div>
+                    </li>
+                    <li>
+                        <div class="submenu-item {% if current_submenu == 'nh-allocation' %}active{% endif %}" onclick="switchAdminMenu('allocations', 'nh-allocation')">
+                            <i class="fas fa-hospital"></i> NH Allocation
                         </div>
                     </li>
                 </ul>
@@ -3322,6 +3335,78 @@ HTML_TEMPLATE = """
                     </form>
                 </div>
 
+                </div>
+
+                <!-- NH Allocation Content -->
+                <div id="nh-allocation-content" class="admin-menu-content" style="display: {% if current_menu == 'allocations' and current_submenu == 'nh-allocation' %}block{% else %}none{% endif %};">
+                    <div class="upload-grid">
+                        <div class="upload-card">
+                            <form action="/upload_nh_staff" method="post" enctype="multipart/form-data" id="nh-staff-form">
+                                <div class="form-group">
+                                    <input type="file" id="nh_staff_file" name="file" accept=".xlsx,.xls" required>
+                                </div>
+                                <button type="submit" id="nh-staff-btn">📤 Upload Staff Database</button>
+                            </form>
+                            {% if nh_staff_filename %}
+                            <div style="margin-top: 10px; padding: 8px; background: #e7f3ff; border-radius: 5px; font-size: 12px; color: #004085;">
+                                <i class="fas fa-check-circle"></i> Uploaded: {{ nh_staff_filename }}
+                            </div>
+                            {% endif %}
+                        </div>
+
+                        <div class="upload-card">
+                            <form action="/upload_nh_allocation" method="post" enctype="multipart/form-data" id="nh-allocation-form">
+                                <div class="form-group">
+                                    <input type="file" id="nh_allocation_file" name="file" accept=".xlsx,.xls" required>
+                                </div>
+                                <button type="submit" id="nh-allocation-btn">📤 Upload Allocation File</button>
+                            </form>
+                            {% if nh_allocation_filename %}
+                            <div style="margin-top: 10px; padding: 8px; background: #e7f3ff; border-radius: 5px; font-size: 12px; color: #004085;">
+                                <i class="fas fa-check-circle"></i> Uploaded: {{ nh_allocation_filename }}
+                            </div>
+                            {% endif %}
+                        </div>
+                    </div>
+
+                    {% if nh_staff_filename and nh_allocation_filename %}
+                    <div class="section" style="text-align: left;">
+                        <form action="/process_nh_allocation" method="post" id="nh-process-form">
+                            <input type="hidden" name="current_menu" value="allocations">
+                            <input type="hidden" name="current_submenu" value="nh-allocation">
+                            <button type="submit" class="process-btn" id="nh-process-btn">
+                                <i class="fas fa-cogs"></i> Process NH Allocation
+                            </button>
+                        </form>
+                    </div>
+                    {% endif %}
+
+                    {% if nh_processing_result %}
+                    <div class="section" style="margin-top: 20px;">
+                        <div style="background: #f8f9fa; border-radius: 8px; padding: 20px; border: 1px solid #e9ecef;">
+                            {{ nh_processing_result|safe }}
+                        </div>
+                    </div>
+                    <div class="section" style="text-align: left;">
+                        <form action="/download_nh_allocation" method="post">
+                            <input type="hidden" name="current_menu" value="allocations">
+                            <input type="hidden" name="current_submenu" value="nh-allocation">
+                            <button type="submit" class="process-btn" style="background: linear-gradient(135deg, #27ae60, #2ecc71);">
+                                <i class="fas fa-download"></i> Download Allocated File
+                            </button>
+                        </form>
+                    </div>
+                    {% endif %}
+
+                    <div class="section" style="margin-top: 40px; border-top: 2px solid #e9ecef; padding-top: 20px; text-align: left;">
+                        <form action="/reset_nh_allocation" method="post" onsubmit="return confirm('Are you sure you want to reset NH Allocation?')">
+                            <input type="hidden" name="current_menu" value="allocations">
+                            <input type="hidden" name="current_submenu" value="nh-allocation">
+                            <button type="submit" class="process-btn" style="background: linear-gradient(135deg, #e74c3c, #c0392b);">
+                                <i class="fas fa-redo"></i> Reset Allocation
+                            </button>
+                        </form>
+                    </div>
                 </div>
                 
                 <!-- Email Allocation Content -->
@@ -17235,6 +17320,7 @@ def index():
     global ev_staff_data, ev_staff_filename, ev_allocation_data, ev_allocation_filename, ev_processing_result
     global dental_bv_staff_data, dental_bv_staff_filename, dental_bv_allocation_data, dental_bv_allocation_filename, dental_bv_processing_result
     global imagen_qc_staff_data, imagen_qc_staff_filename, imagen_qc_allocation_data, imagen_qc_allocation_filename, imagen_qc_processing_result
+    global nh_staff_data, nh_staff_filename, nh_allocation_data, nh_allocation_filename, nh_processing_result
 
     # Get current user
     user = get_user_by_username(session.get("user_id"))
@@ -17329,6 +17415,9 @@ def index():
         imagen_qc_auditor_list=_get_imagen_qc_auditors(),
         imagen_qc_all_dates=_get_imagen_qc_all_dates(),
         imagen_qc_auditor_agents=_get_imagen_qc_auditor_agents(),
+        nh_staff_filename=nh_staff_filename,
+        nh_allocation_filename=nh_allocation_filename,
+        nh_processing_result=nh_processing_result,
         current_menu=current_menu,
         current_submenu=current_submenu,
     )
@@ -27189,6 +27278,410 @@ def reset_imagen_qc_allocation():
     imagen_qc_selected_dates = None
     flash("✅ Imagen QC Allocation has been reset successfully!", "success")
     return redirect("/?menu=allocations&submenu=imagen-qc-allocation")
+
+
+# ============================================================================
+# NH Allocation Routes
+# ============================================================================
+
+@app.route("/upload_nh_staff", methods=["POST"])
+@admin_required
+def upload_nh_staff():
+    global nh_staff_data, nh_staff_filename, nh_processing_result
+    if "file" not in request.files:
+        flash("No file provided", "error")
+        return redirect("/?menu=allocations&submenu=nh-allocation")
+    file = request.files["file"]
+    if file.filename == "":
+        flash("No file selected", "error")
+        return redirect("/?menu=allocations&submenu=nh-allocation")
+    try:
+        filename = secure_filename(file.filename)
+        file.save(filename)
+        all_sheets = pd.read_excel(filename, sheet_name=None, parse_dates=False)
+        target_sheet = None
+        for sn in all_sheets:
+            if str(sn).strip().lower() == "main":
+                target_sheet = sn
+                break
+        df = all_sheets[target_sheet] if target_sheet else list(all_sheets.values())[0]
+        if not target_sheet:
+            flash(f"'Main' sheet not found, using first sheet: '{list(all_sheets.keys())[0]}'", "warning")
+
+        required = ["agent name"]
+        cols_lower = [str(c).strip().lower() for c in df.columns]
+        missing = [r for r in required if r not in cols_lower]
+        if missing:
+            flash(f"Missing required columns: {', '.join(missing)}. Found: {list(df.columns)}", "error")
+            if os.path.exists(filename):
+                os.remove(filename)
+            return redirect("/?menu=allocations&submenu=nh-allocation")
+
+        nh_staff_data = df
+        nh_staff_filename = filename
+        nh_processing_result = None
+        flash("✅ NH Staff Database uploaded successfully!", "success")
+        if os.path.exists(filename):
+            os.remove(filename)
+    except Exception as e:
+        flash(f"Error: {str(e)}", "error")
+    return redirect("/?menu=allocations&submenu=nh-allocation")
+
+
+@app.route("/upload_nh_allocation", methods=["POST"])
+@admin_required
+def upload_nh_allocation():
+    global nh_allocation_data, nh_allocation_filename, nh_processing_result
+    if "file" not in request.files:
+        flash("No file provided", "error")
+        return redirect("/?menu=allocations&submenu=nh-allocation")
+    file = request.files["file"]
+    if file.filename == "":
+        flash("No file selected", "error")
+        return redirect("/?menu=allocations&submenu=nh-allocation")
+    try:
+        filename = secure_filename(file.filename)
+        file.save(filename)
+
+        all_sheets = pd.read_excel(filename, sheet_name=None, parse_dates=False)
+        target_sheet = None
+        target_df = None
+        expected_cols = ["office", "insurance"]
+        for sn, sdf in all_sheets.items():
+            sdf_cols_lower = [str(c).strip().lower() for c in sdf.columns]
+            if all(ec in sdf_cols_lower for ec in expected_cols):
+                target_sheet = sn
+                target_df = sdf
+                break
+            for skip_rows in range(1, 15):
+                try:
+                    test_df = pd.read_excel(filename, sheet_name=sn, header=skip_rows, parse_dates=False)
+                    test_cols_lower = [str(c).strip().lower() for c in test_df.columns]
+                    if all(ec in test_cols_lower for ec in expected_cols):
+                        target_sheet = sn
+                        target_df = test_df
+                        break
+                except Exception:
+                    continue
+            if target_sheet:
+                break
+
+        if target_df is None:
+            flash(f"Could not find 'Office' and 'Insurance' columns in any sheet. Sheets: {list(all_sheets.keys())}", "error")
+            if os.path.exists(filename):
+                os.remove(filename)
+            return redirect("/?menu=allocations&submenu=nh-allocation")
+
+        nh_allocation_data = target_df
+        nh_allocation_filename = filename
+        nh_processing_result = None
+        flash(f"✅ NH Allocation file uploaded (sheet: '{target_sheet}', {len(target_df)} rows)!", "success")
+        if os.path.exists(filename):
+            os.remove(filename)
+    except Exception as e:
+        flash(f"Error: {str(e)}", "error")
+    return redirect("/?menu=allocations&submenu=nh-allocation")
+
+
+@app.route("/process_nh_allocation", methods=["POST"])
+@admin_required
+def process_nh_allocation():
+    global nh_staff_data, nh_allocation_data, nh_processing_result
+    try:
+        if nh_staff_data is None or nh_allocation_data is None:
+            flash("Please upload both files first.", "error")
+            return redirect("/?menu=allocations&submenu=nh-allocation")
+
+        staff_df = nh_staff_data.copy()
+        alloc_df = nh_allocation_data.copy()
+
+        # --- Find columns (case-insensitive) ---
+        def find_col(df, candidates):
+            for col in df.columns:
+                if str(col).strip().lower() in candidates:
+                    return col
+            return None
+
+        s_agent = find_col(staff_df, ["agent name"])
+        s_status = find_col(staff_df, ["status"])
+        s_tfd = find_col(staff_df, ["tfd"])
+        s_offices = find_col(staff_df, ["offices", "office"])
+        s_exceptions = find_col(staff_df, ["exceptions", "exception"])
+        s_insurance = find_col(staff_df, ["insurance preference", "insurance"])
+
+        a_office = find_col(alloc_df, ["office"])
+        a_insurance = find_col(alloc_df, ["insurance"])
+
+        if not s_agent:
+            raise ValueError("'Agent Name' column not found in staff database")
+        if not a_office:
+            raise ValueError("'Office' column not found in allocation file")
+        if not a_insurance:
+            raise ValueError("'Insurance' column not found in allocation file")
+
+        # --- Build agent list ---
+        agents = []
+        for _, row in staff_df.iterrows():
+            name = str(row[s_agent]).strip() if pd.notna(row[s_agent]) else ""
+            if not name or name.lower() == "nan":
+                continue
+
+            status = str(row[s_status]).strip().lower() if s_status and pd.notna(row[s_status]) else ""
+            if status == "no allocation":
+                continue
+
+            tfd = 0
+            if s_tfd and pd.notna(row[s_tfd]):
+                try:
+                    tfd = int(float(row[s_tfd]))
+                except (ValueError, TypeError):
+                    tfd = 0
+
+            offices_raw = str(row[s_offices]).strip() if s_offices and pd.notna(row[s_offices]) else ""
+            offices_list = [o.strip() for o in offices_raw.split(",") if o.strip()] if offices_raw and offices_raw.lower() != "nan" else []
+
+            exceptions_raw = str(row[s_exceptions]).strip() if s_exceptions and pd.notna(row[s_exceptions]) else ""
+            exceptions_list = [e.strip().lower() for e in exceptions_raw.split(",") if e.strip()] if exceptions_raw and exceptions_raw.lower() != "nan" else []
+
+            insurance_raw = str(row[s_insurance]).strip() if s_insurance and pd.notna(row[s_insurance]) else ""
+            insurance_list = [i.strip() for i in insurance_raw.split(",") if i.strip()] if insurance_raw and insurance_raw.lower() != "nan" else []
+
+            has_nadg = any("nadg" in o.lower() for o in offices_list)
+            nadg_offices = [o for o in offices_list if "nadg" in o.lower()]
+            non_nadg_offices = [o for o in offices_list if "nadg" not in o.lower()]
+
+            # Expand insurance groups (DD INS, DD Toolkit)
+            expanded_insurance = []
+            for ins in insurance_list:
+                ins_lower = ins.strip().lower()
+                if ins_lower in ("dd ins", "ins"):
+                    expanded_insurance.extend(DD_INS_GROUP)
+                elif ins_lower in ("dd toolkit", "dd toolkits"):
+                    expanded_insurance.extend(DD_TOOLKIT_GROUP)
+                elif ins_lower == "dd":
+                    expanded_insurance.extend(DD_TOOLKIT_GROUP)
+                else:
+                    expanded_insurance.append(ins)
+
+            agents.append({
+                "name": name,
+                "tfd": tfd,
+                "offices": offices_list,
+                "offices_lower": [o.lower() for o in offices_list],
+                "has_nadg": has_nadg,
+                "nadg_offices": nadg_offices,
+                "non_nadg_offices": non_nadg_offices,
+                "exceptions": exceptions_list,
+                "insurance_raw": insurance_list,
+                "insurance_expanded": expanded_insurance,
+                "insurance_lower": [i.lower() for i in expanded_insurance],
+                "all_offices": len(offices_list) == 0,
+                "all_insurance": len(insurance_list) == 0,
+                "assigned": 0,
+            })
+
+        # Add output column
+        alloc_df["Agent Name"] = ""
+
+        # --- Helper: check if row matches agent ---
+        def matches_office(agent, row_office_val):
+            row_office = str(row_office_val).strip().lower() if pd.notna(row_office_val) else ""
+            if not row_office or row_office == "nan":
+                return False
+            if row_office in agent["exceptions"]:
+                return False
+            if agent["all_offices"]:
+                return True
+            for off in agent["offices_lower"]:
+                if off == row_office or row_office.startswith(off) or off.startswith(row_office):
+                    return True
+                if "nadg" in off and row_office.startswith("nadg"):
+                    return True
+            return False
+
+        def matches_insurance(agent, row_ins_val):
+            row_ins = str(row_ins_val).strip() if pd.notna(row_ins_val) else ""
+            if not row_ins or row_ins.lower() == "nan":
+                return True
+            if agent["all_insurance"]:
+                return True
+            row_ins_lower = row_ins.lower()
+            for ins in agent["insurance_lower"]:
+                if ins == row_ins_lower:
+                    return True
+            formatted = format_insurance_company_name(row_ins)
+            if formatted in DD_INS_GROUP:
+                for ins_raw in agent["insurance_raw"]:
+                    irl = ins_raw.strip().lower()
+                    if irl in ("dd ins", "ins"):
+                        return True
+            if formatted in DD_TOOLKIT_GROUP:
+                for ins_raw in agent["insurance_raw"]:
+                    irl = ins_raw.strip().lower()
+                    if irl in ("dd toolkit", "dd toolkits", "dd"):
+                        return True
+            return False
+
+        # --- Pass 1: NADG priority ---
+        nadg_agents = [a for a in agents if a["has_nadg"]]
+        for idx, row in alloc_df.iterrows():
+            if alloc_df.at[idx, "Agent Name"] != "":
+                continue
+            row_office = str(row[a_office]).strip().lower() if pd.notna(row[a_office]) else ""
+            if not row_office.startswith("nadg"):
+                continue
+            for agent in nadg_agents:
+                if agent["assigned"] >= agent["tfd"] and agent["tfd"] > 0:
+                    continue
+                if not matches_office(agent, row[a_office]):
+                    continue
+                if not matches_insurance(agent, row[a_insurance]):
+                    continue
+                alloc_df.at[idx, "Agent Name"] = agent["name"]
+                agent["assigned"] += 1
+                break
+
+        # --- Pass 2: Regular matching (all remaining unassigned rows) ---
+        for idx, row in alloc_df.iterrows():
+            if alloc_df.at[idx, "Agent Name"] != "":
+                continue
+            for agent in agents:
+                if agent["assigned"] >= agent["tfd"] and agent["tfd"] > 0:
+                    continue
+                if not matches_office(agent, row[a_office]):
+                    continue
+                if not matches_insurance(agent, row[a_insurance]):
+                    continue
+                alloc_df.at[idx, "Agent Name"] = agent["name"]
+                agent["assigned"] += 1
+                break
+
+        # --- Store result ---
+        nh_allocation_data = alloc_df
+
+        # --- Build summary ---
+        total_rows = len(alloc_df)
+        assigned_rows = len(alloc_df[alloc_df["Agent Name"] != ""])
+        unassigned_rows = total_rows - assigned_rows
+
+        summary_html = f"""
+        <h3 style="margin-bottom:15px;">✅ NH Allocation Complete</h3>
+        <div style="display:flex;gap:20px;margin-bottom:20px;">
+            <div style="background:#d4edda;padding:12px 20px;border-radius:8px;flex:1;text-align:center;">
+                <div style="font-size:24px;font-weight:700;color:#155724;">{assigned_rows}</div>
+                <div style="font-size:12px;color:#155724;">Assigned</div>
+            </div>
+            <div style="background:#f8d7da;padding:12px 20px;border-radius:8px;flex:1;text-align:center;">
+                <div style="font-size:24px;font-weight:700;color:#721c24;">{unassigned_rows}</div>
+                <div style="font-size:12px;color:#721c24;">Unassigned</div>
+            </div>
+            <div style="background:#d1ecf1;padding:12px 20px;border-radius:8px;flex:1;text-align:center;">
+                <div style="font-size:24px;font-weight:700;color:#0c5460;">{total_rows}</div>
+                <div style="font-size:12px;color:#0c5460;">Total Rows</div>
+            </div>
+        </div>
+        """
+
+        # Agent summary table
+        summary_html += """
+        <table style="width:100%;border-collapse:collapse;background:white;border-radius:8px;overflow:hidden;box-shadow:0 2px 4px rgba(0,0,0,0.1);margin-top:15px;">
+            <thead>
+                <tr style="background:linear-gradient(135deg,#667eea 0%,#764ba2 100%);color:white;">
+                    <th style="padding:10px 15px;text-align:left;">Agent Name</th>
+                    <th style="padding:10px 15px;text-align:center;">TFD</th>
+                    <th style="padding:10px 15px;text-align:center;">Assigned</th>
+                    <th style="padding:10px 15px;text-align:left;">Offices</th>
+                    <th style="padding:10px 15px;text-align:left;">Insurance</th>
+                </tr>
+            </thead>
+            <tbody>
+        """
+        for agent in agents:
+            offices_display = ", ".join(agent["offices"]) if agent["offices"] else "<em>All (no exceptions)</em>" if not agent["exceptions"] else f"<em>All except: {', '.join(agent['exceptions'])}</em>"
+            ins_display = ", ".join(agent["insurance_raw"]) if agent["insurance_raw"] else "<em>Any</em>"
+            bg = "#d4edda" if agent["assigned"] > 0 else "#fff"
+            summary_html += f"""
+                <tr style="border-bottom:1px solid #e9ecef;background:{bg};">
+                    <td style="padding:8px 15px;">{agent['name']}</td>
+                    <td style="padding:8px 15px;text-align:center;">{agent['tfd']}</td>
+                    <td style="padding:8px 15px;text-align:center;font-weight:700;">{agent['assigned']}</td>
+                    <td style="padding:8px 15px;font-size:12px;">{offices_display}</td>
+                    <td style="padding:8px 15px;font-size:12px;">{ins_display}</td>
+                </tr>
+            """
+        summary_html += "</tbody></table>"
+
+        # Skipped agents
+        skipped_agents = []
+        for _, row in staff_df.iterrows():
+            name = str(row[s_agent]).strip() if pd.notna(row[s_agent]) else ""
+            if not name or name.lower() == "nan":
+                continue
+            status = str(row[s_status]).strip().lower() if s_status and pd.notna(row[s_status]) else ""
+            if status == "no allocation":
+                skipped_agents.append(name)
+        if skipped_agents:
+            summary_html += f"""
+            <div style="margin-top:15px;padding:10px;background:#fff3cd;border-radius:6px;border:1px solid #ffc107;">
+                <strong>⚠️ Skipped (No Allocation status):</strong> {', '.join(skipped_agents)}
+            </div>
+            """
+
+        nh_processing_result = summary_html
+        flash("✅ NH Allocation processed successfully!", "success")
+
+    except Exception as e:
+        import traceback
+        flash(f"❌ Error processing NH Allocation: {str(e)}", "error")
+        print(f"NH Allocation Error: {traceback.format_exc()}", flush=True)
+
+    return redirect("/?menu=allocations&submenu=nh-allocation")
+
+
+@app.route("/download_nh_allocation", methods=["POST"])
+@admin_required
+def download_nh_allocation():
+    global nh_allocation_data
+    try:
+        if nh_allocation_data is None:
+            flash("No processed data to download.", "error")
+            return redirect("/?menu=allocations&submenu=nh-allocation")
+
+        export_df = nh_allocation_data.copy()
+
+        # Remove Unnamed columns
+        unnamed_cols = [c for c in export_df.columns if str(c).startswith("Unnamed")]
+        if unnamed_cols:
+            export_df = export_df.drop(columns=unnamed_cols)
+
+        temp_fd, temp_path = tempfile.mkstemp(suffix=".xlsx")
+        try:
+            with pd.ExcelWriter(temp_path, engine="openpyxl") as writer:
+                export_df.to_excel(writer, sheet_name="NH_Allocation", index=False)
+            return send_file(
+                temp_path,
+                as_attachment=True,
+                download_name=f'NH_Allocation_{datetime.now().strftime("%Y%m%d_%H%M%S")}.xlsx',
+                mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+        finally:
+            os.close(temp_fd)
+    except Exception as e:
+        flash(f"Error downloading: {str(e)}", "error")
+        return redirect("/?menu=allocations&submenu=nh-allocation")
+
+
+@app.route("/reset_nh_allocation", methods=["POST"])
+@admin_required
+def reset_nh_allocation():
+    global nh_staff_data, nh_staff_filename, nh_allocation_data, nh_allocation_filename, nh_processing_result
+    nh_staff_data = None
+    nh_staff_filename = None
+    nh_allocation_data = None
+    nh_allocation_filename = None
+    nh_processing_result = None
+    flash("✅ NH Allocation has been reset successfully!", "success")
+    return redirect("/?menu=allocations&submenu=nh-allocation")
 
 
 # ============================================================================

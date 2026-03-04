@@ -794,6 +794,14 @@ email_allocation_filename = None
 email_allocation_agents_list = None
 email_sent_agents = set()  # Track which agents have been sent emails
 
+# Auditor Email Allocation
+auditor_email_staff_data = None
+auditor_email_staff_filename = None
+auditor_email_allocation_data = None
+auditor_email_allocation_filename = None
+auditor_email_agents_list = None
+auditor_email_sent = set()
+
 # Agent processing result
 agent_processing_result = None
 agent_allocations_data = None
@@ -2561,7 +2569,7 @@ HTML_TEMPLATE = """
         function getMenuDisplayName(menuName) {
             const names = {
                 'allocations': 'Allocations',
-                'email-allocation': 'Email Allocation',
+                'email-allocation': 'Email Allocations',
                 'agent-consolidation': 'Agent Consolidation',
                 'trackers': 'Trackers'
             };
@@ -2648,7 +2656,7 @@ HTML_TEMPLATE = """
             </li>
             <li>
                 <div class="menu-item {% if current_menu == 'email-allocation' %}active{% endif %}" onclick="switchAdminMenu('email-allocation', '')">
-                    <i class="fas fa-envelope"></i> Email Allocation
+                    <i class="fas fa-envelope"></i> Email Allocations
                 </div>
             </li>
             <li>
@@ -3318,6 +3326,19 @@ HTML_TEMPLATE = """
                 
                 <!-- Email Allocation Content -->
                 <div id="email-allocation-content" class="admin-menu-content" style="display: {% if current_menu == 'email-allocation' %}block{% else %}none{% endif %};">
+                    
+                    <!-- Tab Buttons -->
+                    <div style="display: flex; gap: 0; margin-bottom: 25px; border-bottom: 2px solid #e0e0e0;">
+                        <button type="button" id="email-tab-agent" onclick="switchEmailTab('agent')" style="padding: 12px 24px; font-size: 14px; font-weight: 600; border: none; border-bottom: 3px solid #667eea; background: transparent; color: #667eea; cursor: pointer; transition: all 0.2s;">
+                            <i class="fas fa-users"></i> Email Agents Allocations
+                        </button>
+                        <button type="button" id="email-tab-auditor" onclick="switchEmailTab('auditor')" style="padding: 12px 24px; font-size: 14px; font-weight: 600; border: none; border-bottom: 3px solid transparent; background: transparent; color: #999; cursor: pointer; transition: all 0.2s;">
+                            <i class="fas fa-user-check"></i> Email Auditors Allocations
+                        </button>
+                    </div>
+
+                    <!-- ========== AGENT ALLOCATION TAB ========== -->
+                    <div id="email-agent-tab-content">
                     <!-- File Upload Status Messages -->
                     <div id="email-upload-status" style="margin-bottom: 20px;">
                         {% with messages = get_flashed_messages(with_categories=true) %}
@@ -3461,6 +3482,146 @@ HTML_TEMPLATE = """
                             </div>
                         </div>
                     </div>
+                    <div class="section" style="text-align: left; margin-top: 20px;">
+                        <form action="/reset_agent_email" method="post">
+                            <input type="hidden" name="current_menu" value="email-allocation">
+                            <button type="submit" class="process-btn" style="background: linear-gradient(135deg, #e74c3c, #c0392b);">
+                                <i class="fas fa-redo"></i> Reset Agent Email
+                            </button>
+                        </form>
+                    </div>
+                    </div><!-- end email-agent-tab-content -->
+
+                    <!-- ========== AUDITOR ALLOCATION TAB ========== -->
+                    <div id="email-auditor-tab-content" style="display: none;">
+                    <div class="upload-grid">
+                        <div class="upload-card">
+                            <form action="/upload_auditor_email_staff" method="post" enctype="multipart/form-data" id="auditor-email-staff-form">
+                                <div class="form-group">
+                                    <input type="file" id="auditor_email_staff_file" name="file" accept=".xlsx,.xls" required>
+                                </div>
+                                <button type="submit" id="auditor-email-staff-btn">📤 Upload QC Staff Database</button>
+                            </form>
+                            {% if auditor_email_staff_filename %}
+                            <div style="margin-top: 10px; padding: 8px; background: #e7f3ff; border-radius: 5px; font-size: 12px; color: #004085;">
+                                <i class="fas fa-check-circle"></i> Uploaded: {{ auditor_email_staff_filename }}
+                            </div>
+                            {% endif %}
+                        </div>
+
+                        <div class="upload-card">
+                            <form action="/upload_auditor_email_allocation" method="post" enctype="multipart/form-data" id="auditor-email-allocation-form">
+                                <div class="form-group">
+                                    <input type="file" id="auditor_email_allocation_file" name="file" accept=".xlsx,.xls" required>
+                                </div>
+                                <button type="submit" id="auditor-email-allocation-btn">📤 Upload Processed QC Allocation File</button>
+                            </form>
+                            {% if auditor_email_allocation_filename %}
+                            <div style="margin-top: 10px; padding: 8px; background: #e7f3ff; border-radius: 5px; font-size: 12px; color: #004085;">
+                                <i class="fas fa-check-circle"></i> Uploaded: {{ auditor_email_allocation_filename }}
+                            </div>
+                            {% endif %}
+                        </div>
+                    </div>
+
+                    {% if auditor_email_agents_list %}
+                    <div class="section" style="margin-top: 30px;">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+                            <div>
+                                <h3 style="margin: 0;">📋 Auditors</h3>
+                                {% if auditor_email_allocation_filename %}
+                                <p style="color: #666; margin-top: 5px; margin-bottom: 0;">Allocation File: {{ auditor_email_allocation_filename }}</p>
+                                {% endif %}
+                                {% if auditor_email_staff_filename %}
+                                <p style="color: #666; margin-top: 5px; margin-bottom: 0;">Staff Database File: {{ auditor_email_staff_filename }}</p>
+                                {% endif %}
+                            </div>
+                            <button type="button" id="send-all-auditors-btn" onclick="sendEmailToAllAuditors()" style="background: linear-gradient(135deg, #e74c3c, #c0392b); color: white; border: none; padding: 12px 24px; border-radius: 5px; cursor: pointer; font-size: 14px; font-weight: 600; transition: transform 0.2s; box-shadow: 0 2px 4px rgba(0,0,0,0.2);">
+                                <i class="fas fa-paper-plane"></i> Send All
+                            </button>
+                        </div>
+                        <div style="overflow-x: auto;">
+                            <table style="width: 100%; border-collapse: collapse; background: white; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
+                                <thead>
+                                    <tr style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white;">
+                                        <th style="padding: 12px 15px; text-align: left; font-weight: 600;">Auditor Name</th>
+                                        <th style="padding: 12px 15px; text-align: left; font-weight: 600;">Email ID</th>
+                                        <th style="padding: 12px 15px; text-align: center; font-weight: 600;">Rows</th>
+                                        <th style="padding: 12px 15px; text-align: center; font-weight: 600;">Action</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {% for auditor in auditor_email_agents_list %}
+                                    <tr style="border-bottom: 1px solid #e9ecef;">
+                                        <td style="padding: 12px 15px;">{{ auditor.auditor_name }}</td>
+                                        <td style="padding: 12px 15px;">
+                                            {% if auditor.email_id %}
+                                                {{ auditor.email_id }}
+                                            {% else %}
+                                                <span style="color: #999; font-style: italic;">No email found</span>
+                                            {% endif %}
+                                        </td>
+                                        <td style="padding: 12px 15px; text-align: center;">{{ auditor.row_count }}</td>
+                                        <td style="padding: 12px 15px; text-align: center;">
+                                            <div style="display: flex; gap: 8px; justify-content: center; align-items: center;">
+                                                <button type="button" onclick="viewAuditorAllocation('{{ auditor.auditor_name }}')" style="background: linear-gradient(135deg, #3498db, #2980b9); color: white; border: none; padding: 8px 16px; border-radius: 5px; cursor: pointer; font-size: 13px; font-weight: 600;">
+                                                    <i class="fas fa-eye"></i> View
+                                                </button>
+                                                {% if auditor.email_id %}
+                                                {% set aud_id = auditor.auditor_name|replace(' ', '_')|replace("'", '') %}
+                                                <button type="button" id="aud-send-btn-{{ aud_id }}" onclick="sendEmailToAuditor('{{ auditor.auditor_name }}', '{{ auditor.email_id }}', this)" {% if auditor.auditor_name in auditor_email_sent %}disabled style="background: #95a5a6; color: white; border: none; padding: 8px 16px; border-radius: 5px; cursor: not-allowed; font-size: 13px; font-weight: 600;"{% else %}style="background: linear-gradient(135deg, #27ae60, #2ecc71); color: white; border: none; padding: 8px 16px; border-radius: 5px; cursor: pointer; font-size: 13px; font-weight: 600;"{% endif %}>
+                                                    {% if auditor.auditor_name in auditor_email_sent %}
+                                                    <i class="fas fa-check"></i> Already sent
+                                                    {% else %}
+                                                    <i class="fas fa-paper-plane"></i> Send
+                                                    {% endif %}
+                                                </button>
+                                                {% else %}
+                                                <span style="color: #999; font-size: 12px;">No email</span>
+                                                {% endif %}
+                                            </div>
+                                        </td>
+                                    </tr>
+                                    {% endfor %}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                    {% endif %}
+
+                    <!-- Auditor Allocation View Modal -->
+                    <div id="auditor-allocation-modal" style="display: none; position: fixed; z-index: 10000; left: 0; top: 0; width: 100%; height: 100%; overflow: auto; background-color: rgba(0,0,0,0.5);">
+                        <div style="background-color: #fefefe; margin: 2% auto; padding: 0; border: none; border-radius: 10px; width: 90%; max-width: 1400px; max-height: 90vh; overflow: hidden; box-shadow: 0 10px 30px rgba(0,0,0,0.3);">
+                            <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 20px; display: flex; justify-content: space-between; align-items: center;">
+                                <h2 style="margin: 0; font-size: 20px;"><i class="fas fa-user-check"></i> <span id="auditor-modal-name"></span> - QC Allocation Details</h2>
+                                <button onclick="closeAuditorModal()" style="background: transparent; border: none; color: white; font-size: 28px; font-weight: bold; cursor: pointer; padding: 0;">&times;</button>
+                            </div>
+                            <div style="padding: 20px; max-height: calc(90vh - 120px); overflow-y: auto;">
+                                <div style="margin-bottom: 15px; display: flex; justify-content: space-between; align-items: center;">
+                                    <p style="margin: 5px 0; color: #666;"><strong>Total Rows:</strong> <span id="auditor-modal-row-count">0</span></p>
+                                    <button onclick="downloadAuditorExcel()" id="download-auditor-excel-btn" style="background: linear-gradient(135deg, #27ae60, #2ecc71); color: white; border: none; padding: 10px 20px; border-radius: 6px; cursor: pointer; font-size: 14px; font-weight: 600;">
+                                        <i class="fas fa-download"></i> Download Excel
+                                    </button>
+                                </div>
+                                <div style="overflow-x: auto;">
+                                    <table id="auditor-modal-table" style="width: 100%; border-collapse: collapse; background: white; border-radius: 8px; overflow: hidden;">
+                                        <thead id="auditor-modal-table-head"></thead>
+                                        <tbody id="auditor-modal-table-body"></tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="section" style="text-align: left; margin-top: 20px;">
+                        <form action="/reset_auditor_email" method="post">
+                            <input type="hidden" name="current_menu" value="email-allocation">
+                            <button type="submit" class="process-btn" style="background: linear-gradient(135deg, #e74c3c, #c0392b);">
+                                <i class="fas fa-redo"></i> Reset Auditor Email
+                            </button>
+                        </form>
+                    </div>
+                    </div><!-- end email-auditor-tab-content -->
+
                 </div>
                 
                 <!-- Agent Consolidation Content -->
@@ -4087,7 +4248,7 @@ HTML_TEMPLATE = """
                 const headerTitle = document.getElementById('admin-header-title');
                 if (headerTitle) {
                     const finalMenu = menuParam || 'allocations';
-                    const finalSubmenu = submenuParam || 'image-allocation';
+                    const finalSubmenu = submenuParam || (finalMenu === 'allocations' ? 'image-allocation' : '');
                     headerTitle.textContent = getHeaderTitle(finalMenu, finalSubmenu);
                 }
             }, 100);
@@ -4910,6 +5071,178 @@ HTML_TEMPLATE = """
             });
         }
         
+        // ===== Email Tab Switching =====
+        function switchEmailTab(tab) {
+            var agentTab = document.getElementById('email-agent-tab-content');
+            var auditorTab = document.getElementById('email-auditor-tab-content');
+            var agentBtn = document.getElementById('email-tab-agent');
+            var auditorBtn = document.getElementById('email-tab-auditor');
+            if (tab === 'agent') {
+                if (agentTab) agentTab.style.display = 'block';
+                if (auditorTab) auditorTab.style.display = 'none';
+                if (agentBtn) { agentBtn.style.borderBottomColor = '#667eea'; agentBtn.style.color = '#667eea'; }
+                if (auditorBtn) { auditorBtn.style.borderBottomColor = 'transparent'; auditorBtn.style.color = '#999'; }
+            } else {
+                if (agentTab) agentTab.style.display = 'none';
+                if (auditorTab) auditorTab.style.display = 'block';
+                if (agentBtn) { agentBtn.style.borderBottomColor = 'transparent'; agentBtn.style.color = '#999'; }
+                if (auditorBtn) { auditorBtn.style.borderBottomColor = '#667eea'; auditorBtn.style.color = '#667eea'; }
+            }
+        }
+
+        // Auto-switch to auditor tab if URL has tab=auditor
+        (function() {
+            var params = new URLSearchParams(window.location.search);
+            if (params.get('tab') === 'auditor') {
+                switchEmailTab('auditor');
+            }
+        })();
+
+        // ===== Auditor Email Functions =====
+        var currentViewingAuditor = null;
+
+        function viewAuditorAllocation(auditorName) {
+            currentViewingAuditor = auditorName;
+            var modal = document.getElementById('auditor-allocation-modal');
+            document.getElementById('auditor-modal-name').textContent = auditorName;
+            document.getElementById('auditor-modal-table-head').innerHTML = '';
+            document.getElementById('auditor-modal-table-body').innerHTML = '<tr><td style="padding:20px;text-align:center;"><i class="fas fa-spinner fa-spin"></i> Loading...</td></tr>';
+            modal.style.display = 'block';
+
+            fetch('/get_auditor_allocation_data', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ auditor_name: auditorName })
+            })
+            .then(function(r) { return r.json(); })
+            .then(function(data) {
+                if (data.success && data.columns && data.rows) {
+                    document.getElementById('auditor-modal-row-count').textContent = data.rows.length;
+                    var headHtml = '<tr style="background:linear-gradient(135deg,#667eea 0%,#764ba2 100%);color:white;">';
+                    data.columns.forEach(function(col) { headHtml += '<th style="padding:10px 12px;text-align:left;font-size:12px;white-space:nowrap;">' + col + '</th>'; });
+                    headHtml += '</tr>';
+                    document.getElementById('auditor-modal-table-head').innerHTML = headHtml;
+
+                    var bodyHtml = '';
+                    data.rows.forEach(function(row, i) {
+                        var bg = i % 2 === 0 ? '#fff' : '#f8f9fa';
+                        bodyHtml += '<tr style="border-bottom:1px solid #e9ecef;background:' + bg + ';">';
+                        row.forEach(function(cell) { bodyHtml += '<td style="padding:8px 12px;font-size:12px;white-space:nowrap;">' + (cell !== null && cell !== '' ? cell : '') + '</td>'; });
+                        bodyHtml += '</tr>';
+                    });
+                    document.getElementById('auditor-modal-table-body').innerHTML = bodyHtml;
+                } else {
+                    document.getElementById('auditor-modal-table-body').innerHTML = '<tr><td style="padding:20px;text-align:center;color:#dc3545;">' + (data.error || 'No data found') + '</td></tr>';
+                }
+            })
+            .catch(function(err) {
+                document.getElementById('auditor-modal-table-body').innerHTML = '<tr><td style="padding:20px;text-align:center;color:#dc3545;">Error: ' + err.message + '</td></tr>';
+            });
+        }
+
+        function closeAuditorModal() {
+            document.getElementById('auditor-allocation-modal').style.display = 'none';
+        }
+
+        function downloadAuditorExcel() {
+            if (!currentViewingAuditor) return;
+            var btn = document.getElementById('download-auditor-excel-btn');
+            btn.disabled = true;
+            btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Downloading...';
+            fetch('/download_auditor_allocation_excel', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ auditor_name: currentViewingAuditor })
+            })
+            .then(function(r) {
+                if (r.ok) return r.blob();
+                return r.json().then(function(d) { throw new Error(d.error || 'Download failed'); });
+            })
+            .then(function(blob) {
+                var url = window.URL.createObjectURL(blob);
+                var a = document.createElement('a');
+                a.href = url;
+                a.download = currentViewingAuditor.replace(/\s+/g, '_') + '_qc_allocation.xlsx';
+                document.body.appendChild(a);
+                a.click();
+                a.remove();
+                window.URL.revokeObjectURL(url);
+                btn.disabled = false;
+                btn.innerHTML = '<i class="fas fa-download"></i> Download Excel';
+            })
+            .catch(function(err) {
+                alert('Error: ' + err.message);
+                btn.disabled = false;
+                btn.innerHTML = '<i class="fas fa-download"></i> Download Excel';
+            });
+        }
+
+        function sendEmailToAuditor(auditorName, emailId, buttonElement) {
+            if (!confirm('Send QC allocation email to ' + auditorName + ' (' + emailId + ')?')) return;
+            buttonElement.disabled = true;
+            buttonElement.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Sending...';
+            fetch('/send_email_to_auditor', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ auditor_name: auditorName, email_id: emailId })
+            })
+            .then(function(r) { return r.json(); })
+            .then(function(data) {
+                if (data.success) {
+                    buttonElement.style.background = '#95a5a6';
+                    buttonElement.style.cursor = 'not-allowed';
+                    buttonElement.innerHTML = '<i class="fas fa-check"></i> Already sent';
+                    showSnackbar('Email sent to ' + auditorName + ' successfully!');
+                } else {
+                    buttonElement.disabled = false;
+                    buttonElement.innerHTML = '<i class="fas fa-paper-plane"></i> Send';
+                    alert('Error: ' + (data.error || 'Failed to send email'));
+                }
+            })
+            .catch(function(err) {
+                buttonElement.disabled = false;
+                buttonElement.innerHTML = '<i class="fas fa-paper-plane"></i> Send';
+                alert('Error: ' + err.message);
+            });
+        }
+
+        function sendEmailToAllAuditors() {
+            if (!confirm('Send QC allocation emails to ALL auditors?')) return;
+            var btn = document.getElementById('send-all-auditors-btn');
+            btn.disabled = true;
+            btn.style.opacity = '0.6';
+            btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Sending...';
+            fetch('/send_email_to_all_auditors', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' }
+            })
+            .then(function(r) { return r.json(); })
+            .then(function(data) {
+                if (data.success) {
+                    showSnackbar('Bulk auditor email completed: ' + data.message);
+                    if (data.results && data.results.success) {
+                        data.results.success.forEach(function(item) {
+                            var audId = item.auditor_name.replace(/\s+/g, '_').replace(/'/g, '');
+                            var sendBtn = document.getElementById('aud-send-btn-' + audId);
+                            if (sendBtn) { sendBtn.disabled = true; sendBtn.style.background = '#95a5a6'; sendBtn.style.cursor = 'not-allowed'; sendBtn.innerHTML = '<i class="fas fa-check"></i> Already sent'; }
+                        });
+                    }
+                    setTimeout(function() { window.location.reload(); }, 3000);
+                } else {
+                    alert('Error: ' + (data.error || 'Failed'));
+                }
+                btn.disabled = false;
+                btn.style.opacity = '1';
+                btn.innerHTML = '<i class="fas fa-paper-plane"></i> Send All';
+            })
+            .catch(function(err) {
+                alert('Error: ' + err.message);
+                btn.disabled = false;
+                btn.style.opacity = '1';
+                btn.innerHTML = '<i class="fas fa-paper-plane"></i> Send All';
+            });
+        }
+
         // Toast Notification Functions
         function showToast(type, title, message, duration = 5000) {
             const container = document.getElementById('toastContainer');
@@ -16896,6 +17229,8 @@ def index():
     global agent_processing_result, agent_allocations_data
     global email_staff_details, email_staff_filename
     global email_allocation_data, email_allocation_filename, email_allocation_agents_list
+    global auditor_email_staff_data, auditor_email_staff_filename
+    global auditor_email_allocation_data, auditor_email_allocation_filename, auditor_email_agents_list, auditor_email_sent
     global tracker_data, tracker_filename, tracker_file_ready
     global ev_staff_data, ev_staff_filename, ev_allocation_data, ev_allocation_filename, ev_processing_result
     global dental_bv_staff_data, dental_bv_staff_filename, dental_bv_allocation_data, dental_bv_allocation_filename, dental_bv_processing_result
@@ -16967,6 +17302,10 @@ def index():
         email_allocation_filename=email_allocation_filename,
         email_allocation_agents_list=email_allocation_agents_list,
         email_sent_agents=list(email_sent_agents) if email_sent_agents else [],
+        auditor_email_staff_filename=auditor_email_staff_filename,
+        auditor_email_allocation_filename=auditor_email_allocation_filename,
+        auditor_email_agents_list=auditor_email_agents_list,
+        auditor_email_sent=list(auditor_email_sent) if auditor_email_sent else [],
         tracker_file_ready=(
             tracker_file_ready if "tracker_file_ready" in globals() else False
         ),
@@ -17761,6 +18100,474 @@ def send_email_to_all_agents():
 
     except Exception as e:
         return jsonify({"success": False, "error": f"Error sending emails: {str(e)}"})
+
+
+@app.route("/reset_agent_email", methods=["POST"])
+@admin_required
+def reset_agent_email():
+    global email_staff_details, email_staff_filename, email_allocation_data, email_allocation_filename, email_allocation_agents_list, email_sent_agents
+    email_staff_details = None
+    email_staff_filename = None
+    email_allocation_data = None
+    email_allocation_filename = None
+    email_allocation_agents_list = None
+    email_sent_agents = set()
+    flash("Agent Email Allocation has been reset.", "success")
+    return redirect("/?menu=email-allocation")
+
+
+@app.route("/reset_auditor_email", methods=["POST"])
+@admin_required
+def reset_auditor_email():
+    global auditor_email_staff_data, auditor_email_staff_filename, auditor_email_allocation_data, auditor_email_allocation_filename, auditor_email_agents_list, auditor_email_sent
+    auditor_email_staff_data = None
+    auditor_email_staff_filename = None
+    auditor_email_allocation_data = None
+    auditor_email_allocation_filename = None
+    auditor_email_agents_list = None
+    auditor_email_sent = set()
+    flash("Auditor Email Allocation has been reset.", "success")
+    return redirect("/?menu=email-allocation&tab=auditor")
+
+
+## ========== AUDITOR EMAIL ALLOCATION ROUTES ==========
+
+@app.route("/upload_auditor_email_staff", methods=["POST"])
+@admin_required
+def upload_auditor_email_staff():
+    """Upload QC Staff Database for auditor emails (reads 'Main' sheet for Auditors + Email id)"""
+    global auditor_email_staff_data, auditor_email_staff_filename, auditor_email_agents_list, auditor_email_sent
+
+    if "file" not in request.files:
+        flash("No file provided", "error")
+        return redirect("/?menu=email-allocation&tab=auditor")
+    file = request.files["file"]
+    if file.filename == "":
+        flash("No file selected", "error")
+        return redirect("/?menu=email-allocation&tab=auditor")
+
+    try:
+        filename = secure_filename(file.filename)
+        file.save(filename)
+
+        all_sheets = pd.read_excel(filename, sheet_name=None, parse_dates=False)
+        target_sheet = None
+        for sheet_name in all_sheets:
+            if str(sheet_name).strip().lower() == "main":
+                target_sheet = sheet_name
+                break
+
+        df = all_sheets[target_sheet] if target_sheet else list(all_sheets.values())[0]
+        if not target_sheet:
+            flash(f"'Main' sheet not found, using first sheet: '{list(all_sheets.keys())[0]}'", "warning")
+
+        auditor_col = None
+        email_col = None
+        for col in df.columns:
+            cl = str(col).strip().lower()
+            if cl in ("auditors", "auditor", "auditor name"):
+                auditor_col = col
+            if "email" in cl and "id" in cl:
+                email_col = col
+
+        if not auditor_col:
+            flash("Error: 'Auditors' column not found in the file", "error")
+            if os.path.exists(filename):
+                os.remove(filename)
+            return redirect("/?menu=email-allocation&tab=auditor")
+
+        # Build staff lookup: auditor_name -> email_id
+        auditor_email_staff_data = {}
+        for _, row in df.iterrows():
+            name = str(row[auditor_col]).strip() if pd.notna(row[auditor_col]) else ""
+            if not name or name.lower() == "nan":
+                continue
+            email = str(row[email_col]).strip() if email_col and pd.notna(row[email_col]) else None
+            if email and email.lower() == "nan":
+                email = None
+            auditor_email_staff_data[name] = email
+
+        auditor_email_staff_filename = filename
+        auditor_email_sent = set()
+
+        if auditor_email_allocation_data is not None:
+            _rebuild_auditor_email_agents_list()
+
+        flash("QC Staff Database uploaded successfully!", "success")
+        if os.path.exists(filename):
+            os.remove(filename)
+        return redirect("/?menu=email-allocation&tab=auditor")
+
+    except Exception as e:
+        flash(f"Error uploading QC Staff Database: {str(e)}", "error")
+        return redirect("/?menu=email-allocation&tab=auditor")
+
+
+@app.route("/upload_auditor_email_allocation", methods=["POST"])
+@admin_required
+def upload_auditor_email_allocation():
+    """Upload processed QC allocation file for auditor emails"""
+    global auditor_email_allocation_data, auditor_email_allocation_filename, auditor_email_agents_list, auditor_email_sent
+
+    if "file" not in request.files:
+        flash("No file provided", "error")
+        return redirect("/?menu=email-allocation&tab=auditor")
+    file = request.files["file"]
+    if file.filename == "":
+        flash("No file selected", "error")
+        return redirect("/?menu=email-allocation&tab=auditor")
+
+    try:
+        filename = secure_filename(file.filename)
+        file.save(filename)
+        df = pd.read_excel(filename, parse_dates=False)
+
+        auditor_col = None
+        for col in df.columns:
+            cl = str(col).strip().lower()
+            if cl in ("auditor", "auditors", "auditor name"):
+                auditor_col = col
+                break
+
+        if not auditor_col:
+            flash("Error: 'Auditor' column not found in the allocation file", "error")
+            if os.path.exists(filename):
+                os.remove(filename)
+            return redirect("/?menu=email-allocation&tab=auditor")
+
+        auditor_email_allocation_data = df
+        auditor_email_allocation_filename = filename
+        auditor_email_sent = set()
+
+        _rebuild_auditor_email_agents_list()
+
+        flash("Processed QC Allocation file uploaded successfully!", "success")
+        if os.path.exists(filename):
+            os.remove(filename)
+        return redirect("/?menu=email-allocation&tab=auditor")
+
+    except Exception as e:
+        flash(f"Error uploading allocation file: {str(e)}", "error")
+        return redirect("/?menu=email-allocation&tab=auditor")
+
+
+def _rebuild_auditor_email_agents_list():
+    """Build the auditor list with email lookups and row counts."""
+    global auditor_email_agents_list, auditor_email_allocation_data, auditor_email_staff_data
+
+    if auditor_email_allocation_data is None:
+        return
+
+    auditor_col = None
+    for col in auditor_email_allocation_data.columns:
+        cl = str(col).strip().lower()
+        if cl in ("auditor", "auditors", "auditor name"):
+            auditor_col = col
+            break
+
+    if not auditor_col:
+        return
+
+    auditor_names = []
+    for val in auditor_email_allocation_data[auditor_col]:
+        name = str(val).strip() if pd.notna(val) else ""
+        if name and name.lower() != "nan" and name not in auditor_names:
+            auditor_names.append(name)
+
+    auditor_email_agents_list = []
+    for name in sorted(auditor_names):
+        row_count = len(auditor_email_allocation_data[
+            auditor_email_allocation_data[auditor_col].astype(str).str.strip() == name
+        ])
+        email = None
+        if auditor_email_staff_data and name in auditor_email_staff_data:
+            email = auditor_email_staff_data[name]
+        auditor_email_agents_list.append({
+            "auditor_name": name,
+            "email_id": email,
+            "row_count": row_count,
+        })
+
+
+@app.route("/get_auditor_allocation_data", methods=["POST"])
+@admin_required
+def get_auditor_allocation_data():
+    """Get allocation data for a specific auditor"""
+    try:
+        global auditor_email_allocation_data
+        data = request.get_json()
+        auditor_name = data.get("auditor_name")
+
+        if not auditor_name:
+            return jsonify({"success": False, "error": "Auditor name is required"})
+        if auditor_email_allocation_data is None:
+            return jsonify({"success": False, "error": "Allocation file not uploaded"})
+
+        auditor_col = None
+        for col in auditor_email_allocation_data.columns:
+            cl = str(col).strip().lower()
+            if cl in ("auditor", "auditors", "auditor name"):
+                auditor_col = col
+                break
+
+        if not auditor_col:
+            return jsonify({"success": False, "error": "Auditor column not found"})
+
+        auditor_rows = auditor_email_allocation_data[
+            auditor_email_allocation_data[auditor_col].astype(str).str.strip() == auditor_name
+        ].copy()
+
+        columns = list(auditor_rows.columns)
+        rows = []
+        for _, row in auditor_rows.iterrows():
+            row_data = []
+            for col in columns:
+                val = row[col]
+                row_data.append("" if pd.isna(val) else str(val))
+            rows.append(row_data)
+
+        return jsonify({"success": True, "columns": columns, "rows": rows})
+
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)})
+
+
+@app.route("/download_auditor_allocation_excel", methods=["POST"])
+@admin_required
+def download_auditor_allocation_excel():
+    """Download Excel file for a specific auditor's QC allocation"""
+    try:
+        global auditor_email_allocation_data
+        data = request.get_json()
+        auditor_name = data.get("auditor_name")
+
+        if not auditor_name:
+            return jsonify({"success": False, "error": "Auditor name is required"}), 400
+        if auditor_email_allocation_data is None:
+            return jsonify({"success": False, "error": "Allocation file not uploaded"}), 400
+
+        auditor_col = None
+        for col in auditor_email_allocation_data.columns:
+            cl = str(col).strip().lower()
+            if cl in ("auditor", "auditors", "auditor name"):
+                auditor_col = col
+                break
+
+        if not auditor_col:
+            return jsonify({"success": False, "error": "Auditor column not found"}), 400
+
+        auditor_rows = auditor_email_allocation_data[
+            auditor_email_allocation_data[auditor_col].astype(str).str.strip() == auditor_name
+        ]
+
+        if len(auditor_rows) == 0:
+            return jsonify({"success": False, "error": f"No rows found for '{auditor_name}'"}), 404
+
+        temp_fd, temp_path = tempfile.mkstemp(suffix=".xlsx")
+        try:
+            sheet_name = f"{auditor_name}_QC"[:31]
+            with pd.ExcelWriter(temp_path, engine="openpyxl") as writer:
+                auditor_rows.to_excel(writer, sheet_name=sheet_name, index=False)
+
+            format_excel_with_priority_status(temp_path, sheet_name)
+
+            return send_file(
+                temp_path,
+                as_attachment=True,
+                download_name=f'{auditor_name.replace(" ", "_")}_qc_allocation_{datetime.now().strftime("%Y%m%d")}.xlsx',
+                mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+        finally:
+            os.close(temp_fd)
+
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/send_email_to_auditor", methods=["POST"])
+@admin_required
+def send_email_to_auditor():
+    """Send QC allocation email to a specific auditor"""
+    try:
+        global auditor_email_allocation_data, auditor_email_sent
+        data = request.get_json()
+        auditor_name = data.get("auditor_name")
+        email_id = data.get("email_id")
+
+        if not auditor_name:
+            return jsonify({"success": False, "error": "Auditor name is required"})
+        if not email_id:
+            return jsonify({"success": False, "error": "Email ID is required"})
+        if auditor_email_allocation_data is None:
+            return jsonify({"success": False, "error": "Allocation file not uploaded"})
+
+        auditor_col = None
+        for col in auditor_email_allocation_data.columns:
+            cl = str(col).strip().lower()
+            if cl in ("auditor", "auditors", "auditor name"):
+                auditor_col = col
+                break
+
+        if not auditor_col:
+            return jsonify({"success": False, "error": "Auditor column not found"})
+
+        auditor_rows = auditor_email_allocation_data[
+            auditor_email_allocation_data[auditor_col].astype(str).str.strip() == auditor_name
+        ]
+
+        if len(auditor_rows) == 0:
+            return jsonify({"success": False, "error": f"No rows found for '{auditor_name}'"})
+
+        temp_fd, temp_path = tempfile.mkstemp(suffix=".xlsx")
+        try:
+            sheet_name = f"{auditor_name}_QC"[:31]
+            with pd.ExcelWriter(temp_path, engine="openpyxl") as writer:
+                auditor_rows.to_excel(writer, sheet_name=sheet_name, index=False)
+
+            format_excel_with_priority_status(temp_path, sheet_name)
+
+            with open(temp_path, "rb") as f:
+                excel_bytes = io.BytesIO(f.read())
+
+            html_content = f"""
+            <html>
+            <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
+                <h2>Your QC Allocation - {auditor_name}</h2>
+                <p>Dear {auditor_name},</p>
+                <p>Your QC allocation has been prepared and is attached to this email.</p>
+                <p><strong>Total Rows:</strong> {len(auditor_rows)}</p>
+                <p>Please review the attached Excel file for detailed allocation information.</p>
+                <p>Best regards,<br>Allocation System</p>
+            </body>
+            </html>
+            """
+
+            today_date = datetime.now().strftime("%m/%d/%Y")
+            attachment_filename = f'{auditor_name.replace(" ", "_")}_qc_allocation_{datetime.now().strftime("%Y%m%d")}.xlsx'
+
+            success, message = send_email_with_resend(
+                to_email=email_id,
+                subject=f"Your QC Allocation - {auditor_name} - {today_date}",
+                html_content=html_content,
+                attachment_data=excel_bytes,
+                attachment_filename=attachment_filename,
+            )
+
+            if success:
+                auditor_email_sent.add(auditor_name)
+                return jsonify({"success": True, "message": f"Email sent to {auditor_name}"})
+            else:
+                return jsonify({"success": False, "error": message})
+
+        finally:
+            os.close(temp_fd)
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)})
+
+
+@app.route("/send_email_to_all_auditors", methods=["POST"])
+@admin_required
+def send_email_to_all_auditors():
+    """Send QC allocation emails to all auditors"""
+    try:
+        global auditor_email_allocation_data, auditor_email_agents_list, auditor_email_sent
+
+        if auditor_email_allocation_data is None:
+            return jsonify({"success": False, "error": "Allocation file not uploaded"})
+        if not auditor_email_agents_list:
+            return jsonify({"success": False, "error": "No auditors found"})
+
+        auditor_col = None
+        for col in auditor_email_allocation_data.columns:
+            cl = str(col).strip().lower()
+            if cl in ("auditor", "auditors", "auditor name"):
+                auditor_col = col
+                break
+
+        if not auditor_col:
+            return jsonify({"success": False, "error": "Auditor column not found"})
+
+        results = {"success": [], "failed": [], "skipped": []}
+
+        for auditor_info in auditor_email_agents_list:
+            auditor_name = auditor_info["auditor_name"]
+            email_id = auditor_info.get("email_id")
+
+            if auditor_name in auditor_email_sent:
+                results["skipped"].append({"auditor_name": auditor_name, "reason": "Already sent"})
+                continue
+            if not email_id:
+                results["skipped"].append({"auditor_name": auditor_name, "reason": "No email"})
+                continue
+
+            try:
+                auditor_rows = auditor_email_allocation_data[
+                    auditor_email_allocation_data[auditor_col].astype(str).str.strip() == auditor_name
+                ]
+
+                if len(auditor_rows) == 0:
+                    results["skipped"].append({"auditor_name": auditor_name, "reason": "No rows"})
+                    continue
+
+                temp_fd, temp_path = tempfile.mkstemp(suffix=".xlsx")
+                try:
+                    sheet_name = f"{auditor_name}_QC"[:31]
+                    with pd.ExcelWriter(temp_path, engine="openpyxl") as writer:
+                        auditor_rows.to_excel(writer, sheet_name=sheet_name, index=False)
+
+                    format_excel_with_priority_status(temp_path, sheet_name)
+
+                    with open(temp_path, "rb") as f:
+                        excel_bytes = io.BytesIO(f.read())
+
+                    html_content = f"""
+                    <html>
+                    <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
+                        <h2>Your QC Allocation - {auditor_name}</h2>
+                        <p>Dear {auditor_name},</p>
+                        <p>Your QC allocation has been prepared and is attached to this email.</p>
+                        <p><strong>Total Rows:</strong> {len(auditor_rows)}</p>
+                        <p>Please review the attached Excel file for detailed allocation information.</p>
+                        <p>Best regards,<br>Allocation System</p>
+                    </body>
+                    </html>
+                    """
+
+                    today_date = datetime.now().strftime("%m/%d/%Y")
+                    attachment_filename = f'{auditor_name.replace(" ", "_")}_qc_allocation_{datetime.now().strftime("%Y%m%d")}.xlsx'
+
+                    success, message = send_email_with_resend(
+                        to_email=email_id,
+                        subject=f"Your QC Allocation - {auditor_name} - {today_date}",
+                        html_content=html_content,
+                        attachment_data=excel_bytes,
+                        attachment_filename=attachment_filename,
+                    )
+
+                    if success:
+                        auditor_email_sent.add(auditor_name)
+                        results["success"].append({"auditor_name": auditor_name, "email": email_id})
+                    else:
+                        results["failed"].append({"auditor_name": auditor_name, "reason": message})
+
+                finally:
+                    os.close(temp_fd)
+                    if os.path.exists(temp_path):
+                        os.remove(temp_path)
+
+            except Exception as e:
+                results["failed"].append({"auditor_name": auditor_name, "reason": str(e)})
+
+        total = len(auditor_email_agents_list)
+        summary = f"Sent: {len(results['success'])}, Failed: {len(results['failed'])}, Skipped: {len(results['skipped'])} out of {total} auditors"
+
+        return jsonify({"success": True, "message": summary, "results": results})
+
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)})
 
 
 @app.route("/get_agent_allocation_data", methods=["POST"])

@@ -2917,7 +2917,7 @@ HTML_TEMPLATE = """
                 {% endif %}
 
                 <!-- Download Section -->
-                {% if processing_result and 'Priority processing completed successfully' in processing_result %}
+                {% if processing_result and ('Priority processing completed successfully' in processing_result or 'Imagen Allocation Complete' in processing_result) %}
                 <div class="section">
                     <h3>💾 Download your Excel file with updated Priority Status assignments.</h3>
                     <form action="/download_result" method="post">
@@ -16968,119 +16968,96 @@ def process_allocation_files_with_dates(
                         ]
                         unmatched_info = f"\n🔴 Unmatched Insurance Companies ({len(unmatched_insurance_companies)}): {', '.join(unmatched_list)}{'...' if len(unmatched_insurance_companies) > 5 else ''}\n   ⚠️ These companies were assigned ONLY to senior agents with highest priority."
 
+                    # Build HTML summary table
+                    remaining_unallocated = total_rows_excluding_not_to_work - total_allocated
+
                     agent_summary = f"""
-👥 Agent Allocation Summary (Capability-Based):
-- Total Agents: {total_agents}
-- Agents with Work: {agents_with_work}
-                    - Total Rows to Allocate: {total_rows_excluding_not_to_work}
-- Total Allocated: {total_allocated}
-                    - Remaining Unallocated: {total_rows_excluding_not_to_work - total_allocated}
-- Insurance Matching: {'Enabled' if insurance_carrier_col else 'Disabled'}
-{unmatched_info}
-
-🧷 Sticky Carrier Rule: Agents prefer to keep working on a single insurance carrier until that carrier's available rows are exhausted. Only then are additional carriers added to fill remaining capacity. Primary carrier shown below; secondary carriers appear only if needed.
-
-📋 Agent Allocation Details:
+<h3 style="margin-bottom:15px;">👥 Agent Allocation Summary</h3>
+<div style="display:flex;gap:15px;margin-bottom:20px;flex-wrap:wrap;">
+    <div style="background:#d4edda;padding:12px 20px;border-radius:8px;flex:1;min-width:120px;text-align:center;">
+        <div style="font-size:24px;font-weight:700;color:#155724;">{total_allocated}</div>
+        <div style="font-size:12px;color:#155724;">Allocated</div>
+    </div>
+    <div style="background:#f8d7da;padding:12px 20px;border-radius:8px;flex:1;min-width:120px;text-align:center;">
+        <div style="font-size:24px;font-weight:700;color:#721c24;">{remaining_unallocated}</div>
+        <div style="font-size:12px;color:#721c24;">Unallocated</div>
+    </div>
+    <div style="background:#d1ecf1;padding:12px 20px;border-radius:8px;flex:1;min-width:120px;text-align:center;">
+        <div style="font-size:24px;font-weight:700;color:#0c5460;">{total_rows_excluding_not_to_work}</div>
+        <div style="font-size:12px;color:#0c5460;">Total Rows</div>
+    </div>
+    <div style="background:#fff3cd;padding:12px 20px;border-radius:8px;flex:1;min-width:120px;text-align:center;">
+        <div style="font-size:24px;font-weight:700;color:#856404;">{agents_with_work}/{total_agents}</div>
+        <div style="font-size:12px;color:#856404;">Agents with Work</div>
+    </div>
+</div>
+<table style="width:100%;border-collapse:collapse;background:white;border-radius:8px;overflow:hidden;box-shadow:0 2px 4px rgba(0,0,0,0.1);margin-top:15px;">
+    <thead>
+        <tr style="background:linear-gradient(135deg,#667eea 0%,#764ba2 100%);color:white;">
+            <th style="padding:10px 12px;text-align:left;font-size:13px;">#</th>
+            <th style="padding:10px 12px;text-align:left;font-size:13px;">Agent Name</th>
+            <th style="padding:10px 12px;text-align:center;font-size:13px;">Capacity</th>
+            <th style="padding:10px 12px;text-align:center;font-size:13px;">Allocated</th>
+            <th style="padding:10px 12px;text-align:left;font-size:13px;">Type</th>
+            <th style="padding:10px 12px;text-align:left;font-size:13px;">Primary Carrier</th>
+            <th style="padding:10px 12px;text-align:left;font-size:13px;">Insurance</th>
+        </tr>
+    </thead>
+    <tbody>
 """
                     for i, agent in enumerate(agent_allocations):
-                        insurance_info = ""
-                        senior_info = " (Senior Agent)" if agent["is_senior"] else ""
+                        senior_badge = '<span style="background:#ffc107;color:#000;padding:2px 6px;border-radius:3px;font-size:10px;font-weight:600;">Senior</span>' if agent["is_senior"] else ""
 
                         if agent["is_senior"]:
-                            insurance_info = " (Can work: Any insurance company)"
+                            ins_display = "Any"
                         elif agent["insurance_companies"]:
-                            insurance_list = [
-                                str(comp).strip()
-                                for comp in agent["insurance_companies"][:2]
-                                if comp is not None and not pd.isna(comp)
-                            ]
-                            insurance_info = f" (Can work: {', '.join(insurance_list)}{'...' if len(agent['insurance_companies']) > 2 else ''})"
+                            ins_list = [str(c).strip() for c in agent["insurance_companies"][:3] if c is not None and not pd.isna(c)]
+                            ins_display = ", ".join(ins_list) + ("..." if len(agent["insurance_companies"]) > 3 else "")
+                        else:
+                            ins_display = "-"
 
-                        if agent["insurance_needs_training"]:
-                            training_list = [
-                                str(comp).strip()
-                                for comp in agent["insurance_needs_training"][:2]
-                                if comp is not None and not pd.isna(comp)
-                            ]
-                            training_info = f" (Needs training: {', '.join(training_list)}{'...' if len(agent['insurance_needs_training']) > 2 else ''})"
-                            insurance_info += training_info
+                        primary = agent.get("assigned_insurance", "")
+                        primary_display = str(primary).strip() if primary and not pd.isna(primary) else "-"
 
-                        primary = agent.get("assigned_insurance")
-                        # Derive secondary carriers (those allocated rows not matching primary)
-                        secondary = []
-                        if (
-                            primary
-                            and "assigned_insurance" in agent
-                            and insurance_carrier_col
-                        ):
-                            allocated_carriers = set()
-                            for ridx in agent.get("row_indices", []):
-                                if ridx < len(processed_df):
-                                    allocated_carriers.add(
-                                        processed_df.at[ridx, insurance_carrier_col]
-                                    )
-                            secondary = [c for c in allocated_carriers if c != primary]
-                        primary_info = f" | Primary: {primary}" if primary else ""
-                        secondary_info = (
-                            f" | Secondary: {', '.join([str(c).strip() for c in secondary[:2] if c is not None and not pd.isna(c)])}{'...' if len(secondary) > 2 else ''}"
-                            if secondary
-                            else ""
-                        )
-                        agent_summary += f"  {i+1}. {agent['name']}: {agent['allocated']}/{agent['capacity']} rows{senior_info}{insurance_info}{primary_info}{secondary_info}\n"
+                        bg = "#d4edda" if agent["allocated"] > 0 else "#fff"
+                        fill_pct = (agent["allocated"] / agent["capacity"] * 100) if agent["capacity"] > 0 else 0
 
-                    # Note: Allocation counts are already calculated and corrected above (lines 10863-10906)
-                    # Total allocated was already calculated above
+                        agent_summary += f"""
+        <tr style="border-bottom:1px solid #e9ecef;background:{bg};">
+            <td style="padding:8px 12px;font-size:12px;">{i+1}</td>
+            <td style="padding:8px 12px;font-size:12px;font-weight:600;">{agent['name']} {senior_badge}</td>
+            <td style="padding:8px 12px;text-align:center;font-size:12px;">{agent['capacity']}</td>
+            <td style="padding:8px 12px;text-align:center;font-size:12px;font-weight:700;">{agent['allocated']}<span style="font-weight:400;color:#666;font-size:11px;"> ({fill_pct:.0f}%)</span></td>
+            <td style="padding:8px 12px;font-size:11px;">{'Senior' if agent['is_senior'] else 'Regular'}</td>
+            <td style="padding:8px 12px;font-size:11px;">{primary_display}</td>
+            <td style="padding:8px 12px;font-size:11px;">{ins_display}</td>
+        </tr>"""
+
+                    agent_summary += """
+    </tbody>
+</table>"""
+
                     if total_allocated > 0:
                         agent_summary += f"""
-📊 Priority Distribution (Based on Actual Allocations):
-- First Priority: {first_priority_count} rows total
-- Second Priority: {second_priority_count} rows total  
-- Third Priority: {third_priority_count} rows total
+<div style="margin-top:15px;padding:12px;background:#e7f3ff;border-radius:6px;border:1px solid #b8daff;">
+    <strong>📊 Priority Distribution:</strong> First Priority: {first_priority_count} | Second Priority: {second_priority_count} | Third Priority: {third_priority_count}
+</div>"""
 
-⚠️ Note: Priority distribution will be proportional to each agent's allocated capacity.
-"""
-                    else:
-                        agent_summary += "\n⚠️ No rows could be allocated due to capacity constraints."
+                    if insurance_carrier_col and unmatched_insurance_companies:
+                        unmatched_list = [str(comp).strip() for comp in sorted(list(unmatched_insurance_companies))[:5] if comp is not None and not pd.isna(comp)]
+                        agent_summary += f"""
+<div style="margin-top:10px;padding:10px;background:#fff3cd;border-radius:6px;border:1px solid #ffc107;font-size:12px;">
+    <strong>⚠️ Unmatched Insurance Companies ({len(unmatched_insurance_companies)}):</strong> {', '.join(unmatched_list)}{'...' if len(unmatched_insurance_companies) > 5 else ''}
+    <br>These companies were assigned ONLY to senior agents with highest priority.
+</div>"""
 
                 elif not agent_name_col:
-                    agent_summary = (
-                        "\n⚠️ Agent Name column not found in allocation file."
-                    )
+                    agent_summary = "<div style='padding:10px;background:#fff3cd;border-radius:6px;'>⚠️ Agent Name column not found in allocation file.</div>"
                 elif not counts_col:
-                    agent_summary = "\n⚠️ TFD column not found in allocation file."
+                    agent_summary = "<div style='padding:10px;background:#fff3cd;border-radius:6px;'>⚠️ TFD column not found in allocation file.</div>"
 
-                # Add information about insurance matching
-                if insurance_carrier_col and insurance_working_col:
-                    training_info = (
-                        f" and '{insurance_needs_training_col}'"
-                        if insurance_needs_training_col
-                        else ""
-                    )
-                    agent_summary += f"\n✅ Insurance capability matching enabled using '{insurance_working_col}'{training_info} and '{insurance_carrier_col}' columns."
-                elif insurance_carrier_col and not insurance_working_col:
-                    agent_summary += f"\n⚠️ Insurance carrier column '{insurance_carrier_col}' found, but 'Insurance List' column not found in allocation file."
-                elif not insurance_carrier_col and insurance_working_col:
-                    agent_summary += f"\n⚠️ 'Insurance List' column found, but 'Dental Primary Ins Carr' column not found in data file."
-                else:
-                    agent_summary += f"\nℹ️ Insurance capability matching disabled - using simple capacity-based allocation."
-
-                # Add information about training filtering
-                if insurance_needs_training_col:
-                    agent_summary += f"\n🎓 Training-based filtering enabled - agents will not be assigned work for insurance companies they need training for."
-
-                # Add information about senior agents
-                senior_count = sum(
-                    1 for agent in agent_allocations if agent["is_senior"]
-                )
-                if senior_count > 0:
-                    unmatched_note = (
-                        f" Unmatched insurance companies ({len(unmatched_insurance_companies)}) are assigned ONLY to senior agents with highest priority."
-                        if unmatched_insurance_companies
-                        else ""
-                    )
-                    agent_summary += f"\n👑 Senior agents detected: {senior_count} - Senior agents can work with any insurance company and get priority for First Priority cases.{unmatched_note}"
             except Exception as e:
-                agent_summary = f"\n⚠️ Error processing agent allocation: {str(e)}"
+                agent_summary = f"<div style='padding:10px;background:#f8d7da;border-radius:6px;'>⚠️ Error processing agent allocation: {str(e)}</div>"
 
         # Generate result message
         first_priority_dates_list = sorted(list(first_priority_dates))
@@ -17119,23 +17096,34 @@ def process_allocation_files_with_dates(
                 f"📋 Added {len(need_to_allocate_rows)} 'Need to allocate' rows back to final file"
             )
 
-        result_message = f"""✅ Priority processing completed successfully!
-
-📊 Processing Statistics:
-- Total rows processed: {total_rows_excluding_not_to_work}
-- First Priority: {first_priority_count} rows
-- Second Priority: {second_priority_count} rows
-- Third Priority: {third_priority_count} rows
-- Invalid dates: {invalid_dates} rows
-
-📅 Selected First Priority Dates: {first_priority_dates_str}
-📅 Selected Second Priority Dates: {second_priority_dates_str}
-📅 Third Priority Dates: {third_priority_dates_str}
-
-📋 Updated column: 'Priority Status'
-📅 Based on column: '{appointment_date_col}'{agent_summary}
-
-💾 Ready to download the processed result file!"""
+        result_message = f"""<h3 style="margin-bottom:15px;">✅ Imagen Allocation Complete</h3>
+<div style="display:flex;gap:15px;margin-bottom:15px;flex-wrap:wrap;">
+    <div style="background:#d1ecf1;padding:10px 16px;border-radius:8px;flex:1;min-width:100px;text-align:center;">
+        <div style="font-size:20px;font-weight:700;color:#0c5460;">{total_rows_excluding_not_to_work}</div>
+        <div style="font-size:11px;color:#0c5460;">Total Rows</div>
+    </div>
+    <div style="background:#f8d7da;padding:10px 16px;border-radius:8px;flex:1;min-width:100px;text-align:center;">
+        <div style="font-size:20px;font-weight:700;color:#721c24;">{first_priority_count}</div>
+        <div style="font-size:11px;color:#721c24;">First Priority</div>
+    </div>
+    <div style="background:#fff3cd;padding:10px 16px;border-radius:8px;flex:1;min-width:100px;text-align:center;">
+        <div style="font-size:20px;font-weight:700;color:#856404;">{second_priority_count}</div>
+        <div style="font-size:11px;color:#856404;">Second Priority</div>
+    </div>
+    <div style="background:#d4edda;padding:10px 16px;border-radius:8px;flex:1;min-width:100px;text-align:center;">
+        <div style="font-size:20px;font-weight:700;color:#155724;">{third_priority_count}</div>
+        <div style="font-size:11px;color:#155724;">Third Priority</div>
+    </div>
+</div>
+<div style="margin-bottom:15px;padding:10px;background:#f8f9fa;border-radius:6px;font-size:12px;">
+    <strong>📅 First Priority Dates:</strong> {first_priority_dates_str}<br>
+    <strong>📅 Second Priority Dates:</strong> {second_priority_dates_str}<br>
+    <strong>📅 Third Priority Dates:</strong> {third_priority_dates_str}
+</div>
+{agent_summary}
+<div style="margin-top:15px;padding:10px;background:#d4edda;border-radius:6px;border:1px solid #c3e6cb;">
+    <strong>💾 Ready to download the processed result file!</strong>
+</div>"""
 
         # Performance summary
         total_processing_time = time.time() - start_time

@@ -27334,18 +27334,22 @@ def upload_nh_allocation():
         all_sheets = pd.read_excel(filename, sheet_name=None, parse_dates=False)
         target_sheet = None
         target_df = None
-        expected_cols = ["office", "insurance"]
+
+        def has_required_cols(col_list):
+            cols_lower = [str(c).strip().lower() for c in col_list]
+            has_office = any("office" in c for c in cols_lower)
+            has_insurance = any(c == "insurance" or c == "insurance carrier" for c in cols_lower)
+            return has_office and has_insurance
+
         for sn, sdf in all_sheets.items():
-            sdf_cols_lower = [str(c).strip().lower() for c in sdf.columns]
-            if all(ec in sdf_cols_lower for ec in expected_cols):
+            if has_required_cols(sdf.columns):
                 target_sheet = sn
                 target_df = sdf
                 break
             for skip_rows in range(1, 15):
                 try:
                     test_df = pd.read_excel(filename, sheet_name=sn, header=skip_rows, parse_dates=False)
-                    test_cols_lower = [str(c).strip().lower() for c in test_df.columns]
-                    if all(ec in test_cols_lower for ec in expected_cols):
+                    if has_required_cols(test_df.columns):
                         target_sheet = sn
                         target_df = test_df
                         break
@@ -27355,7 +27359,10 @@ def upload_nh_allocation():
                 break
 
         if target_df is None:
-            flash(f"Could not find 'Office' and 'Insurance' columns in any sheet. Sheets: {list(all_sheets.keys())}", "error")
+            all_cols = []
+            for sn, sdf in all_sheets.items():
+                all_cols.extend([f"{sn}: {list(sdf.columns)}" for _ in [1]])
+            flash(f"Could not find 'Office' and 'Insurance' columns in any sheet. {'; '.join(all_cols)}", "error")
             if os.path.exists(filename):
                 os.remove(filename)
             return redirect("/?menu=allocations&submenu=nh-allocation")
@@ -27397,15 +27404,25 @@ def process_nh_allocation():
         s_exceptions = find_col(staff_df, ["exceptions", "exception"])
         s_insurance = find_col(staff_df, ["insurance preference", "insurance"])
 
-        a_office = find_col(alloc_df, ["office"])
-        a_insurance = find_col(alloc_df, ["insurance"])
+        a_office = find_col(alloc_df, ["office", "office name"])
+        a_insurance = find_col(alloc_df, ["insurance", "insurance carrier"])
+        if not a_office:
+            for col in alloc_df.columns:
+                if "office" in str(col).strip().lower():
+                    a_office = col
+                    break
+        if not a_insurance:
+            for col in alloc_df.columns:
+                if str(col).strip().lower().startswith("insurance"):
+                    a_insurance = col
+                    break
 
         if not s_agent:
             raise ValueError("'Agent Name' column not found in staff database")
         if not a_office:
-            raise ValueError("'Office' column not found in allocation file")
+            raise ValueError(f"'Office' column not found in allocation file. Columns: {list(alloc_df.columns)}")
         if not a_insurance:
-            raise ValueError("'Insurance' column not found in allocation file")
+            raise ValueError(f"'Insurance' column not found in allocation file. Columns: {list(alloc_df.columns)}")
 
         # --- Build agent list ---
         agents = []

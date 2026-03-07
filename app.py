@@ -462,6 +462,65 @@ class NTBPFile(db.Model):
         return None
 
 
+class NHFile(db.Model):
+    """NH file model for storing NH uploads"""
+
+    __tablename__ = "nh_files"
+
+    id = db.Column(db.Integer, primary_key=True)
+    agent_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False)
+    filename = db.Column(db.String(255), nullable=False)
+    file_data = db.Column(db.Text)
+    upload_date = db.Column(db.DateTime, default=datetime.utcnow)
+    status = db.Column(db.String(50), default="uploaded")
+    notes = db.Column(db.Text)
+
+    agent = db.relationship("User", backref="nh_files")
+
+    def set_file_data(self, data):
+        if data is not None:
+            if isinstance(data, dict):
+                serializable_data = {}
+                for key, value in data.items():
+                    if isinstance(value, pd.DataFrame):
+                        df_records = value.to_dict("records")
+                        for record in df_records:
+                            for k, v in record.items():
+                                if hasattr(v, "isoformat"):
+                                    record[k] = v.isoformat()
+                        serializable_data[key] = df_records
+                    else:
+                        serializable_data[key] = value
+                self.file_data = json.dumps(serializable_data)
+            elif isinstance(data, pd.DataFrame):
+                df_records = data.to_dict("records")
+                for record in df_records:
+                    for k, v in record.items():
+                        if hasattr(v, "isoformat"):
+                            record[k] = v.isoformat()
+                self.file_data = json.dumps(df_records)
+            else:
+                self.file_data = json.dumps(data)
+        else:
+            self.file_data = None
+
+    def get_file_data(self):
+        if self.file_data:
+            data = json.loads(self.file_data)
+            if isinstance(data, dict):
+                converted_data = {}
+                for key, value in data.items():
+                    if isinstance(value, list) and len(value) > 0:
+                        converted_data[key] = pd.DataFrame(value)
+                    else:
+                        converted_data[key] = value
+                return converted_data
+            elif isinstance(data, list):
+                return pd.DataFrame(data)
+            return data
+        return None
+
+
 class QCPFile(db.Model):
     """QCP file model for storing QCP uploads"""
 
@@ -1046,6 +1105,22 @@ def get_qcp_files(agent_id=None):
             .all()
         )
     return QCPFile.query.order_by(QCPFile.upload_date.desc()).all()
+
+
+def save_nh_file(agent_id, filename, file_data, notes=None):
+    """Save NH file to database"""
+    nh_file = NHFile(agent_id=agent_id, filename=filename, notes=notes)
+    nh_file.set_file_data(file_data)
+    db.session.add(nh_file)
+    db.session.commit()
+    return nh_file
+
+
+def get_nh_files(agent_id=None):
+    """Get NH files, optionally filtered by agent"""
+    if agent_id:
+        return NHFile.query.filter_by(agent_id=agent_id).order_by(NHFile.upload_date.desc()).all()
+    return NHFile.query.order_by(NHFile.upload_date.desc()).all()
 
 
 def save_daily_consolidate_file(
@@ -2595,6 +2670,7 @@ HTML_TEMPLATE = """
                 'ntbp': 'NTBP',
                 'qcp': 'Auditor',
                 'daily-consolidate': 'Daily Consolidate',
+                'nh-consolidate': 'NH',
                 'imagen-tracker': 'Imagen Tracker'
             };
             return names[submenuName] || submenuName;
@@ -2700,6 +2776,11 @@ HTML_TEMPLATE = """
                     <li>
                         <div class="submenu-item {% if current_submenu == 'daily-consolidate' %}active{% endif %}" onclick="switchAdminMenu('agent-consolidation', 'daily-consolidate')">
                             <i class="fas fa-calendar-day"></i> Daily Consolidate
+                        </div>
+                    </li>
+                    <li>
+                        <div class="submenu-item {% if current_submenu == 'nh-consolidate' %}active{% endif %}" onclick="switchAdminMenu('agent-consolidation', 'nh-consolidate')">
+                            <i class="fas fa-hospital"></i> NH
                         </div>
                     </li>
                 </ul>
@@ -4102,6 +4183,124 @@ HTML_TEMPLATE = """
                             {% else %}
                             <div style="background: #f8f9fa; padding: 20px; border-radius: 10px;">
                                 <p style="color: #666;">No Daily Consolidate files uploaded yet.</p>
+                            </div>
+                            {% endif %}
+                    </div>
+                </div>
+                
+                <!-- NH Content (under Agent Consolidation menu) -->
+                <div id="nh-consolidate-content" class="admin-menu-content" style="display: {% if current_menu == 'agent-consolidation' and current_submenu == 'nh-consolidate' %}block{% else %}none{% endif %};">
+                    <div class="section">
+                            {% if nh_files %}
+                            <div style="background: #f8f9fa; padding: 20px; border-radius: 10px; margin-bottom: 20px;">
+                                <h4>Available NH Files:</h4>
+                                {% for file in nh_files %}
+                                <div style="border-bottom: {% if loop.last %}none{% else %}1px solid #dee2e6{% endif %}; padding: 10px 0; display: flex; justify-content: space-between; align-items: center;">
+                                    <div style="flex: 1;">
+                                        <strong>{{ file.agent.name }}</strong> - {{ file.filename }}
+                                        <br>
+                                        <small style="color: #666;">
+                                            Uploaded: {{ (file.upload_date | to_ist).strftime('%Y-%m-%d %I:%M %p') }} IST
+                                            | Status: <span style="color: {% if file.status == 'uploaded' %}#28a745{% elif file.status == 'consolidated' %}#007bff{% else %}#6c757d{% endif %}">{{ file.status.title() if file.status else 'Uploaded' }}</span>
+                                        </small>
+                                        {% if file.notes %}
+                                        <br>
+                                        <small style="color: #666;"><em>{{ file.notes }}</em></small>
+                                        {% endif %}
+                                    </div>
+                                    <div style="margin-left: 15px; display: flex; gap: 8px;">
+                                        <a href="/download_nh_file/{{ file.id }}" class="process-btn" style="padding: 8px 16px; text-decoration: none; display: inline-block; background: linear-gradient(135deg, #007bff, #0056b3); color: white; border-radius: 5px; font-size: 14px;">
+                                            <i class="fas fa-download"></i> Download
+                                        </a>
+                                        <form action="/delete_nh_file/{{ file.id }}" method="post" style="margin: 0; display: inline-block;" onsubmit="return confirm('Are you sure you want to delete this file?');">
+                                            <input type="hidden" name="subtab" value="nh-consolidate">
+                                            <input type="hidden" name="current_menu" value="agent-consolidation">
+                                            <input type="hidden" name="current_submenu" value="nh-consolidate">
+                                            <button type="submit" class="process-btn" style="padding: 8px 16px; background: linear-gradient(135deg, #dc3545, #c82333); color: white; border: none; border-radius: 5px; font-size: 14px; cursor: pointer;">
+                                                <i class="fas fa-trash-alt"></i> Delete
+                                            </button>
+                                        </form>
+                                    </div>
+                                </div>
+                                {% endfor %}
+                            </div>
+                            <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+                                <form action="/consolidate_nh_files" method="post" style="margin: 0;">
+                                    <button type="submit" class="process-btn" style="background: linear-gradient(135deg, #28a745, #20c997);">
+                                        <i class="fas fa-compress-arrows-alt"></i> Consolidate All NH Files
+                                    </button>
+                                </form>
+                                <form action="/clear_nh_files" method="post" style="margin: 0;" onsubmit="return confirm('Are you sure you want to delete all NH files?');">
+                                    <input type="hidden" name="subtab" value="nh-consolidate">
+                                    <input type="hidden" name="current_menu" value="agent-consolidation">
+                                    <input type="hidden" name="current_submenu" value="nh-consolidate">
+                                    <button type="submit" class="process-btn" style="background: linear-gradient(135deg, #dc3545, #c82333);">
+                                        <i class="fas fa-trash-alt"></i> Clear all files
+                                    </button>
+                                </form>
+                            </div>
+                            {% else %}
+                            <div style="background: #f8f9fa; padding: 20px; border-radius: 10px;">
+                                <p style="color: #666;">No NH files uploaded yet.</p>
+                            </div>
+                            {% endif %}
+                    </div>
+                </div>
+
+                <!-- NH Content (under Agent Consolidation menu) -->
+                <div id="nh-consolidate-content" class="admin-menu-content" style="display: {% if current_menu == 'agent-consolidation' and current_submenu == 'nh-consolidate' %}block{% else %}none{% endif %};">
+                    <div class="section">
+                            {% if nh_files %}
+                            <div style="background: #f8f9fa; padding: 20px; border-radius: 10px; margin-bottom: 20px;">
+                                <h4>Available NH Files:</h4>
+                                {% for file in nh_files %}
+                                <div style="border-bottom: {% if loop.last %}none{% else %}1px solid #dee2e6{% endif %}; padding: 10px 0; display: flex; justify-content: space-between; align-items: center;">
+                                    <div style="flex: 1;">
+                                        <strong>{{ file.agent.name }}</strong> - {{ file.filename }}
+                                        <br>
+                                        <small style="color: #666;">
+                                            Uploaded: {{ (file.upload_date | to_ist).strftime('%Y-%m-%d %I:%M %p') }} IST
+                                            | Status: <span style="color: {% if file.status == 'uploaded' %}#28a745{% elif file.status == 'consolidated' %}#007bff{% else %}#6c757d{% endif %}">{{ file.status.title() if file.status else 'Uploaded' }}</span>
+                                        </small>
+                                        {% if file.notes %}
+                                        <br>
+                                        <small style="color: #666;"><em>{{ file.notes }}</em></small>
+                                        {% endif %}
+                                    </div>
+                                    <div style="margin-left: 15px; display: flex; gap: 8px;">
+                                        <a href="/download_nh_file/{{ file.id }}" class="process-btn" style="padding: 8px 16px; text-decoration: none; display: inline-block; background: linear-gradient(135deg, #007bff, #0056b3); color: white; border-radius: 5px; font-size: 14px;">
+                                            <i class="fas fa-download"></i> Download
+                                        </a>
+                                        <form action="/delete_nh_file/{{ file.id }}" method="post" style="margin: 0; display: inline-block;" onsubmit="return confirm('Are you sure you want to delete this file?');">
+                                            <input type="hidden" name="subtab" value="nh-consolidate">
+                                            <input type="hidden" name="current_menu" value="agent-consolidation">
+                                            <input type="hidden" name="current_submenu" value="nh-consolidate">
+                                            <button type="submit" class="process-btn" style="padding: 8px 16px; background: linear-gradient(135deg, #dc3545, #c82333); color: white; border: none; border-radius: 5px; font-size: 14px; cursor: pointer;">
+                                                <i class="fas fa-trash-alt"></i> Delete
+                                            </button>
+                                        </form>
+                                    </div>
+                                </div>
+                                {% endfor %}
+                            </div>
+                            <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+                                <form action="/consolidate_nh_files" method="post" style="margin: 0;">
+                                    <button type="submit" class="process-btn" style="background: linear-gradient(135deg, #28a745, #20c997);">
+                                        <i class="fas fa-compress-arrows-alt"></i> Consolidate All NH Files
+                                    </button>
+                                </form>
+                                <form action="/clear_nh_files" method="post" style="margin: 0;" onsubmit="return confirm('Are you sure you want to delete all NH files?');">
+                                    <input type="hidden" name="subtab" value="nh-consolidate">
+                                    <input type="hidden" name="current_menu" value="agent-consolidation">
+                                    <input type="hidden" name="current_submenu" value="nh-consolidate">
+                                    <button type="submit" class="process-btn" style="background: linear-gradient(135deg, #dc3545, #c82333);">
+                                        <i class="fas fa-trash-alt"></i> Clear all files
+                                    </button>
+                                </form>
+                            </div>
+                            {% else %}
+                            <div style="background: #f8f9fa; padding: 20px; border-radius: 10px;">
+                                <p style="color: #666;">No NH files uploaded yet.</p>
                             </div>
                             {% endif %}
                     </div>
@@ -17327,6 +17526,7 @@ def index():
     ntbp_files = None
     qcp_files = None
     daily_consolidate_files = None
+    nh_files = None
 
     # Get menu and submenu from URL parameters (for admin users)
     current_menu = request.args.get(
@@ -17352,6 +17552,7 @@ def index():
         ntbp_files = get_ntbp_files()
         qcp_files = get_qcp_files()
         daily_consolidate_files = get_daily_consolidate_files()
+        nh_files = get_nh_files()
 
     return render_template_string(
         HTML_TEMPLATE,
@@ -17369,6 +17570,7 @@ def index():
         ntbp_files=ntbp_files,
         qcp_files=qcp_files,
         daily_consolidate_files=daily_consolidate_files,
+        nh_files=nh_files,
         current_time=current_time,
         email_staff_details=email_staff_details,
         email_staff_filename=email_staff_filename,
@@ -19435,6 +19637,7 @@ def process_files():
         ntbp_files = get_ntbp_files()
         qcp_files = get_qcp_files()
         daily_consolidate_files = get_daily_consolidate_files()
+        nh_files = get_nh_files()
 
     if not data_file_data:
         processing_result = "❌ Error: Please upload data file first"
@@ -24200,8 +24403,8 @@ def calculate_summary_from_deduplicated_data(combined_df):
     remark_col = None
 
     for col in combined_df.columns:
-        col_lower = col.lower()
-        if col_lower == "agent name":
+        col_lower = col.lower().strip()
+        if col_lower in ("agent name", "agent"):
             agent_name_col = col
         elif col_lower in ["remark", "remarks"]:
             remark_col = col
@@ -24955,6 +25158,36 @@ def clear_qcp_files():
     """Clear all QCP files"""
     subtab = request.form.get("subtab", "qcp")
     return clear_files_helper(QCPFile, "Auditor", subtab)
+
+
+@app.route("/consolidate_nh_files", methods=["POST"])
+@admin_required
+def consolidate_nh_files():
+    """Consolidate all NH files"""
+    return consolidate_files_helper(NHFile, "NH")
+
+
+@app.route("/download_nh_file/<int:file_id>", methods=["GET"])
+@admin_required
+def download_nh_file(file_id):
+    """Download a single NH file"""
+    return download_file_helper(NHFile, file_id, "NH")
+
+
+@app.route("/delete_nh_file/<int:file_id>", methods=["POST"])
+@admin_required
+def delete_nh_file(file_id):
+    """Delete a single NH file"""
+    subtab = request.form.get("subtab", "nh-consolidate")
+    return delete_file_helper(NHFile, file_id, "NH", subtab)
+
+
+@app.route("/clear_nh_files", methods=["POST"])
+@admin_required
+def clear_nh_files():
+    """Clear all NH files"""
+    subtab = request.form.get("subtab", "nh-consolidate")
+    return clear_files_helper(NHFile, "NH", subtab)
 
 
 @app.route("/clear_daily_consolidate_files", methods=["POST"])
@@ -26711,8 +26944,8 @@ def cleanup_all_agent_files():
 
 def daily_consolidate_all_subtabs_and_email():
     """
-    Consolidate all 5 sub-tabs (Day Shift, Night Shift, NTBP, QCP, Daily Consolidate)
-    and send them in one email with 5 attachments at 7 AM daily.
+    Consolidate all 6 sub-tabs (Day Shift, Night Shift, NTBP, QCP, Daily Consolidate, NH)
+    and send them in one email with attachments at 7 AM daily.
     """
     print(
         f"🔔 Daily consolidation job triggered at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
@@ -26740,6 +26973,7 @@ def daily_consolidate_all_subtabs_and_email():
                 (NTBPFile, "NTBP"),
                 (QCPFile, "Auditor"),
                 (DailyConsolidateFile, "Daily Consolidate"),
+                (NHFile, "NH"),
             ]
 
             attachments = []
@@ -27831,7 +28065,7 @@ AGENT_TEMPLATE_WITH_SIDEBAR = """
     <script>
         // Handle form submissions with AJAX for Day Shift, Night Shift, NTBP, QCP, and Daily Consolidate
         document.addEventListener('DOMContentLoaded', function() {
-            const forms = ['day-shift-form', 'night-shift-form', 'ntbp-form', 'qcp-form', 'consolidate-form'];
+            const forms = ['day-shift-form', 'night-shift-form', 'ntbp-form', 'qcp-form', 'consolidate-form', 'nh-agent-form'];
             forms.forEach(formId => {
                 const form = document.getElementById(formId);
                 if (form) {
@@ -27916,6 +28150,9 @@ AGENT_TEMPLATE_WITH_SIDEBAR = """
             </a></li>
             <li><a href="/daily-consolidate" class="{{ 'active' if current_page == 'daily_consolidate' else '' }}">
                 <i class="fas fa-archive"></i> Daily Consolidate
+            </a></li>
+            <li><a href="/nh" class="{{ 'active' if current_page == 'nh' else '' }}">
+                <i class="fas fa-hospital"></i> NH
             </a></li>
         </ul>
     </div>
@@ -28166,6 +28403,131 @@ def daily_consolidate():
         user_name=user_name,
         content=content,
     )
+
+
+@app.route("/nh")
+@normal_agent_required
+def nh_agent():
+    """NH view - Upload NH work files"""
+    user_id = session.get("user_id")
+    user = User.query.filter_by(email=user_id, is_active=True).first()
+    if not user:
+        user = User.query.filter_by(id=user_id, is_active=True).first()
+
+    user_name = user.name if user else "Agent"
+    nh_agent_files = get_nh_files(user.id) if user else []
+
+    files_list = ""
+    if nh_agent_files:
+        files_list = "<h3 style='margin-top: 30px;'>Uploaded Files</h3><ul style='list-style: none; padding: 0;'>"
+        for file in nh_agent_files:
+            upload_date = file.upload_date.strftime("%Y-%m-%d %H:%M:%S") if file.upload_date else "Unknown"
+            files_list += f"<li style='padding: 10px; background: #f8f9fa; margin: 5px 0; border-radius: 5px;'><i class='fas fa-file-excel'></i> {file.filename} - {upload_date}</li>"
+        files_list += "</ul>"
+
+    content = """
+    <h2>NH File Upload</h2>
+    <p>Upload your NH work file.</p>
+    <p style="color: #666; font-size: 0.9em; margin-top: 10px;"><em>Note: Uploading a new file will replace your previous upload.</em></p>
+
+    <div style="border: 2px dashed #ddd; padding: 30px; border-radius: 10px; text-align: center; margin-top: 30px; max-width: 500px;">
+        <form action="/upload_nh" method="post" enctype="multipart/form-data" id="nh-agent-form">
+            <input type="file" name="file" accept=".xlsx,.xls" required style="margin-bottom: 15px; width: 100%; padding: 10px;">
+            <button type="submit" style="padding: 10px 20px; background: #667eea; color: white; border: none; border-radius: 5px; cursor: pointer;">
+                <i class="fas fa-upload"></i> Upload NH File
+            </button>
+        </form>
+    </div>
+    """ + files_list
+
+    return render_template_string(
+        AGENT_TEMPLATE_WITH_SIDEBAR,
+        page_title="NH",
+        current_page="nh",
+        user_name=user_name,
+        content=content,
+    )
+
+
+NH_REQUIRED_COLUMNS = [
+    "software", "office name", "practiceid", "location", "source",
+    "received date", "appointment", "patient name", "dos/dob",
+    "patient id", "insurance", "policy id", "tel", "status code",
+    "comment", "rep", "agent", "remark", "work date",
+    "subscriber name", "subscriber dob", "state", "time zone",
+    "contract start", "next appointment date", "status",
+    "qc agent", "qc comments", "date work",
+]
+
+
+@app.route("/upload_nh", methods=["POST"])
+@normal_agent_required
+def upload_nh():
+    """Upload NH file with column validation"""
+    if "file" not in request.files:
+        return jsonify({"success": False, "message": "No file provided"}), 400
+    file = request.files["file"]
+    if file.filename == "":
+        return jsonify({"success": False, "message": "No file selected"}), 400
+
+    try:
+        user_id = session.get("user_id")
+        user = User.query.filter_by(email=user_id, is_active=True).first()
+        if not user:
+            user = User.query.filter_by(id=user_id, is_active=True).first()
+        if not user:
+            return jsonify({"success": False, "message": "User not found"}), 400
+
+        filename = secure_filename(file.filename)
+        file.save(filename)
+
+        try:
+            file_data = pd.read_excel(filename, sheet_name=None, parse_dates=False)
+
+            # Validate columns in at least one sheet
+            valid_sheet = False
+            found_cols = []
+            for sn, sdf in file_data.items():
+                cols_lower = [str(c).strip().lower() for c in sdf.columns]
+                missing = [rc for rc in NH_REQUIRED_COLUMNS if rc not in cols_lower]
+                if len(missing) <= 3:
+                    valid_sheet = True
+                    break
+                found_cols = cols_lower
+
+            if not valid_sheet:
+                missing = [rc for rc in NH_REQUIRED_COLUMNS if rc not in found_cols]
+                if os.path.exists(filename):
+                    os.remove(filename)
+                return jsonify({
+                    "success": False,
+                    "message": f"File validation failed. Missing columns: {', '.join(missing[:10])}"
+                }), 400
+
+            # Clear existing NH files for this agent
+            existing_files = NHFile.query.filter_by(agent_id=user.id).all()
+            for ef in existing_files:
+                db.session.delete(ef)
+            db.session.commit()
+
+            nh_file = save_nh_file(agent_id=user.id, filename=filename, file_data=file_data, notes=None)
+
+            if os.path.exists(filename):
+                os.remove(filename)
+
+            return jsonify({
+                "success": True,
+                "message": f"NH file '{filename}' uploaded successfully",
+                "file_id": nh_file.id,
+            })
+
+        except Exception as e:
+            if os.path.exists(filename):
+                os.remove(filename)
+            raise
+
+    except Exception as e:
+        return jsonify({"success": False, "message": f"Error uploading file: {str(e)}"}), 500
 
 
 @app.route("/upload_day_shift", methods=["POST"])

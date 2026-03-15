@@ -5430,10 +5430,12 @@ HTML_TEMPLATE = """
                     headerHtml += '</tr>';
                     modalTableHead.innerHTML = headerHtml;
                     
-                    // Build table body
+                    // Build table body (priority rows highlighted in red)
                     let bodyHtml = '';
                     data.rows.forEach((row, idx) => {
-                        bodyHtml += '<tr style="border-bottom: 1px solid #e9ecef;">';
+                        const isPriority = row._priority === true;
+                        const trStyle = isPriority ? 'border-bottom: 1px solid #e9ecef; color: #dc3545; font-weight: 500;' : 'border-bottom: 1px solid #e9ecef;';
+                        bodyHtml += '<tr style="' + trStyle + '">';
                         data.columns.forEach(col => {
                             const value = row[col] !== null && row[col] !== undefined ? String(row[col]) : '';
                             bodyHtml += `<td style="padding: 12px 15px;">${value}</td>`;
@@ -19241,18 +19243,55 @@ def get_agent_allocation_data():
                 {"success": False, "error": f"No rows found for agent '{agent_name}'"}
             )
 
-        # Convert to dictionary format for JSON response
+        # Find Appointment and Source columns for priority highlighting (case-insensitive)
+        appointment_col = None
+        source_col = None
+        for col in agent_rows.columns:
+            c = str(col).strip().lower()
+            if c == "appointment":
+                appointment_col = col
+            if c == "source":
+                source_col = col
+
+        def is_priority_row_email(row):
+            """Priority: Appointment today→today+3 or before today, or Source = Email/Mail (case-insensitive)."""
+            if source_col is not None:
+                sv = row.get(source_col)
+                if pd.notna(sv) and str(sv).strip().lower() in ("email", "mail"):
+                    return True
+            if appointment_col is not None:
+                av = row.get(appointment_col)
+                if pd.isna(av) or av is None or str(av).strip() == "" or str(av).strip().upper() == "N/A":
+                    return False
+                try:
+                    if hasattr(av, "date"):
+                        dt = av.date()
+                    elif hasattr(av, "year"):
+                        dt = datetime(av.year, av.month, av.day).date() if hasattr(av, "month") else None
+                    else:
+                        dt = datetime.strptime(str(av).strip(), "%m/%d/%Y").date()
+                    if dt is None:
+                        return False
+                    today = datetime.now().date()
+                    end_date = today + timedelta(days=3)
+                    if dt < today or (today <= dt <= end_date):
+                        return True
+                except (ValueError, TypeError):
+                    pass
+            return False
+
+        # Convert to dictionary format for JSON response (include _priority for red highlighting in UI)
         columns = list(agent_rows.columns)
         rows = []
         for idx, row in agent_rows.iterrows():
             row_dict = {}
             for col in columns:
                 value = row[col]
-                # Handle NaN and None values
                 if pd.isna(value):
                     row_dict[col] = ""
                 else:
                     row_dict[col] = str(value)
+            row_dict["_priority"] = is_priority_row_email(row)
             rows.append(row_dict)
 
         return jsonify(
@@ -19334,11 +19373,61 @@ def download_agent_allocation_excel():
 
         excel_buffer.seek(0)
 
+        # Apply red font to priority rows (Appointment today→today+3 or before today, or Source = Email/Mail)
+        from openpyxl import load_workbook
+        from openpyxl.styles import Font
+        from datetime import date as date_type
+
+        wb = load_workbook(excel_buffer)
+        sheet_name = f"{agent_name}_Allocation"
+        ws = wb[sheet_name]
+        today = date_type.today()
+        end_date = today + timedelta(days=3)
+        appointment_col_idx = None
+        source_col_idx = None
+        for col_idx in range(1, ws.max_column + 1):
+            val = ws.cell(row=1, column=col_idx).value
+            if val is None:
+                continue
+            v = str(val).strip().lower()
+            if v == "appointment":
+                appointment_col_idx = col_idx
+            if v == "source":
+                source_col_idx = col_idx
+        red_font = Font(color="FF0000")
+        for row_idx in range(2, ws.max_row + 1):
+            is_priority = False
+            if appointment_col_idx is not None:
+                cell_val = ws.cell(row=row_idx, column=appointment_col_idx).value
+                if cell_val is not None and str(cell_val).strip() and str(cell_val).strip().upper() != "N/A":
+                    try:
+                        if hasattr(cell_val, "date"):
+                            dt = cell_val.date()
+                        elif hasattr(cell_val, "year") and hasattr(cell_val, "month") and hasattr(cell_val, "day"):
+                            dt = date_type(cell_val.year, cell_val.month, cell_val.day)
+                        else:
+                            dt = datetime.strptime(str(cell_val).strip(), "%m/%d/%Y").date()
+                        if dt < today or (today <= dt <= end_date):
+                            is_priority = True
+                    except (ValueError, TypeError):
+                        pass
+            if not is_priority and source_col_idx is not None:
+                cell_val = ws.cell(row=row_idx, column=source_col_idx).value
+                if cell_val is not None and str(cell_val).strip().lower() in ("email", "mail"):
+                    is_priority = True
+            if is_priority:
+                for c in range(1, ws.max_column + 1):
+                    ws.cell(row=row_idx, column=c).font = red_font
+        out_buffer = io.BytesIO()
+        wb.save(out_buffer)
+        wb.close()
+        out_buffer.seek(0)
+
         # Create filename
         filename = f'{agent_name}_allocation_{datetime.now().strftime("%Y%m%d")}.xlsx'
 
         return send_file(
-            excel_buffer,
+            out_buffer,
             mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             as_attachment=True,
             download_name=filename,
@@ -28388,9 +28477,17 @@ def process_nh_allocation():
         </div>
         """
 
-        # Agent summary table
+        # Agent summary table (fixed layout so Assigned column and values stay aligned)
         summary_html += """
-        <table style="width:100%;border-collapse:collapse;background:white;border-radius:8px;overflow:hidden;box-shadow:0 2px 4px rgba(0,0,0,0.1);margin-top:15px;">
+        <div style="overflow-x:auto;">
+        <table style="width:100%;border-collapse:collapse;background:white;border-radius:8px;overflow:hidden;box-shadow:0 2px 4px rgba(0,0,0,0.1);margin-top:15px;table-layout:fixed;">
+            <colgroup>
+                <col style="width:20%;">
+                <col style="width:80px;">
+                <col style="width:90px;">
+                <col style="width:30%;">
+                <col style="width:auto;">
+            </colgroup>
             <thead>
                 <tr style="background:linear-gradient(135deg,#667eea 0%,#764ba2 100%);color:white;">
                     <th style="padding:10px 15px;text-align:left;">Agent Name</th>
@@ -28408,14 +28505,14 @@ def process_nh_allocation():
             bg = "#d4edda" if agent["assigned"] > 0 else "#fff"
             summary_html += f"""
                 <tr style="border-bottom:1px solid #e9ecef;background:{bg};">
-                    <td style="padding:8px 15px;">{agent['name']}</td>
-                    <td style="padding:8px 15px;text-align:center;">{agent['tfd']}</td>
-                    <td style="padding:8px 15px;text-align:center;font-weight:700;">{agent['assigned']}</td>
-                    <td style="padding:8px 15px;font-size:12px;">{offices_display}</td>
-                    <td style="padding:8px 15px;font-size:12px;">{ins_display}</td>
+                    <td style="padding:8px 15px;overflow:hidden;text-overflow:ellipsis;">{agent['name']}</td>
+                    <td style="padding:8px 15px;text-align:center;font-variant-numeric:tabular-nums;">{agent['tfd']}</td>
+                    <td style="padding:8px 15px;text-align:center;font-weight:700;font-variant-numeric:tabular-nums;">{agent['assigned']}</td>
+                    <td style="padding:8px 15px;font-size:12px;overflow:hidden;text-overflow:ellipsis;">{offices_display}</td>
+                    <td style="padding:8px 15px;font-size:12px;overflow:hidden;text-overflow:ellipsis;">{ins_display}</td>
                 </tr>
             """
-        summary_html += "</tbody></table>"
+        summary_html += "</tbody></table></div>"
 
         # Skipped agents
         skipped_agents = []

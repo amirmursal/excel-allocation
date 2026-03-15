@@ -28337,6 +28337,53 @@ def download_nh_allocation():
         try:
             with pd.ExcelWriter(temp_path, engine="openpyxl") as writer:
                 export_df.to_excel(writer, sheet_name="NH_Allocation", index=False)
+
+            # Highlight priority rows in red: Appointment today→today+3 or before today, or Source = Email/Mail
+            from openpyxl import load_workbook
+            from openpyxl.styles import Font
+            from datetime import date as date_type, timedelta
+            wb = load_workbook(temp_path)
+            ws = wb["NH_Allocation"]
+            today = date_type.today()
+            end_date = today + timedelta(days=3)
+            appointment_col_idx = None
+            source_col_idx = None
+            for col_idx in range(1, ws.max_column + 1):
+                val = ws.cell(row=1, column=col_idx).value
+                if val is None:
+                    continue
+                v = str(val).strip().lower()
+                if v == "appointment":
+                    appointment_col_idx = col_idx
+                if v == "source":
+                    source_col_idx = col_idx
+            red_font = Font(color="FF0000")
+            for row_idx in range(2, ws.max_row + 1):
+                is_priority = False
+                if appointment_col_idx is not None:
+                    cell_val = ws.cell(row=row_idx, column=appointment_col_idx).value
+                    if cell_val is not None and str(cell_val).strip() and str(cell_val).strip().upper() != "N/A":
+                        try:
+                            if hasattr(cell_val, "date"):
+                                dt = cell_val.date()
+                            elif hasattr(cell_val, "year") and hasattr(cell_val, "month") and hasattr(cell_val, "day"):
+                                dt = date_type(cell_val.year, cell_val.month, cell_val.day)
+                            else:
+                                dt = datetime.strptime(str(cell_val).strip(), "%m/%d/%Y").date()
+                            if dt < today or (today <= dt <= end_date):
+                                is_priority = True
+                        except (ValueError, TypeError):
+                            pass
+                if not is_priority and source_col_idx is not None:
+                    cell_val = ws.cell(row=row_idx, column=source_col_idx).value
+                    if cell_val is not None and str(cell_val).strip().lower() in ("email", "mail"):
+                        is_priority = True
+                if is_priority:
+                    for col_idx in range(1, ws.max_column + 1):
+                        ws.cell(row=row_idx, column=col_idx).font = red_font
+            wb.save(temp_path)
+            wb.close()
+
             return send_file(
                 temp_path,
                 as_attachment=True,

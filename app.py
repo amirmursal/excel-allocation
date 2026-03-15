@@ -38,9 +38,8 @@ from google.auth.transport import requests
 from google.oauth2 import id_token
 import requests as req
 
-# Scheduler for reminder emails
+# Scheduler for daily cleanup / consolidation
 from apscheduler.schedulers.background import BackgroundScheduler
-from apscheduler.triggers.interval import IntervalTrigger
 from apscheduler.triggers.cron import CronTrigger
 import pytz
 import resend
@@ -81,9 +80,6 @@ migrate = Migrate(app, db)
 
 # Resend email configuration
 resend.api_key = os.environ.get("RESEND_API_KEY")
-
-# Global variable to store agent allocations data for reminders
-agent_allocations_for_reminders = None
 
 # Google OAuth Configuration
 GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID")
@@ -17465,10 +17461,6 @@ def process_allocation_files_with_dates(
                     # Store agent allocations data globally AFTER correction
                     agent_allocations_data = agent_allocations
 
-                    # Also store for reminder system
-                    global agent_allocations_for_reminders
-                    agent_allocations_for_reminders = agent_allocations
-
                     # Total allocated should match what's actually in the processed file
                     # Count rows with non-empty Agent Name values directly from the DataFrame
                     # This ensures the count matches what users see in the downloaded file
@@ -27038,99 +27030,6 @@ def view_shift_times():
     )
 
 
-def send_reminder_email(agent_info):
-    """Send a reminder email to an agent prompting them to upload their work"""
-    try:
-        agent_name = agent_info.get("name", "Agent")
-        agent_email = agent_info.get("email")
-        allocated = agent_info.get("allocated", 0)
-
-        if not agent_email:
-            return False, "No email address"
-
-        if allocated == 0:
-            return False, "No allocated work to remind about"
-
-        # Get allocation summary
-        summary = get_allocation_summary(agent_name, agent_info)
-
-        # Format insurance companies list
-        insurance_list = (
-            ", ".join(sorted(summary["insurance_companies"]))
-            if summary["insurance_companies"]
-            else "None"
-        )
-
-        # Prepare email content
-        text_content = f"""
-Dear {agent_name},
-
-This is a friendly reminder to upload your completed work.
-
-📊 YOUR CURRENT ALLOCATION:
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-• Total Allocated: {summary['total_allocated']} rows
-• First Priority: {summary['first_priority_count']} rows
-• Second Priority: {summary['second_priority_count']} rows
-• Third Priority: {summary['third_priority_count']} rows
-
-🏥 INSURANCE COMPANIES:
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-{insurance_list}
-
-⏰ Please log into the system and upload your completed work.
-
-Best regards,
-Allocation Management System
-        """
-
-        html_content = f"""
-            <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
-                <h2 style="color: #333;">📧 Work Upload Reminder</h2>
-                <p>Dear <strong>{agent_name}</strong>,</p>
-                <p>This is a friendly reminder to upload your completed work.</p>
-                
-                <div style="background-color: #e7f3ff; padding: 15px; border-radius: 5px; margin: 20px 0;">
-                    <h3 style="margin-top: 0; color: #0056b3;">📊 Your Current Allocation</h3>
-                    <ul style="margin: 10px 0; padding-left: 20px;">
-                        <li>Total Allocated: <strong>{summary['total_allocated']} rows</strong></li>
-                        <li>First Priority: <strong>{summary['first_priority_count']} rows</strong></li>
-                        <li>Second Priority: <strong>{summary['second_priority_count']} rows</strong></li>
-                        <li>Third Priority: <strong>{summary['third_priority_count']} rows</strong></li>
-                    </ul>
-                </div>
-                
-                <div style="background-color: #fff3cd; padding: 15px; border-radius: 5px; margin: 20px 0;">
-                    <h3 style="margin-top: 0; color: #856404;">🏥 Insurance Companies</h3>
-                    <p style="word-wrap: break-word;">{insurance_list}</p>
-                </div>
-                
-                <div style="background-color: #d4edda; padding: 15px; border-radius: 5px; margin: 20px 0; border-left: 4px solid #28a745;">
-                    <p style="font-size: 16px; font-weight: bold; color: #155724; margin: 10px 0;">⏰ Please log into the system and upload your completed work.</p>
-                </div>
-                
-                <p>Best regards,<br>
-                Allocation Management System</p>
-            </div>
-        """
-
-        # Send reminder email using Resend
-        success, message = send_email_with_resend(
-            to_email=agent_email,
-            subject=f"Reminder: Please Upload Your Work - {agent_name}",
-            html_content=html_content,
-            text_content=text_content,
-        )
-
-        if success:
-            return True, f"Reminder sent to {agent_email}"
-        else:
-            return False, message
-
-    except Exception as e:
-        return False, str(e)
-
-
 def create_consolidated_data():
     """Create consolidated Excel data from all agent work files"""
     try:
@@ -27624,118 +27523,6 @@ def daily_consolidate_and_cleanup():
         print(f"❌ Error in daily consolidation + cleanup: {str(e)}")
         db.session.rollback()
         return False, str(e)
-
-
-def check_and_send_reminders():
-    """Check which agents need reminders and send them every 2 hours from shift start time"""
-    global agent_allocations_for_reminders
-
-    if not agent_allocations_for_reminders:
-        return
-
-    # Get timezone from environment (default: IST for local, UTC for Railway)
-    # Shift times are stored in IST, so we need to work in IST timezone
-    reminder_timezone_str = os.environ.get(
-        "REMINDER_TIMEZONE", "Asia/Kolkata"
-    )  # Default to IST
-    reminder_timezone = pytz.timezone(reminder_timezone_str)
-
-    # Get current time in the specified timezone
-    current_time_utc = datetime.now(pytz.UTC)
-    current_time = current_time_utc.astimezone(reminder_timezone)
-    current_hour = current_time.hour
-    current_minute = current_time.minute
-
-    successful_reminders = []
-    failed_reminders = []
-
-    for agent in agent_allocations_for_reminders:
-        shift_start_time_str = agent.get("shift_start_time")
-        agent_email = agent.get("email")
-        allocated = agent.get("allocated", 0)
-
-        # Skip if no shift start time, email, or allocated work
-        if not shift_start_time_str or not agent_email or allocated == 0:
-            continue
-
-        try:
-            # Parse shift start time (format: HH:MM) - shift times are in local timezone
-            shift_hour, shift_minute = map(int, shift_start_time_str.split(":"))
-            # Create shift start time in the reminder timezone
-            shift_start_today = reminder_timezone.localize(
-                current_time.replace(
-                    hour=shift_hour, minute=shift_minute, second=0, microsecond=0
-                )
-            )
-
-            # If shift hasn't started yet today, skip
-            if shift_start_today > current_time:
-                continue
-
-            # Calculate hours since shift started today
-            hours_since_start = (
-                current_time - shift_start_today
-            ).total_seconds() / 3600
-
-            # Calculate which reminder interval we're at (0, 2, 4, 6, 8, etc. hours)
-            reminder_interval = 2  # hours
-            interval_number = int(hours_since_start // reminder_interval)
-            next_interval_time = shift_start_today + timedelta(
-                hours=interval_number * reminder_interval
-            )
-
-            # Check if current time is within 5 minutes before or after a reminder interval
-            tolerance_minutes = 5
-            time_diff = abs((current_time - next_interval_time).total_seconds() / 60)
-
-            if time_diff <= tolerance_minutes:
-                # We're at a reminder interval. Check if we haven't sent one recently
-                last_reminder_key = f"last_reminder_{agent.get('id')}"
-                if not hasattr(app, "_reminder_tracker"):
-                    app._reminder_tracker = {}
-
-                last_reminder_time = app._reminder_tracker.get(last_reminder_key)
-
-                if last_reminder_time:
-                    # Convert last reminder time to timezone-aware for comparison
-                    if (
-                        isinstance(last_reminder_time, datetime)
-                        and last_reminder_time.tzinfo is None
-                    ):
-                        last_reminder_time = reminder_timezone.localize(
-                            last_reminder_time
-                        )
-                    minutes_since_last = (
-                        current_time - last_reminder_time
-                    ).total_seconds() / 60
-                    if (
-                        minutes_since_last < 100
-                    ):  # Don't send if sent within last 100 minutes
-                        continue
-
-                # Send reminder
-                success, message = send_reminder_email(agent)
-                if success:
-                    successful_reminders.append(f"{agent.get('name')} ({agent_email})")
-                    if not hasattr(app, "_reminder_tracker"):
-                        app._reminder_tracker = {}
-                    # Store as timezone-aware datetime
-                    app._reminder_tracker[last_reminder_key] = current_time
-                else:
-                    failed_reminders.append(f"{agent.get('name')}: {message}")
-
-        except Exception as e:
-            failed_reminders.append(f"{agent.get('name')}: {str(e)}")
-
-    # Log reminder results
-    if successful_reminders or failed_reminders:
-        print(
-            f"[Reminder System] Sent {len(successful_reminders)} reminders, {len(failed_reminders)} failed at {current_time.strftime('%Y-%m-%d %H:%M:%S %Z')}"
-        )
-        if failed_reminders:
-            print(
-                f"[Reminder System] Failed: {', '.join(failed_reminders[:5])}"
-            )  # Show first 5 failures
 
 
 def get_allocation_summary(agent_name, agent_info):
@@ -29853,7 +29640,7 @@ if __name__ == "__main__":
     cleanup_thread = threading.Thread(target=cleanup_sessions_periodically, daemon=True)
     cleanup_thread.start()
 
-    # Set up scheduler for reminder emails and daily cleanup
+    # Set up scheduler for daily cleanup and consolidation
     # CRITICAL FIX: Only start scheduler in the main process, not in Flask's reloader parent process
     # Flask's reloader creates a parent process that monitors files and a child process that runs the app
     # WERKZEUG_RUN_MAIN is set to 'true' ONLY in the child process (where the app actually runs)
@@ -29868,15 +29655,6 @@ if __name__ == "__main__":
     # 2. Reloader is disabled (debug_mode is False, meaning no reloader parent process exists)
     if werkzeug_main == "true" or (werkzeug_main is None and not debug_mode):
         scheduler = BackgroundScheduler()
-
-        # Reminder emails - every 2 hours
-        scheduler.add_job(
-            func=lambda: check_and_send_reminders(),
-            trigger=IntervalTrigger(hours=2),
-            id="reminder_check",
-            name="Check and send reminder emails every 2 hours",
-            replace_existing=True,
-        )
 
         # Cleanup - every day at 7:00 AM (timezone-aware)
         # Get timezone from environment variable (default: IST for local, UTC for Railway)
@@ -29914,7 +29692,6 @@ if __name__ == "__main__":
         )
 
         scheduler.start()
-        print("✅ Reminder email scheduler started - checking every 2 hours")
         # Calculate UTC equivalent for display
         local_time = cleanup_timezone.localize(
             datetime(2025, 1, 1, cleanup_hour, cleanup_minute)

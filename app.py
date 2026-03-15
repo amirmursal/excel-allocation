@@ -28186,6 +28186,21 @@ def process_nh_allocation():
                 alloc_df.at[idx, "Agent Name"] = danish_agent["name"]
                 danish_agent["assigned"] += 1
 
+        # --- Priority: Nazir Sheikh gets rows for Dr. Rita Chuang, Dr. Perez, Dr. Stewert until his capacity is full ---
+        NAZIR_OFFICES = {"dr. rita chuang", "dr. perez", "dr. stewert"}
+        nazir_agent = next((a for a in agents if str(a["name"]).strip().lower() == "nazir sheikh".lower()), None)
+        if nazir_agent is not None:
+            for idx, row in alloc_df.iterrows():
+                if alloc_df.at[idx, "Agent Name"] != "":
+                    continue
+                if nazir_agent["tfd"] > 0 and nazir_agent["assigned"] >= nazir_agent["tfd"]:
+                    break
+                row_office = (str(row[a_office]).strip().lower() if pd.notna(row[a_office]) else "")
+                if row_office not in NAZIR_OFFICES:
+                    continue
+                alloc_df.at[idx, "Agent Name"] = nazir_agent["name"]
+                nazir_agent["assigned"] += 1
+
         # --- Pass 1: NADG priority ---
         nadg_agents = [a for a in agents if a["has_nadg"]]
         for idx, row in alloc_df.iterrows():

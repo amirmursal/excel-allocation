@@ -2848,13 +2848,14 @@ HTML_TEMPLATE = """
                 submenu.style.display = 'none';
             });
             
-            // Find and activate the selected menu item
+            // Find and activate the selected menu item (exact match so "Email Allocations" is not active when on "Allocations")
             const menuItems = document.querySelectorAll('.admin-sidebar .menu-item');
+            const targetMenuText = getMenuDisplayName(menuName).toLowerCase();
             menuItems.forEach((item, index) => {
                 const menuText = item.textContent.trim().toLowerCase();
-                const targetMenuText = getMenuDisplayName(menuName).toLowerCase();
-                
-                if (menuText.includes(targetMenuText) || menuText.includes(menuName.toLowerCase())) {
+                const exactMatch = menuText === targetMenuText;
+                const nameMatch = menuText === menuName.toLowerCase().replace(/-/g, ' ');
+                if (exactMatch || nameMatch) {
                     item.classList.add('active');
                     // Show submenu if it exists (next sibling element)
                     const nextSibling = item.nextElementSibling;
@@ -2864,14 +2865,15 @@ HTML_TEMPLATE = """
                 }
             });
             
-            // Activate submenu item if specified
+            // Activate submenu item if specified (exact match so "Imagen QC Allocation" is not active when on "Imagen Allocation")
             if (submenuName) {
                 const submenuItems = document.querySelectorAll('.admin-sidebar .submenu-item');
+                const targetSubmenuText = getSubmenuDisplayName(submenuName).toLowerCase();
                 submenuItems.forEach(item => {
                     const itemText = item.textContent.trim().toLowerCase();
-                    const targetSubmenuText = getSubmenuDisplayName(submenuName).toLowerCase();
-                    
-                    if (itemText.includes(targetSubmenuText) || itemText.includes(submenuName.toLowerCase())) {
+                    const exactMatch = itemText === targetSubmenuText;
+                    const nameMatch = itemText === submenuName.toLowerCase().replace(/-/g, ' ');
+                    if (exactMatch || nameMatch) {
                         item.classList.add('active');
                     }
                 });

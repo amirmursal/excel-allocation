@@ -28047,8 +28047,10 @@ def process_nh_allocation():
         s_offices = find_col(staff_df, ["offices", "office"])
         s_exceptions = find_col(staff_df, ["exceptions", "exception"])
         s_insurance = find_col(staff_df, ["insurance preference", "insurance"])
+        s_category = find_col(staff_df, ["category"])
 
         a_office = find_col(alloc_df, ["office", "office name"])
+        a_remark = find_col(alloc_df, ["remark", "remarks"])
         a_insurance = find_col(alloc_df, ["insurance", "insurance carrier"])
         if not a_office:
             for col in alloc_df.columns:
@@ -28095,6 +28097,9 @@ def process_nh_allocation():
             insurance_raw = str(row[s_insurance]).strip() if s_insurance and pd.notna(row[s_insurance]) else ""
             insurance_list = [i.strip() for i in insurance_raw.split(",") if i.strip()] if insurance_raw and insurance_raw.lower() != "nan" else []
 
+            category_val = str(row[s_category]).strip().lower() if s_category and pd.notna(row.get(s_category)) else ""
+            is_caller = category_val == "caller"
+
             has_nadg = any("nadg" in o.lower() for o in offices_list)
             nadg_offices = [o for o in offices_list if "nadg" in o.lower()]
             non_nadg_offices = [o for o in offices_list if "nadg" not in o.lower()]
@@ -28127,6 +28132,7 @@ def process_nh_allocation():
                 "all_offices": len(offices_list) == 0,
                 "all_insurance": len(insurance_list) == 0,
                 "assigned": 0,
+                "is_caller": is_caller,
             })
 
         # Add output column
@@ -28171,6 +28177,34 @@ def process_nh_allocation():
                         return True
             return False
 
+        def is_caller_row(row):
+            """True if Remark contains 'NTC' or starts with 'Allocate ' (case-insensitive)."""
+            if a_remark is None:
+                return False
+            val = str(row.get(a_remark) if hasattr(row, "get") else row[a_remark]).strip().lower() if pd.notna(row.get(a_remark) if hasattr(row, "get") else row[a_remark]) else ""
+            if not val or val == "nan":
+                return False
+            if "ntc" in val:
+                return True
+            if val.startswith("allocate "):
+                return True
+            return False
+
+        caller_agents = [a for a in agents if a.get("is_caller")]
+
+        # --- Priority: Caller — rows where Remark contains NTC or starts with "Allocate <Someone>" go only to agents with Category = Caller ---
+        for idx, row in alloc_df.iterrows():
+            if alloc_df.at[idx, "Agent Name"] != "":
+                continue
+            if not is_caller_row(row):
+                continue
+            for agent in caller_agents:
+                if agent["tfd"] > 0 and agent["assigned"] >= agent["tfd"]:
+                    continue
+                alloc_df.at[idx, "Agent Name"] = agent["name"]
+                agent["assigned"] += 1
+                break
+
         # --- Priority: Mohd Danish Varshani gets all rows where Office Name == "Dr. Hickory (Evenly Location)" until his capacity is full ---
         HICKORY_OFFICE = "dr. hickory (evenly location)"
         danish_agent = next((a for a in agents if str(a["name"]).strip().lower() == "mohd danish varshani".lower()), None)
@@ -28201,10 +28235,12 @@ def process_nh_allocation():
                 alloc_df.at[idx, "Agent Name"] = nazir_agent["name"]
                 nazir_agent["assigned"] += 1
 
-        # --- Pass 1: NADG priority ---
+        # --- Pass 1: NADG priority (skip NTC/Allocate rows — those go to Caller agents only) ---
         nadg_agents = [a for a in agents if a["has_nadg"]]
         for idx, row in alloc_df.iterrows():
             if alloc_df.at[idx, "Agent Name"] != "":
+                continue
+            if is_caller_row(row):
                 continue
             row_office = str(row[a_office]).strip().lower() if pd.notna(row[a_office]) else ""
             if not row_office.startswith("nadg"):
@@ -28220,11 +28256,12 @@ def process_nh_allocation():
                 agent["assigned"] += 1
                 break
 
-        # --- Pass 2: Regular matching (all remaining unassigned rows) ---
+        # --- Pass 2: Regular matching (NTC/Allocate rows only to Caller agents; other rows to any matching agent) ---
         for idx, row in alloc_df.iterrows():
             if alloc_df.at[idx, "Agent Name"] != "":
                 continue
-            for agent in agents:
+            candidates = caller_agents if is_caller_row(row) else agents
+            for agent in candidates:
                 if agent["assigned"] >= agent["tfd"] and agent["tfd"] > 0:
                     continue
                 if not matches_office(agent, row[a_office]):

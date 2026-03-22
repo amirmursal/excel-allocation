@@ -1090,6 +1090,13 @@ tracker_file_ready = False
 tracker_processed_df = None
 tracker_processed_sheet = None
 
+# Imagen QC Tracker — allocation workbook upload → same tracker sheets as main flow
+imagen_qc_tracker_data = None  # dict: sheet name -> DataFrame (full workbook for download)
+imagen_qc_tracker_filename = None
+imagen_qc_tracker_file_ready = False
+imagen_qc_tracker_processed_df = None  # normalized sheet used for generate_all_trackers_from_dataframe
+imagen_qc_tracker_sheet_name = None
+
 
 # Database helper functions
 def init_database():
@@ -2942,7 +2949,8 @@ HTML_TEMPLATE = """
                 'nh-consolidate': 'NH',
                 'ev-consolidate': 'EV',
                 'dental-bv-consolidate': 'Dental BV',
-                'imagen-tracker': 'Imagen Tracker'
+                'imagen-tracker': 'Imagen Tracker',
+                'imagen-qc-tracker': 'Imagen QC Tracker'
             };
             return names[submenuName] || submenuName;
         }
@@ -3074,6 +3082,11 @@ HTML_TEMPLATE = """
                     <li>
                         <div class="submenu-item {% if current_submenu == 'imagen-tracker' %}active{% endif %}" onclick="switchAdminMenu('trackers', 'imagen-tracker')">
                             <i class="fas fa-chart-bar"></i> Imagen Tracker
+                        </div>
+                    </li>
+                    <li>
+                        <div class="submenu-item {% if current_submenu == 'imagen-qc-tracker' %}active{% endif %}" onclick="switchAdminMenu('trackers', 'imagen-qc-tracker')">
+                            <i class="fas fa-check-double"></i> Imagen QC Tracker
                         </div>
                     </li>
                 </ul>
@@ -4669,7 +4682,7 @@ HTML_TEMPLATE = """
                         {% with messages = get_flashed_messages(with_categories=true) %}
                             {% if messages %}
                                 {% for category, message in messages %}
-                                    {% if 'tracker' in message.lower() or 'tracker' in category.lower() %}
+                                    {% if 'qc tracker' not in message.lower() and ('tracker' in message.lower() or 'tracker' in category.lower()) %}
                                     <div class="status-message" style="margin-top: 20px; {% if category == 'success' %}background: #d4edda; color: #155724; border: 1px solid #c3e6cb;{% elif category == 'error' %}background: #f8d7da; color: #721c24; border: 1px solid #f5c6cb;{% else %}background: #d1ecf1; color: #0c5460; border: 1px solid #bee5eb;{% endif %}">
                                         {{ message | safe }}
                                     </div>
@@ -4702,6 +4715,65 @@ HTML_TEMPLATE = """
                                 <div class="progress-bar" id="tracker-progress-bar" style="width: 100%;">Processing...</div>
                             </div>
                             <div class="progress-text" id="tracker-progress-text">Please wait...</div>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Imagen QC Tracker (QC allocation file → same tracker sheets) -->
+                <div id="imagen-qc-tracker-content" class="admin-menu-content" style="display: {% if current_menu == 'trackers' and current_submenu == 'imagen-qc-tracker' %}block{% else %}none{% endif %};">
+                    <div class="section">
+                        <h3>📊 Imagen QC Tracker</h3>
+                        <p>Upload a QC allocation workbook that includes an <strong>Auditor</strong> column (typically the processed output after <em>Process Imagen QC Allocation</em>, or any export where auditors are assigned). <strong>All per-person tracker sheets use Auditor, not Agent Name.</strong> You still need Appointment Date and Remark or Status Code (Status Code is copied to Remark when needed). Optional: Priority Status and insurance columns for richer summaries.</p>
+                        
+                        <div class="upload-card" style="max-width: 600px; margin: 20px auto;">
+                            <form action="/upload_imagen_qc_tracker_allocation" method="post" enctype="multipart/form-data" id="imagen-qc-tracker-upload-form">
+                                <div class="form-group">
+                                    <label for="imagen_qc_tracker_file" style="display: block; margin-bottom: 8px; font-weight: 600; color: #555;">
+                                        <i class="fas fa-file-excel"></i> Upload QC allocation file:
+                                    </label>
+                                    <input type="file" id="imagen_qc_tracker_file" name="file" accept=".xlsx,.xls" required style="width: 100%; padding: 12px; border: 2px solid #ddd; border-radius: 8px; font-size: 16px;">
+                                </div>
+                                <button type="submit" id="imagen-qc-tracker-upload-btn" class="process-btn" style="width: 100%;">
+                                    <i class="fas fa-upload"></i> Upload allocation &amp; prepare trackers
+                                </button>
+                            </form>
+                        </div>
+                        
+                        {% with messages = get_flashed_messages(with_categories=true) %}
+                            {% if messages %}
+                                {% for category, message in messages %}
+                                    {% if 'qc tracker' in message.lower() %}
+                                    <div class="status-message" style="margin-top: 20px; {% if category == 'success' %}background: #d4edda; color: #155724; border: 1px solid #c3e6cb;{% elif category == 'error' %}background: #f8d7da; color: #721c24; border: 1px solid #f5c6cb;{% else %}background: #d1ecf1; color: #0c5460; border: 1px solid #bee5eb;{% endif %}">
+                                        {{ message | safe }}
+                                    </div>
+                                    {% endif %}
+                                {% endfor %}
+                            {% endif %}
+                        {% endwith %}
+                        
+                        {% if imagen_qc_tracker_file_ready %}
+                        <div class="section" style="margin-top: 30px;">
+                            <h3>💾 Download trackers workbook</h3>
+                            <p>Includes all sheets from your file plus generated trackers (by <strong>Auditor</strong>). This export does <strong>not</strong> include Today / NTBP / NTC allocation sheets or NTC Insurance counts (those are only on the main Imagen Tracker).</p>
+                            <form action="/download_imagen_qc_trackers" method="post" id="imagen-qc-tracker-download-form">
+                                <input type="hidden" name="current_menu" value="trackers">
+                                <input type="hidden" name="current_submenu" value="imagen-qc-tracker">
+                                <button type="submit" class="process-btn" id="imagen-qc-tracker-download-btn" style="background: linear-gradient(135deg, #3498db, #2980b9);">
+                                    <i class="fas fa-download"></i> Download Imagen QC trackers
+                                </button>
+                            </form>
+                        </div>
+                        {% endif %}
+                    </div>
+                    
+                    <div class="processing-status" id="imagen-qc-tracker-processing-status" style="display: none;">
+                        <div class="processing-content">
+                            <div class="spinner"></div>
+                            <h3 id="imagen-qc-tracker-processing-title">Processing...</h3>
+                            <div class="progress-container">
+                                <div class="progress-bar" id="imagen-qc-tracker-progress-bar" style="width: 100%;">Processing...</div>
+                            </div>
+                            <div class="progress-text" id="imagen-qc-tracker-progress-text">Please wait...</div>
                         </div>
                     </div>
                 </div>
@@ -6215,6 +6287,101 @@ HTML_TEMPLATE = """
             });
         }
         
+        function showImagenQCTrackerProcessingModal(title, message) {
+            const modal = document.getElementById('imagen-qc-tracker-processing-status');
+            const titleEl = document.getElementById('imagen-qc-tracker-processing-title');
+            const textEl = document.getElementById('imagen-qc-tracker-progress-text');
+            if (titleEl) titleEl.textContent = title;
+            if (textEl) textEl.textContent = message;
+            if (modal) modal.style.display = 'flex';
+        }
+        function hideImagenQCTrackerProcessingModal() {
+            const modal = document.getElementById('imagen-qc-tracker-processing-status');
+            if (modal) modal.style.display = 'none';
+        }
+        
+        const imagenQCTrackerUploadForm = document.getElementById('imagen-qc-tracker-upload-form');
+        if (imagenQCTrackerUploadForm) {
+            imagenQCTrackerUploadForm.addEventListener('submit', function(e) {
+                e.preventDefault();
+                const btn = document.getElementById('imagen-qc-tracker-upload-btn');
+                const fileInput = document.getElementById('imagen_qc_tracker_file');
+                if (!fileInput.files[0]) {
+                    showErrorToast('Upload Error', 'Please select a file to upload');
+                    return;
+                }
+                if (btn) {
+                    btn.disabled = true;
+                    btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Processing...';
+                }
+                showImagenQCTrackerProcessingModal('Uploading QC allocation', 'Reading workbook and validating columns...');
+                const formData = new FormData();
+                formData.append('file', fileInput.files[0]);
+                fetch('/upload_imagen_qc_tracker_allocation', { method: 'POST', body: formData })
+                .then(response => {
+                    const contentType = response.headers.get('content-type') || '';
+                    if (contentType.includes('application/json')) {
+                        return response.json().then(data => {
+                            hideImagenQCTrackerProcessingModal();
+                            if (data.success) {
+                                showSuccessToast('Upload Successful', data.message || 'Ready to download trackers.');
+                                imagenQCTrackerUploadForm.reset();
+                                setTimeout(() => { window.location.reload(); }, 1500);
+                            } else {
+                                let errorMsg = data.error || 'Upload failed.';
+                                if (data.missing_columns && data.missing_columns.length) {
+                                    errorMsg += ' Missing: ' + data.missing_columns.join(', ');
+                                }
+                                showErrorToast('Upload Failed', errorMsg);
+                            }
+                        });
+                    }
+                    if (response.ok || response.status === 302) {
+                        hideImagenQCTrackerProcessingModal();
+                        showSuccessToast('Upload Successful', 'Ready to download trackers.');
+                        imagenQCTrackerUploadForm.reset();
+                        setTimeout(() => { window.location.reload(); }, 1500);
+                    } else {
+                        return response.text().then(() => {
+                            hideImagenQCTrackerProcessingModal();
+                            showErrorToast('Upload Failed', 'Please check the file format.');
+                        });
+                    }
+                })
+                .catch(err => {
+                    hideImagenQCTrackerProcessingModal();
+                    showErrorToast('Upload Error', err.message || 'Network error');
+                })
+                .finally(() => {
+                    if (btn) {
+                        btn.disabled = false;
+                        btn.innerHTML = '<i class="fas fa-upload"></i> Upload allocation &amp; prepare trackers';
+                    }
+                });
+            });
+        }
+        
+        const imagenQCTrackerDownloadForm = document.getElementById('imagen-qc-tracker-download-form');
+        if (imagenQCTrackerDownloadForm) {
+            imagenQCTrackerDownloadForm.addEventListener('submit', function(e) {
+                const btn = document.getElementById('imagen-qc-tracker-download-btn');
+                if (btn) {
+                    btn.disabled = true;
+                    btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Downloading...';
+                }
+                showImagenQCTrackerProcessingModal('Preparing download', 'Building workbook with tracker sheets...');
+                setTimeout(function() {
+                    hideImagenQCTrackerProcessingModal();
+                    if (btn) {
+                        setTimeout(function() {
+                            btn.disabled = false;
+                            btn.innerHTML = '<i class="fas fa-download"></i> Download Imagen QC trackers';
+                        }, 1000);
+                    }
+                }, 2000);
+            });
+        }
+        
         // Agent upload form handler
         const agentUploadForm = document.getElementById('agentUploadForm');
         if (agentUploadForm) {
@@ -6228,6 +6395,7 @@ HTML_TEMPLATE = """
         document.addEventListener('DOMContentLoaded', function() {
             // Hide tracker modal when page loads (in case it was left open)
             hideTrackerProcessingModal();
+            hideImagenQCTrackerProcessingModal();
             
             // Check if Imagen Allocation content is visible and initialize it
             const imageAllocationContent = document.getElementById('image-allocation-content');
@@ -17842,6 +18010,7 @@ def index():
     global auditor_email_staff_data, auditor_email_staff_filename
     global auditor_email_allocation_data, auditor_email_allocation_filename, auditor_email_agents_list, auditor_email_sent
     global tracker_data, tracker_filename, tracker_file_ready
+    global imagen_qc_tracker_data, imagen_qc_tracker_filename, imagen_qc_tracker_file_ready
     global ev_staff_data, ev_staff_filename, ev_allocation_data, ev_allocation_filename, ev_processing_result
     global dental_bv_staff_data, dental_bv_staff_filename, dental_bv_allocation_data, dental_bv_allocation_filename, dental_bv_processing_result
     global imagen_qc_staff_data, imagen_qc_staff_filename, imagen_qc_allocation_data, imagen_qc_allocation_filename, imagen_qc_processing_result
@@ -17928,6 +18097,11 @@ def index():
         auditor_email_sent=list(auditor_email_sent) if auditor_email_sent else [],
         tracker_file_ready=(
             tracker_file_ready if "tracker_file_ready" in globals() else False
+        ),
+        imagen_qc_tracker_file_ready=(
+            imagen_qc_tracker_file_ready
+            if "imagen_qc_tracker_file_ready" in globals()
+            else False
         ),
         ev_staff_data=ev_staff_data,
         ev_staff_filename=ev_staff_filename,
@@ -22266,6 +22440,117 @@ def upload_tracker_data():
         return redirect("/")
 
 
+@app.route("/upload_imagen_qc_tracker_allocation", methods=["POST"])
+@admin_required
+def upload_imagen_qc_tracker_allocation():
+    """Upload Imagen QC allocation workbook and prepare tracker generation (same sheets as Imagen Tracker)."""
+    global imagen_qc_tracker_data, imagen_qc_tracker_filename, imagen_qc_tracker_file_ready
+    global imagen_qc_tracker_processed_df, imagen_qc_tracker_sheet_name
+
+    if "file" not in request.files:
+        if request.headers.get("Content-Type", "").startswith(
+            "application/json"
+        ) or request.is_json:
+            return jsonify({"error": "No file provided"}), 400
+        flash("No file provided", "error")
+        return redirect("/?menu=trackers&submenu=imagen-qc-tracker")
+
+    file = request.files["file"]
+    if file.filename == "":
+        if request.headers.get("Content-Type", "").startswith(
+            "application/json"
+        ) or request.is_json:
+            return jsonify({"error": "No file selected"}), 400
+        flash("No file selected", "error")
+        return redirect("/?menu=trackers&submenu=imagen-qc-tracker")
+
+    try:
+        filename = secure_filename(file.filename)
+        file.save(filename)
+
+        all_sheets, matched_df, matched_sheet = load_imagen_qc_allocation_from_excel_path(
+            filename
+        )
+
+        # Full workbook for download; replace matched sheet with parsed dataframe (correct headers)
+        imagen_qc_tracker_data = {k: v.copy() for k, v in all_sheets.items()}
+        imagen_qc_tracker_data[matched_sheet] = matched_df.copy()
+
+        normalized_df = normalize_imagen_qc_allocation_for_trackers(matched_df)
+
+        def col_match(cols, keywords):
+            for col in cols:
+                if all(kw.lower() in str(col).lower() for kw in keywords):
+                    return True
+            return False
+
+        missing = []
+        if not col_match(normalized_df.columns, ["auditor"]):
+            missing.append("Auditor")
+        if not col_match(normalized_df.columns, ["appointment", "date"]):
+            missing.append("Appointment Date")
+        if not col_match(normalized_df.columns, ["remark"]):
+            missing.append("Remark or Status Code")
+
+        if missing:
+            error_msg = f"Missing required columns for trackers: {', '.join(missing)}"
+            flash(error_msg, "error")
+            imagen_qc_tracker_data = None
+            imagen_qc_tracker_file_ready = False
+            imagen_qc_tracker_processed_df = None
+            if request.headers.get(
+                "X-Requested-With"
+            ) == "XMLHttpRequest" or "multipart/form-data" in request.headers.get(
+                "Content-Type", ""
+            ):
+                return jsonify({"error": error_msg, "missing_columns": missing}), 400
+            if os.path.exists(filename):
+                os.remove(filename)
+            return redirect("/?menu=trackers&submenu=imagen-qc-tracker")
+
+        imagen_qc_tracker_filename = file.filename
+        imagen_qc_tracker_sheet_name = matched_sheet
+        imagen_qc_tracker_processed_df = normalized_df.copy()
+        imagen_qc_tracker_file_ready = True
+
+        if os.path.exists(filename):
+            os.remove(filename)
+
+        success_msg = (
+            f"✅ [Imagen QC Tracker] File uploaded successfully! Using sheet '{matched_sheet}'. "
+            "Trackers use the **Auditor** column (not Agent Name). Download to generate all tracker sheets."
+        )
+        flash(success_msg, "success")
+
+        if request.headers.get(
+            "X-Requested-With"
+        ) == "XMLHttpRequest" or "multipart/form-data" in request.headers.get(
+            "Content-Type", ""
+        ):
+            return jsonify({"success": True, "message": success_msg})
+
+        return redirect("/?menu=trackers&submenu=imagen-qc-tracker")
+
+    except Exception as e:
+        import traceback
+
+        error_msg = f"❌ [Imagen QC Tracker] Error: {str(e)}"
+        print(f"Imagen QC Tracker upload: {traceback.format_exc()}")
+        flash(error_msg, "error")
+        imagen_qc_tracker_data = None
+        imagen_qc_tracker_file_ready = False
+        imagen_qc_tracker_processed_df = None
+        if "filename" in locals() and os.path.exists(filename):
+            os.remove(filename)
+        if request.headers.get(
+            "X-Requested-With"
+        ) == "XMLHttpRequest" or "multipart/form-data" in request.headers.get(
+            "Content-Type", ""
+        ):
+            return jsonify({"error": error_msg}), 500
+        return redirect("/?menu=trackers&submenu=imagen-qc-tracker")
+
+
 @app.route("/download_ev_allocation", methods=["POST"])
 @admin_required
 def download_ev_allocation():
@@ -22888,6 +23173,103 @@ def upload_imagen_qc_staff():
         return redirect("/?menu=allocations&submenu=imagen-qc-allocation")
 
 
+def load_imagen_qc_allocation_from_excel_path(filepath):
+    """
+    Parse an Imagen QC allocation Excel file (same rules as QC allocation upload).
+    Returns (all_sheets_dict, matched_dataframe, matched_sheet_name).
+    Raises ValueError if no sheet matches expected columns.
+    """
+    expected_cols = [
+        "agent name",
+        "appointment date",
+        "office name",
+        "patient name",
+        "status code",
+    ]
+
+    def sheet_has_expected_columns(df):
+        cols_lower = [str(c).strip().lower() for c in df.columns]
+        matches = sum(1 for ec in expected_cols if any(ec in cl for cl in cols_lower))
+        return matches >= 3
+
+    def try_find_header_in_sheet(df, sheet_name_to_read):
+        """Scan first 20 rows for the real header row containing expected column names."""
+        for i in range(min(20, len(df))):
+            row_vals = [
+                str(v).strip().lower() for v in df.iloc[i].values if pd.notna(v)
+            ]
+            matches = sum(1 for ec in expected_cols if any(ec in rv for rv in row_vals))
+            if matches >= 3:
+                reread_df = pd.read_excel(
+                    filepath,
+                    sheet_name=sheet_name_to_read,
+                    header=i + 1,
+                    parse_dates=False,
+                )
+                print(
+                    f"[Imagen QC] Auto-detected header at row {i + 2} in sheet '{sheet_name_to_read}', columns: {list(reread_df.columns)}"
+                )
+                return reread_df
+        return None
+
+    all_sheets = pd.read_excel(filepath, sheet_name=None, parse_dates=False)
+
+    df = None
+    matched_sheet = None
+
+    for sheet_name, sheet_df in all_sheets.items():
+        if sheet_has_expected_columns(sheet_df):
+            df = sheet_df
+            matched_sheet = sheet_name
+            print(
+                f"[Imagen QC] Found matching sheet: '{sheet_name}' (direct column match)"
+            )
+            break
+
+    if df is None:
+        for sheet_name, sheet_df in all_sheets.items():
+            result = try_find_header_in_sheet(sheet_df, sheet_name)
+            if result is not None:
+                df = result
+                matched_sheet = sheet_name
+                break
+
+    if df is None:
+        all_sheet_names = ", ".join([f'"{s}"' for s in all_sheets.keys()])
+        raise ValueError(
+            f"No sheet found with expected columns (Agent Name, Appointment Date, Office Name, etc.). "
+            f"Sheets in file: [{all_sheet_names}]"
+        )
+
+    return all_sheets, df, matched_sheet
+
+
+def normalize_imagen_qc_allocation_for_trackers(df):
+    """
+    Tracker generation expects a Remark column (WORKABLE, NTBP, NTC, etc.).
+    QC allocation files use Status Code — copy/map to Remark when needed.
+    """
+    out = df.copy()
+    for col in out.columns:
+        if "remark" in str(col).strip().lower():
+            return out
+
+    status_col = None
+    for col in out.columns:
+        cl = str(col).strip().lower()
+        if "status" in cl and "code" in cl:
+            status_col = col
+            break
+    if status_col is None:
+        for col in out.columns:
+            if "status" in str(col).strip().lower():
+                status_col = col
+                break
+    if status_col is not None:
+        out["Remark"] = out[status_col]
+    return out
+
+
 @app.route("/upload_imagen_qc_allocation_data", methods=["POST"])
 @admin_required
 def upload_imagen_qc_allocation_data():
@@ -22907,80 +23289,14 @@ def upload_imagen_qc_allocation_data():
         filename = secure_filename(file.filename)
         file.save(filename)
 
-        expected_cols = [
-            "agent name",
-            "appointment date",
-            "office name",
-            "patient name",
-            "status code",
-        ]
-
-        def sheet_has_expected_columns(df):
-            cols_lower = [str(c).strip().lower() for c in df.columns]
-            matches = sum(
-                1 for ec in expected_cols if any(ec in cl for cl in cols_lower)
-            )
-            return matches >= 3
-
-        def try_find_header_in_sheet(df, sheet_name_to_read):
-            """Scan first 20 rows for the real header row containing expected column names."""
-            for i in range(min(20, len(df))):
-                row_vals = [
-                    str(v).strip().lower() for v in df.iloc[i].values if pd.notna(v)
-                ]
-                matches = sum(
-                    1 for ec in expected_cols if any(ec in rv for rv in row_vals)
-                )
-                if matches >= 3:
-                    reread_df = pd.read_excel(
-                        filename,
-                        sheet_name=sheet_name_to_read,
-                        header=i + 1,
-                        parse_dates=False,
-                    )
-                    print(
-                        f"[Imagen QC] Auto-detected header at row {i + 2} in sheet '{sheet_name_to_read}', columns: {list(reread_df.columns)}"
-                    )
-                    return reread_df
-            return None
-
-        all_sheets = pd.read_excel(filename, sheet_name=None, parse_dates=False)
-
-        df = None
-        matched_sheet = None
-
-        # Pass 1: check each sheet's columns directly
-        for sheet_name, sheet_df in all_sheets.items():
-            if sheet_has_expected_columns(sheet_df):
-                df = sheet_df
-                matched_sheet = sheet_name
-                print(
-                    f"[Imagen QC] Found matching sheet: '{sheet_name}' (direct column match)"
-                )
-                break
-
-        # Pass 2: if no direct match, scan rows for header in each sheet
-        if df is None:
-            for sheet_name, sheet_df in all_sheets.items():
-                result = try_find_header_in_sheet(sheet_df, sheet_name)
-                if result is not None:
-                    df = result
-                    matched_sheet = sheet_name
-                    break
-
-        if df is None:
-            all_sheet_names = ", ".join([f'"{s}"' for s in all_sheets.keys()])
-            raise ValueError(
-                f"No sheet found with expected columns (Agent Name, Appointment Date, Office Name, etc.). "
-                f"Sheets in file: [{all_sheet_names}]"
-            )
+        _, df, matched_sheet = load_imagen_qc_allocation_from_excel_path(filename)
 
         flash(
             f"✅ QC Allocation Data file uploaded successfully! Using sheet: '{matched_sheet}'",
             "success",
         )
         imagen_qc_allocation_data = df
-        imagen_qc_allocation_filename = filename
+        imagen_qc_allocation_filename = file.filename
         imagen_qc_processing_result = None
         imagen_qc_selected_dates = None
 
@@ -23751,8 +24067,175 @@ def download_trackers():
         return redirect(redirect_url)
 
 
+# Sheets omitted from Imagen QC Tracker workbook (remark-based allocation tabs)
+IMAGEN_QC_TRACKER_OMIT_SHEETS = frozenset(
+    {
+        "Today Allocation",
+        "NTBP Allocation",
+        "NTC Allocation",
+        "NTC Insurance Name and counts",
+    }
+)
+
+
+@app.route("/download_imagen_qc_trackers", methods=["POST"])
+@admin_required
+def download_imagen_qc_trackers():
+    """Download Excel with original QC allocation sheets plus generated tracker sheets."""
+    global imagen_qc_tracker_data, imagen_qc_tracker_filename, data_file_data
+    global imagen_qc_tracker_processed_df
+
+    if not imagen_qc_tracker_data or imagen_qc_tracker_processed_df is None:
+        flash(
+            "No Imagen QC tracker data. Upload an allocation file first.",
+            "error",
+        )
+        current_menu = request.form.get("current_menu", "trackers")
+        current_submenu = request.form.get("current_submenu", "imagen-qc-tracker")
+        redirect_url = f"/?menu={current_menu}"
+        if current_submenu:
+            redirect_url += f"&submenu={current_submenu}"
+        return redirect(redirect_url)
+
+    filename = request.form.get("filename", "").strip()
+    if not filename:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        base = os.path.splitext(imagen_qc_tracker_filename or "qc_trackers")[0]
+        if not base:
+            base = "qc_trackers"
+        filename = f"{base}_imagen_qc_trackers_{timestamp}.xlsx"
+
+    try:
+        original_data_file_data = data_file_data
+        data_file_data = imagen_qc_tracker_data
+
+        temp_fd, temp_path = tempfile.mkstemp(suffix=".xlsx")
+
+        try:
+            with pd.ExcelWriter(temp_path, engine="openpyxl") as writer:
+                for sheet_name, df in imagen_qc_tracker_data.items():
+                    df_copy = df.copy()
+                    for col in df_copy.columns:
+                        col_str = str(col).lower()
+                        if ("appointment" in col_str and "date" in col_str) or (
+                            "receive" in col_str and "date" in col_str
+                        ):
+                            df_copy[col] = pd.to_datetime(
+                                df_copy[col], errors="coerce"
+                            ).dt.strftime("%m/%d/%Y")
+
+                    if (
+                        "Agent Name" in df_copy.columns
+                        and "Supervisor" in df_copy.columns
+                    ):
+                        agent_name_idx = df_copy.columns.get_loc("Agent Name")
+                        cols = df_copy.columns.tolist()
+                        cols.remove("Supervisor")
+                        cols.insert(agent_name_idx + 1, "Supervisor")
+                        df_copy = df_copy[cols]
+
+                    if (
+                        "Supervisor" in df_copy.columns
+                        and "Auditors" in df_copy.columns
+                    ):
+                        supervisor_idx = df_copy.columns.get_loc("Supervisor")
+                        cols = df_copy.columns.tolist()
+                        cols.remove("Auditors")
+                        cols.insert(supervisor_idx + 1, "Auditors")
+                        df_copy = df_copy[cols]
+
+                    df_copy.to_excel(writer, sheet_name=sheet_name, index=False)
+
+                generate_all_trackers_from_dataframe(
+                    imagen_qc_tracker_processed_df,
+                    writer,
+                    None,
+                    count_by_auditor=True,
+                    omit_tracker_sheets=IMAGEN_QC_TRACKER_OMIT_SHEETS,
+                )
+
+            from openpyxl import load_workbook
+            from openpyxl.styles import Font
+
+            wb = load_workbook(temp_path)
+
+            for sheet_name in [
+                "Auditor Count Summary",
+                "Agent Count Summary",
+                "Priority Status",
+                "Priority Remark",
+                "Priority Appointment Pending",
+                "Auditor Insurance",
+                "Agent Insurance",
+            ]:
+                if sheet_name in wb.sheetnames:
+                    ws = wb[sheet_name]
+                    for row_idx, row in enumerate(
+                        ws.iter_rows(
+                            min_row=2, max_row=ws.max_row, min_col=1, max_col=1
+                        ),
+                        start=2,
+                    ):
+                        cell_value = row[0].value
+                        if cell_value and isinstance(cell_value, str):
+                            cell_str = cell_value.strip()
+                            if cell_str in [
+                                "Grand Total",
+                                "First Priority",
+                                "Second Priority",
+                                "Third Priority",
+                            ]:
+                                for col_idx in range(1, ws.max_column + 1):
+                                    ws.cell(row=row_idx, column=col_idx).font = Font(
+                                        bold=True
+                                    )
+
+            wb.save(temp_path)
+            wb.close()
+
+            data_file_data = original_data_file_data
+
+            return send_file(temp_path, as_attachment=True, download_name=filename)
+
+        except Exception as e:
+            data_file_data = original_data_file_data
+            raise e
+        finally:
+            try:
+                os.close(temp_fd)
+            except Exception:
+                pass
+            try:
+                if os.path.exists(temp_path):
+                    import time
+
+                    time.sleep(0.5)
+                    if os.path.exists(temp_path):
+                        os.unlink(temp_path)
+            except Exception:
+                pass
+
+    except Exception as e:
+        import traceback
+
+        error_msg = (
+            f"❌ Error generating Imagen QC trackers: {str(e)}\n{traceback.format_exc()}"
+        )
+        flash(error_msg, "error")
+        current_menu = request.form.get("current_menu", "trackers")
+        current_submenu = request.form.get("current_submenu", "imagen-qc-tracker")
+        redirect_url = f"/?menu={current_menu}"
+        if current_submenu:
+            redirect_url += f"&submenu={current_submenu}"
+        return redirect(redirect_url)
+
+
 def generate_all_trackers_from_dataframe(
-    processed_df, writer, agent_allocations_data_param=None
+    processed_df,
+    writer,
+    agent_allocations_data_param=None,
+    count_by_auditor=False,
+    omit_tracker_sheets=None,
 ):
     """
     Generate all 10 tracker sheets from a processed dataframe.
@@ -23768,9 +24251,16 @@ def generate_all_trackers_from_dataframe(
     8. Agent Insurance
     9. Priority Appointment Pending
     10. Zero Allocation Agents
+
+    When count_by_auditor=True (Imagen QC Tracker), row/person keys use the **Auditor**
+    column instead of **Agent Name**, and summary sheet names reflect auditors.
+
+    omit_tracker_sheets: optional set/frozenset/list of sheet names to skip generating.
     """
     if processed_df is None:
         return
+
+    _omit = frozenset(omit_tracker_sheets) if omit_tracker_sheets else frozenset()
 
     # Helper function to find columns
     def find_column(df, keywords):
@@ -23781,8 +24271,32 @@ def generate_all_trackers_from_dataframe(
                 return col
         return None
 
-    # Find key columns
-    agent_name_col = find_column(processed_df, ["agent", "name"])
+    # Person column: Agent Name (default) or Auditor (Imagen QC Tracker)
+    if count_by_auditor:
+        agent_name_col = None
+        for col in processed_df.columns:
+            if str(col).strip().lower() == "auditor":
+                agent_name_col = col
+                break
+        if agent_name_col is None:
+            for col in processed_df.columns:
+                if str(col).strip().lower() == "auditors":
+                    agent_name_col = col
+                    break
+        if agent_name_col is None:
+            agent_name_col = find_column(processed_df, ["auditor"])
+    else:
+        agent_name_col = find_column(processed_df, ["agent", "name"])
+
+    count_of_person_col = (
+        "Count of Auditor" if count_by_auditor else "Count of Agent Name"
+    )
+    summary_sheet_name = (
+        "Auditor Count Summary" if count_by_auditor else "Agent Count Summary"
+    )
+    insurance_sheet_name = (
+        "Auditor Insurance" if count_by_auditor else "Agent Insurance"
+    )
     appointment_date_col = find_column(processed_df, ["appointment", "date"])
     remark_col = find_column(processed_df, ["remark"])
     priority_status_col = find_column(processed_df, ["priority", "status"])
@@ -23831,7 +24345,7 @@ def generate_all_trackers_from_dataframe(
                     appointment_dates_dict[date_key] = date_display
         return appointment_dates_dict
 
-    # ========== 1. Agent Count Summary ==========
+    # ========== 1. Agent / Auditor Count Summary ==========
     if agent_name_col:
         agent_counts = {}
         for idx, row in processed_df.iterrows():
@@ -23871,19 +24385,19 @@ def generate_all_trackers_from_dataframe(
 
         if summary_list:
             summary_df = pd.DataFrame(
-                summary_list, columns=["Row Labels", "Count of Agent Name"]
+                summary_list, columns=["Row Labels", count_of_person_col]
             )
             grand_total_row = pd.DataFrame(
                 [["Grand Total", grand_total]],
-                columns=["Row Labels", "Count of Agent Name"],
+                columns=["Row Labels", count_of_person_col],
             )
             summary_df = pd.concat([summary_df, grand_total_row], ignore_index=True)
         else:
             summary_df = pd.DataFrame(
-                [["Grand Total", 0]], columns=["Row Labels", "Count of Agent Name"]
+                [["Grand Total", 0]], columns=["Row Labels", count_of_person_col]
             )
 
-        summary_df.to_excel(writer, sheet_name="Agent Count Summary", index=False)
+        summary_df.to_excel(writer, sheet_name=summary_sheet_name, index=False)
 
     # ========== 2. Priority Status ==========
     if priority_status_col and appointment_date_col:
@@ -24061,7 +24575,12 @@ def generate_all_trackers_from_dataframe(
         priority_remark_df.to_excel(writer, sheet_name="Priority Remark", index=False)
 
     # ========== 4. Today Allocation ==========
-    if agent_name_col and appointment_date_col and remark_col:
+    if (
+        "Today Allocation" not in _omit
+        and agent_name_col
+        and appointment_date_col
+        and remark_col
+    ):
         appointment_dates_dict = get_appointment_dates_dict(
             processed_df, appointment_date_col
         )
@@ -24163,7 +24682,12 @@ def generate_all_trackers_from_dataframe(
         today_allocation_df.to_excel(writer, sheet_name="Today Allocation", index=False)
 
     # ========== 5. NTBP Allocation ==========
-    if agent_name_col and appointment_date_col and remark_col:
+    if (
+        "NTBP Allocation" not in _omit
+        and agent_name_col
+        and appointment_date_col
+        and remark_col
+    ):
         appointment_dates_dict = get_appointment_dates_dict(
             processed_df, appointment_date_col
         )
@@ -24266,7 +24790,12 @@ def generate_all_trackers_from_dataframe(
         ntbp_allocation_df.to_excel(writer, sheet_name="NTBP Allocation", index=False)
 
     # ========== 6. NTC Allocation ==========
-    if agent_name_col and appointment_date_col and remark_col:
+    if (
+        "NTC Allocation" not in _omit
+        and agent_name_col
+        and appointment_date_col
+        and remark_col
+    ):
         appointment_dates_dict = get_appointment_dates_dict(
             processed_df, appointment_date_col
         )
@@ -24383,7 +24912,11 @@ def generate_all_trackers_from_dataframe(
         ntc_allocation_df.to_excel(writer, sheet_name="NTC Allocation", index=False)
 
     # ========== 7. NTC Insurance Name and counts ==========
-    if insurance_carrier_col and remark_col:
+    if (
+        "NTC Insurance Name and counts" not in _omit
+        and insurance_carrier_col
+        and remark_col
+    ):
         insurance_ntc_counts = {}
         for idx, row in processed_df.iterrows():
             remark_value = row.get(remark_col)
@@ -24411,25 +24944,25 @@ def generate_all_trackers_from_dataframe(
 
         if insurance_list:
             ntc_insurance_df = pd.DataFrame(
-                insurance_list, columns=["Row Labels", "Count of Agent Name"]
+                insurance_list, columns=["Row Labels", count_of_person_col]
             )
             grand_total_row = pd.DataFrame(
                 [["Grand Total", grand_total]],
-                columns=["Row Labels", "Count of Agent Name"],
+                columns=["Row Labels", count_of_person_col],
             )
             ntc_insurance_df = pd.concat(
                 [ntc_insurance_df, grand_total_row], ignore_index=True
             )
         else:
             ntc_insurance_df = pd.DataFrame(
-                [["Grand Total", 0]], columns=["Row Labels", "Count of Agent Name"]
+                [["Grand Total", 0]], columns=["Row Labels", count_of_person_col]
             )
 
         ntc_insurance_df.to_excel(
             writer, sheet_name="NTC Insurance Name and counts", index=False
         )
 
-    # ========== 8. Agent Insurance ==========
+    # ========== 8. Agent / Auditor Insurance ==========
     if agent_name_col and insurance_carrier_col:
         agent_insurance_data = {}
         agent_names = set()
@@ -24499,7 +25032,9 @@ def generate_all_trackers_from_dataframe(
         rows_data.append(["Grand Total", overall_grand_total])
 
         agent_insurance_df = pd.DataFrame(rows_data, columns=columns)
-        agent_insurance_df.to_excel(writer, sheet_name="Agent Insurance", index=False)
+        agent_insurance_df.to_excel(
+            writer, sheet_name=insurance_sheet_name, index=False
+        )
 
     # ========== 9. Priority Appointment Pending ==========
     if office_name_col and appointment_date_col:
@@ -27688,6 +28223,10 @@ def reset_app():
     global agent_allocations_data
     global email_staff_details, email_staff_filename
     global email_allocation_data, email_allocation_filename, email_allocation_agents_list
+    global tracker_data, tracker_filename, tracker_file_ready
+    global tracker_processed_df, tracker_processed_sheet
+    global imagen_qc_tracker_data, imagen_qc_tracker_filename, imagen_qc_tracker_file_ready
+    global imagen_qc_tracker_processed_df, imagen_qc_tracker_sheet_name
 
     try:
         # Do NOT clear agent work files - preserve all agent files (both uploaded and consolidated)
@@ -27710,6 +28249,18 @@ def reset_app():
         email_allocation_filename = None
         email_allocation_agents_list = None
         email_sent_agents = set()
+
+        # Clear in-memory tracker uploads (main + Imagen QC tracker)
+        tracker_data = None
+        tracker_filename = None
+        tracker_file_ready = False
+        tracker_processed_df = None
+        tracker_processed_sheet = None
+        imagen_qc_tracker_data = None
+        imagen_qc_tracker_filename = None
+        imagen_qc_tracker_file_ready = False
+        imagen_qc_tracker_processed_df = None
+        imagen_qc_tracker_sheet_name = None
 
         # Commit database changes
         db.session.commit()

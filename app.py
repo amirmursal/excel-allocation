@@ -10002,6 +10002,13 @@ def format_insurance_column_in_dataframe(df, column_name):
     return df
 
 
+def drop_auditors_column_from_export_df(df):
+    """Remove Auditors from exported allocation workbooks (not written from staff data)."""
+    if df is None or "Auditors" not in df.columns:
+        return df
+    return df.drop(columns=["Auditors"])
+
+
 def detect_and_assign_new_insurance_companies(
     data_df,
     agent_data,
@@ -17442,10 +17449,6 @@ def process_allocation_files_with_dates(
                     if "Supervisor" not in processed_df.columns:
                         processed_df["Supervisor"] = ""
 
-                    # Initialize Auditors column if it doesn't exist (kept blank by default)
-                    if "Auditors" not in processed_df.columns:
-                        processed_df["Auditors"] = ""
-
                     # Set agent name and supervisor for each allocated row
                     for agent in agent_allocations:
                         agent_name = agent["name"]
@@ -17464,10 +17467,6 @@ def process_allocation_files_with_dates(
                                 # Set supervisor for all rows allocated to this agent
                                 processed_df.loc[valid_indices, "Supervisor"] = (
                                     agent_supervisor
-                                )
-                                # Set auditors for all rows allocated to this agent (blank if not present)
-                                processed_df.loc[valid_indices, "Auditors"] = agent.get(
-                                    "auditors", ""
                                 )
 
                     # Calculate allocation statistics FIRST
@@ -20399,17 +20398,7 @@ def download_result():
                         # Reorder the dataframe
                         df_copy = df_copy[cols]
 
-                    # Reorder columns to place Auditors right after Supervisor
-                    if (
-                        "Supervisor" in df_copy.columns
-                        and "Auditors" in df_copy.columns
-                    ):
-                        supervisor_idx = df_copy.columns.get_loc("Supervisor")
-                        cols = df_copy.columns.tolist()
-                        # Remove Auditors from its current position and insert after Supervisor
-                        cols.remove("Auditors")
-                        cols.insert(supervisor_idx + 1, "Auditors")
-                        df_copy = df_copy[cols]
+                    df_copy = drop_auditors_column_from_export_df(df_copy)
 
                     df_copy.to_excel(writer, sheet_name=sheet_name, index=False)
 
@@ -26817,6 +26806,8 @@ def download_agent_file():
                             agent_df_copy[col], errors="coerce"
                         ).dt.strftime("%m/%d/%Y")
 
+                agent_df_copy = drop_auditors_column_from_export_df(agent_df_copy)
+
                 agent_df_copy.to_excel(
                     writer, sheet_name=f"{agent_name}_Allocation", index=False
                 )
@@ -28185,6 +28176,8 @@ def create_agent_excel_file(agent_name, agent_info):
             else:
                 # If Agent Name column doesn't exist, use row_indices directly
                 allocated_df = main_df.iloc[row_indices].copy()
+
+        allocated_df = drop_auditors_column_from_export_df(allocated_df)
 
         # Create Excel buffer
         excel_buffer = io.BytesIO()

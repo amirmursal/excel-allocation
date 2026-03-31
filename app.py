@@ -25221,6 +25221,806 @@ def validate_agent_work_file_columns(file_data):
     return False, missing_columns
 
 
+def validate_office_name_not_blank(file_data):
+    """
+    Validate that 'Office Name' column exists and has no blank values across all sheets.
+    Returns (is_valid, error_message).
+    Identifies rows by Patient ID > Patient Name > Excel row number (fallback).
+    """
+    if not file_data:
+        return False, "No data found in file"
+
+    blank_rows_by_sheet = {}
+    office_name_col_found = False
+
+    for sheet_name, df in file_data.items():
+        if df.empty:
+            continue
+
+        # Find "Office Name" column (case-insensitive)
+        actual_columns = {str(col).strip().lower(): str(col).strip() for col in df.columns}
+        office_col = None
+        for col_lower, col_original in actual_columns.items():
+            if col_lower == "office name":
+                office_col = col_original
+                office_name_col_found = True
+                break
+
+        if office_col is None:
+            continue
+
+        # Find identifier columns (case-insensitive)
+        patient_id_col = None
+        patient_name_col = None
+        for col_lower, col_original in actual_columns.items():
+            if col_lower == "patient id":
+                patient_id_col = col_original
+            elif col_lower == "patient name":
+                patient_name_col = col_original
+
+        # Check each row for blank Office Name
+        blank_identifiers = []
+        for idx, row in df.iterrows():
+            val = row.get(office_col)
+            if pd.isna(val) or str(val).strip() == "":
+                # Determine identifier for this row
+                identifier = None
+
+                # Try Patient ID first
+                if patient_id_col:
+                    pid = row.get(patient_id_col)
+                    if not pd.isna(pid) and str(pid).strip() != "":
+                        identifier = f"Patient ID: {str(pid).strip()}"
+
+                # Try Patient Name next
+                if identifier is None and patient_name_col:
+                    pname = row.get(patient_name_col)
+                    if not pd.isna(pname) and str(pname).strip() != "":
+                        identifier = f"Patient Name: {str(pname).strip()}"
+
+                # Fallback to Excel row number (idx is 0-based, Excel data starts at row 2)
+                if identifier is None:
+                    identifier = f"Row {idx + 2}"
+
+                blank_identifiers.append(identifier)
+
+        if blank_identifiers:
+            blank_rows_by_sheet[sheet_name] = blank_identifiers
+
+    # If no sheet had the column at all
+    if not office_name_col_found:
+        return False, "'Office Name' column not found in the uploaded file."
+
+    if not blank_rows_by_sheet:
+        return True, ""
+
+    # Build error message
+    parts = []
+    for sheet_name, identifiers in blank_rows_by_sheet.items():
+        ids_str = ", ".join(identifiers)
+        parts.append(f"[{sheet_name}] → {ids_str}")
+
+    error_msg = "Office Name is blank for: " + " | ".join(parts)
+    return False, error_msg
+
+
+def validate_appointment_date_format(file_data):
+    """
+    Validate that 'Appointment Date' column exists, has no blank values,
+    and all values are in exact MM/DD/YYYY format across all sheets.
+    Returns (is_valid, error_message).
+    Identifies rows by Patient ID > Patient Name > Excel row number (fallback).
+    """
+    import re
+
+    date_pattern_mmddyyyy = re.compile(r"^\d{2}/\d{2}/\d{4}$")
+    date_pattern_iso = re.compile(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$")
+
+    if not file_data:
+        return False, "No data found in file"
+
+    invalid_rows_by_sheet = {}
+    appt_date_col_found = False
+
+    for sheet_name, df in file_data.items():
+        if df.empty:
+            continue
+
+        # Find "Appointment Date" column (case-insensitive)
+        actual_columns = {str(col).strip().lower(): str(col).strip() for col in df.columns}
+        appt_col = None
+        for col_lower, col_original in actual_columns.items():
+            if col_lower == "appointment date":
+                appt_col = col_original
+                appt_date_col_found = True
+                break
+
+        if appt_col is None:
+            continue
+
+        # Find identifier columns (case-insensitive)
+        patient_id_col = None
+        patient_name_col = None
+        for col_lower, col_original in actual_columns.items():
+            if col_lower == "patient id":
+                patient_id_col = col_original
+            elif col_lower == "patient name":
+                patient_name_col = col_original
+
+        # Check each row
+        invalid_identifiers = []
+        for idx, row in df.iterrows():
+            val = row.get(appt_col)
+            reason = None
+
+            # Check blank/empty
+            if pd.isna(val) or str(val).strip() == "":
+                reason = "blank"
+            else:
+                val_str = str(val).strip()
+                # Check MM/DD/YYYY format
+                if date_pattern_mmddyyyy.match(val_str):
+                    try:
+                        month, day, year = val_str.split("/")
+                        datetime(int(year), int(month), int(day))
+                    except (ValueError, TypeError):
+                        reason = f"invalid date '{val_str}'"
+                # Check YYYY-MM-DD HH:MM:SS format
+                elif date_pattern_iso.match(val_str):
+                    try:
+                        date_part = val_str.split(" ")[0]
+                        year, month, day = date_part.split("-")
+                        datetime(int(year), int(month), int(day))
+                    except (ValueError, TypeError):
+                        reason = f"invalid date '{val_str}'"
+                else:
+                    reason = f"invalid format '{val_str}'"
+
+            if reason:
+                # Determine identifier for this row
+                identifier = None
+
+                if patient_id_col:
+                    pid = row.get(patient_id_col)
+                    if not pd.isna(pid) and str(pid).strip() != "":
+                        identifier = f"Patient ID: {str(pid).strip()}"
+
+                if identifier is None and patient_name_col:
+                    pname = row.get(patient_name_col)
+                    if not pd.isna(pname) and str(pname).strip() != "":
+                        identifier = f"Patient Name: {str(pname).strip()}"
+
+                if identifier is None:
+                    identifier = f"Row {idx + 2}"
+
+                invalid_identifiers.append(f"{identifier} ({reason})")
+
+        if invalid_identifiers:
+            invalid_rows_by_sheet[sheet_name] = invalid_identifiers
+
+    # If no sheet had the column at all
+    if not appt_date_col_found:
+        return False, "'Appointment Date' column not found in the uploaded file."
+
+    if not invalid_rows_by_sheet:
+        return True, ""
+
+    # Build error message
+    parts = []
+    for sheet_name, identifiers in invalid_rows_by_sheet.items():
+        ids_str = ", ".join(identifiers)
+        parts.append(f"[{sheet_name}] → {ids_str}")
+
+    error_msg = "Appointment Date must be in MM/DD/YYYY format: " + " | ".join(parts)
+    return False, error_msg
+
+
+def validate_patient_id_numeric(file_data):
+    """
+    Validate that 'Patient ID' column exists, is not blank, and contains
+    only whole numbers (no decimals, no text) across all sheets.
+    Returns (is_valid, error_message).
+    Identifies rows by Patient Name > Excel row number (fallback).
+    """
+    import re
+
+    if not file_data:
+        return False, "No data found in file"
+
+    invalid_rows_by_sheet = {}
+    patient_id_col_found = False
+
+    for sheet_name, df in file_data.items():
+        if df.empty:
+            continue
+
+        # Find "Patient ID" column (case-insensitive)
+        actual_columns = {str(col).strip().lower(): str(col).strip() for col in df.columns}
+        pid_col = None
+        for col_lower, col_original in actual_columns.items():
+            if col_lower == "patient id":
+                pid_col = col_original
+                patient_id_col_found = True
+                break
+
+        if pid_col is None:
+            continue
+
+        # Find Patient Name column for row identification
+        patient_name_col = None
+        for col_lower, col_original in actual_columns.items():
+            if col_lower == "patient name":
+                patient_name_col = col_original
+                break
+
+        # Check each row
+        invalid_identifiers = []
+        for idx, row in df.iterrows():
+            val = row.get(pid_col)
+            reason = None
+
+            # Check blank/empty
+            if pd.isna(val) or str(val).strip() == "":
+                reason = "blank"
+            else:
+                val_str = str(val).strip()
+                # Accept whole numbers (123) or decimal like 123.0
+                if not re.match(r"^\d+(\.\d+)?$", val_str):
+                    reason = f"non-numeric '{val_str}'"
+
+            if reason:
+                # Determine identifier
+                identifier = None
+
+                if patient_name_col:
+                    pname = row.get(patient_name_col)
+                    if not pd.isna(pname) and str(pname).strip() != "":
+                        identifier = f"Patient Name: {str(pname).strip()}"
+
+                if identifier is None:
+                    identifier = f"Row {idx + 2}"
+
+                invalid_identifiers.append(f"{identifier} ({reason})")
+
+        if invalid_identifiers:
+            invalid_rows_by_sheet[sheet_name] = invalid_identifiers
+
+    # If no sheet had the column at all
+    if not patient_id_col_found:
+        return False, "'Patient ID' column not found in the uploaded file."
+
+    if not invalid_rows_by_sheet:
+        return True, ""
+
+    # Build error message
+    parts = []
+    for sheet_name, identifiers in invalid_rows_by_sheet.items():
+        ids_str = ", ".join(identifiers)
+        parts.append(f"[{sheet_name}] → {ids_str}")
+
+    error_msg = "Patient ID must be a whole number and not blank: " + " | ".join(parts)
+    return False, error_msg
+
+
+def validate_patient_name_text(file_data):
+    """
+    Validate that 'Patient Name' column exists, is not blank, and is not purely numeric
+    across all sheets.
+    Returns (is_valid, error_message).
+    Identifies rows by Patient ID > Excel row number (fallback).
+    """
+    import re
+
+    if not file_data:
+        return False, "No data found in file"
+
+    invalid_rows_by_sheet = {}
+    patient_name_col_found = False
+
+    for sheet_name, df in file_data.items():
+        if df.empty:
+            continue
+
+        # Find "Patient Name" column (case-insensitive)
+        actual_columns = {str(col).strip().lower(): str(col).strip() for col in df.columns}
+        pname_col = None
+        for col_lower, col_original in actual_columns.items():
+            if col_lower == "patient name":
+                pname_col = col_original
+                patient_name_col_found = True
+                break
+
+        if pname_col is None:
+            continue
+
+        # Find Patient ID column for row identification
+        patient_id_col = None
+        for col_lower, col_original in actual_columns.items():
+            if col_lower == "patient id":
+                patient_id_col = col_original
+                break
+
+        # Check each row
+        invalid_identifiers = []
+        for idx, row in df.iterrows():
+            val = row.get(pname_col)
+            reason = None
+
+            if pd.isna(val) or str(val).strip() == "":
+                reason = "blank"
+            else:
+                val_str = str(val).strip()
+                # Reject purely numeric values (integers or decimals)
+                if re.match(r"^\d+(\.\d+)?$", val_str):
+                    reason = f"purely numeric '{val_str}'"
+
+            if reason:
+                identifier = None
+
+                if patient_id_col:
+                    pid = row.get(patient_id_col)
+                    if not pd.isna(pid) and str(pid).strip() != "":
+                        identifier = f"Patient ID: {str(pid).strip()}"
+
+                if identifier is None:
+                    identifier = f"Row {idx + 2}"
+
+                invalid_identifiers.append(f"{identifier} ({reason})")
+
+        if invalid_identifiers:
+            invalid_rows_by_sheet[sheet_name] = invalid_identifiers
+
+    if not patient_name_col_found:
+        return False, "'Patient Name' column not found in the uploaded file."
+
+    if not invalid_rows_by_sheet:
+        return True, ""
+
+    parts = []
+    for sheet_name, identifiers in invalid_rows_by_sheet.items():
+        ids_str = ", ".join(identifiers)
+        parts.append(f"[{sheet_name}] → {ids_str}")
+
+    error_msg = "Patient Name must be text and not blank: " + " | ".join(parts)
+    return False, error_msg
+
+
+def validate_dental_primary_ins_carr(file_data):
+    """
+    Validate that 'Dental Primary Ins Carr' column exists, is not blank,
+    and is not purely numeric across all sheets.
+    Returns (is_valid, error_message).
+    Identifies rows by Patient ID > Patient Name > Excel row number (fallback).
+    """
+    import re
+
+    if not file_data:
+        return False, "No data found in file"
+
+    invalid_rows_by_sheet = {}
+    col_found = False
+
+    for sheet_name, df in file_data.items():
+        if df.empty:
+            continue
+
+        actual_columns = {str(col).strip().lower(): str(col).strip() for col in df.columns}
+        target_col = None
+        for col_lower, col_original in actual_columns.items():
+            if col_lower == "dental primary ins carr":
+                target_col = col_original
+                col_found = True
+                break
+
+        if target_col is None:
+            continue
+
+        # Find identifier columns
+        patient_id_col = None
+        patient_name_col = None
+        for col_lower, col_original in actual_columns.items():
+            if col_lower == "patient id":
+                patient_id_col = col_original
+            elif col_lower == "patient name":
+                patient_name_col = col_original
+
+        invalid_identifiers = []
+        for idx, row in df.iterrows():
+            val = row.get(target_col)
+            reason = None
+
+            if pd.isna(val) or str(val).strip() == "":
+                reason = "blank"
+            else:
+                val_str = str(val).strip()
+                if re.match(r"^\d+(\.\d+)?$", val_str):
+                    reason = f"purely numeric '{val_str}'"
+
+            if reason:
+                identifier = None
+
+                if patient_id_col:
+                    pid = row.get(patient_id_col)
+                    if not pd.isna(pid) and str(pid).strip() != "":
+                        identifier = f"Patient ID: {str(pid).strip()}"
+
+                if identifier is None and patient_name_col:
+                    pname = row.get(patient_name_col)
+                    if not pd.isna(pname) and str(pname).strip() != "":
+                        identifier = f"Patient Name: {str(pname).strip()}"
+
+                if identifier is None:
+                    identifier = f"Row {idx + 2}"
+
+                invalid_identifiers.append(f"{identifier} ({reason})")
+
+        if invalid_identifiers:
+            invalid_rows_by_sheet[sheet_name] = invalid_identifiers
+
+    if not col_found:
+        return False, "'Dental Primary Ins Carr' column not found in the uploaded file."
+
+    if not invalid_rows_by_sheet:
+        return True, ""
+
+    parts = []
+    for sheet_name, identifiers in invalid_rows_by_sheet.items():
+        ids_str = ", ".join(identifiers)
+        parts.append(f"[{sheet_name}] → {ids_str}")
+
+    error_msg = "Dental Primary Ins Carr must be text and not blank: " + " | ".join(parts)
+    return False, error_msg
+
+
+def validate_received_date_format(file_data):
+    """
+    Validate that 'Received date' column exists, is not blank, and all values
+    are in MM/DD/YYYY or YYYY-MM-DD HH:MM:SS format across all sheets.
+    Returns (is_valid, error_message).
+    Identifies rows by Patient ID > Patient Name > Excel row number (fallback).
+    """
+    import re
+
+    date_pattern_mmddyyyy = re.compile(r"^\d{2}/\d{2}/\d{4}$")
+    date_pattern_iso = re.compile(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$")
+
+    if not file_data:
+        return False, "No data found in file"
+
+    invalid_rows_by_sheet = {}
+    col_found = False
+
+    for sheet_name, df in file_data.items():
+        if df.empty:
+            continue
+
+        actual_columns = {str(col).strip().lower(): str(col).strip() for col in df.columns}
+        target_col = None
+        for col_lower, col_original in actual_columns.items():
+            if col_lower == "received date":
+                target_col = col_original
+                col_found = True
+                break
+
+        if target_col is None:
+            continue
+
+        # Find identifier columns
+        patient_id_col = None
+        patient_name_col = None
+        for col_lower, col_original in actual_columns.items():
+            if col_lower == "patient id":
+                patient_id_col = col_original
+            elif col_lower == "patient name":
+                patient_name_col = col_original
+
+        invalid_identifiers = []
+        for idx, row in df.iterrows():
+            val = row.get(target_col)
+            reason = None
+
+            if pd.isna(val) or str(val).strip() == "":
+                reason = "blank"
+            else:
+                val_str = str(val).strip()
+                if date_pattern_mmddyyyy.match(val_str):
+                    try:
+                        month, day, year = val_str.split("/")
+                        datetime(int(year), int(month), int(day))
+                    except (ValueError, TypeError):
+                        reason = f"invalid date '{val_str}'"
+                elif date_pattern_iso.match(val_str):
+                    try:
+                        date_part = val_str.split(" ")[0]
+                        year, month, day = date_part.split("-")
+                        datetime(int(year), int(month), int(day))
+                    except (ValueError, TypeError):
+                        reason = f"invalid date '{val_str}'"
+                else:
+                    reason = f"invalid format '{val_str}'"
+
+            if reason:
+                identifier = None
+
+                if patient_id_col:
+                    pid = row.get(patient_id_col)
+                    if not pd.isna(pid) and str(pid).strip() != "":
+                        identifier = f"Patient ID: {str(pid).strip()}"
+
+                if identifier is None and patient_name_col:
+                    pname = row.get(patient_name_col)
+                    if not pd.isna(pname) and str(pname).strip() != "":
+                        identifier = f"Patient Name: {str(pname).strip()}"
+
+                if identifier is None:
+                    identifier = f"Row {idx + 2}"
+
+                invalid_identifiers.append(f"{identifier} ({reason})")
+
+        if invalid_identifiers:
+            invalid_rows_by_sheet[sheet_name] = invalid_identifiers
+
+    if not col_found:
+        return False, "'Received date' column not found in the uploaded file."
+
+    if not invalid_rows_by_sheet:
+        return True, ""
+
+    parts = []
+    for sheet_name, identifiers in invalid_rows_by_sheet.items():
+        ids_str = ", ".join(identifiers)
+        parts.append(f"[{sheet_name}] → {ids_str}")
+
+    error_msg = "Received date must be in MM/DD/YYYY format: " + " | ".join(parts)
+    return False, error_msg
+
+
+def validate_status_code_text(file_data):
+    """
+    Validate that 'Status Code' column exists, is not blank,
+    and is not purely numeric across all sheets.
+    Returns (is_valid, error_message).
+    Identifies rows by Patient ID > Patient Name > Excel row number (fallback).
+    """
+    import re
+
+    if not file_data:
+        return False, "No data found in file"
+
+    invalid_rows_by_sheet = {}
+    col_found = False
+
+    for sheet_name, df in file_data.items():
+        if df.empty:
+            continue
+
+        actual_columns = {str(col).strip().lower(): str(col).strip() for col in df.columns}
+        target_col = None
+        for col_lower, col_original in actual_columns.items():
+            if col_lower == "status code":
+                target_col = col_original
+                col_found = True
+                break
+
+        if target_col is None:
+            continue
+
+        patient_id_col = None
+        patient_name_col = None
+        for col_lower, col_original in actual_columns.items():
+            if col_lower == "patient id":
+                patient_id_col = col_original
+            elif col_lower == "patient name":
+                patient_name_col = col_original
+
+        invalid_identifiers = []
+        for idx, row in df.iterrows():
+            val = row.get(target_col)
+            reason = None
+
+            if pd.isna(val) or str(val).strip() == "":
+                reason = "blank"
+            else:
+                val_str = str(val).strip()
+                if re.match(r"^\d+(\.\d+)?$", val_str):
+                    reason = f"purely numeric '{val_str}'"
+
+            if reason:
+                identifier = None
+
+                if patient_id_col:
+                    pid = row.get(patient_id_col)
+                    if not pd.isna(pid) and str(pid).strip() != "":
+                        identifier = f"Patient ID: {str(pid).strip()}"
+
+                if identifier is None and patient_name_col:
+                    pname = row.get(patient_name_col)
+                    if not pd.isna(pname) and str(pname).strip() != "":
+                        identifier = f"Patient Name: {str(pname).strip()}"
+
+                if identifier is None:
+                    identifier = f"Row {idx + 2}"
+
+                invalid_identifiers.append(f"{identifier} ({reason})")
+
+        if invalid_identifiers:
+            invalid_rows_by_sheet[sheet_name] = invalid_identifiers
+
+    if not col_found:
+        return False, "'Status Code' column not found in the uploaded file."
+
+    if not invalid_rows_by_sheet:
+        return True, ""
+
+    parts = []
+    for sheet_name, identifiers in invalid_rows_by_sheet.items():
+        ids_str = ", ".join(identifiers)
+        parts.append(f"[{sheet_name}] → {ids_str}")
+
+    error_msg = "Status Code must be text and not blank: " + " | ".join(parts)
+    return False, error_msg
+
+
+def validate_column_not_blank(file_data, column_name):
+    """
+    Generic validation that a column exists and has no blank values across all sheets.
+    Returns (is_valid, error_message).
+    Identifies rows by Patient ID > Patient Name > Excel row number (fallback).
+    """
+    if not file_data:
+        return False, "No data found in file"
+
+    blank_rows_by_sheet = {}
+    col_found = False
+
+    for sheet_name, df in file_data.items():
+        if df.empty:
+            continue
+
+        actual_columns = {str(col).strip().lower(): str(col).strip() for col in df.columns}
+        target_col = None
+        for col_lower, col_original in actual_columns.items():
+            if col_lower == column_name.strip().lower():
+                target_col = col_original
+                col_found = True
+                break
+
+        if target_col is None:
+            continue
+
+        patient_id_col = None
+        patient_name_col = None
+        for col_lower, col_original in actual_columns.items():
+            if col_lower == "patient id":
+                patient_id_col = col_original
+            elif col_lower == "patient name":
+                patient_name_col = col_original
+
+        blank_identifiers = []
+        for idx, row in df.iterrows():
+            val = row.get(target_col)
+            if pd.isna(val) or str(val).strip() == "":
+                identifier = None
+
+                if patient_id_col:
+                    pid = row.get(patient_id_col)
+                    if not pd.isna(pid) and str(pid).strip() != "":
+                        identifier = f"Patient ID: {str(pid).strip()}"
+
+                if identifier is None and patient_name_col:
+                    pname = row.get(patient_name_col)
+                    if not pd.isna(pname) and str(pname).strip() != "":
+                        identifier = f"Patient Name: {str(pname).strip()}"
+
+                if identifier is None:
+                    identifier = f"Row {idx + 2}"
+
+                blank_identifiers.append(identifier)
+
+        if blank_identifiers:
+            blank_rows_by_sheet[sheet_name] = blank_identifiers
+
+    if not col_found:
+        return False, f"'{column_name}' column not found in the uploaded file."
+
+    if not blank_rows_by_sheet:
+        return True, ""
+
+    parts = []
+    for sheet_name, identifiers in blank_rows_by_sheet.items():
+        ids_str = ", ".join(identifiers)
+        parts.append(f"[{sheet_name}] → {ids_str}")
+
+    error_msg = f"{column_name} must not be blank: " + " | ".join(parts)
+    return False, error_msg
+
+
+def validate_column_numeric(file_data, column_name):
+    """
+    Generic validation that a column exists, is not blank, and contains only
+    numeric values (whole or decimal like 123.0) across all sheets.
+    Returns (is_valid, error_message).
+    Identifies rows by Patient ID > Patient Name > Excel row number (fallback).
+    """
+    import re
+
+    if not file_data:
+        return False, "No data found in file"
+
+    invalid_rows_by_sheet = {}
+    col_found = False
+
+    for sheet_name, df in file_data.items():
+        if df.empty:
+            continue
+
+        actual_columns = {str(col).strip().lower(): str(col).strip() for col in df.columns}
+        target_col = None
+        for col_lower, col_original in actual_columns.items():
+            if col_lower == column_name.strip().lower():
+                target_col = col_original
+                col_found = True
+                break
+
+        if target_col is None:
+            continue
+
+        patient_id_col = None
+        patient_name_col = None
+        for col_lower, col_original in actual_columns.items():
+            if col_lower == "patient id":
+                patient_id_col = col_original
+            elif col_lower == "patient name":
+                patient_name_col = col_original
+
+        invalid_identifiers = []
+        for idx, row in df.iterrows():
+            val = row.get(target_col)
+            reason = None
+
+            if pd.isna(val) or str(val).strip() == "":
+                reason = "blank"
+            else:
+                val_str = str(val).strip()
+                if not re.match(r"^\d+(\.\d+)?$", val_str):
+                    reason = f"non-numeric '{val_str}'"
+
+            if reason:
+                identifier = None
+
+                if patient_id_col:
+                    pid = row.get(patient_id_col)
+                    if not pd.isna(pid) and str(pid).strip() != "":
+                        identifier = f"Patient ID: {str(pid).strip()}"
+
+                if identifier is None and patient_name_col:
+                    pname = row.get(patient_name_col)
+                    if not pd.isna(pname) and str(pname).strip() != "":
+                        identifier = f"Patient Name: {str(pname).strip()}"
+
+                if identifier is None:
+                    identifier = f"Row {idx + 2}"
+
+                invalid_identifiers.append(f"{identifier} ({reason})")
+
+        if invalid_identifiers:
+            invalid_rows_by_sheet[sheet_name] = invalid_identifiers
+
+    if not col_found:
+        return False, f"'{column_name}' column not found in the uploaded file."
+
+    if not invalid_rows_by_sheet:
+        return True, ""
+
+    parts = []
+    for sheet_name, identifiers in invalid_rows_by_sheet.items():
+        ids_str = ", ".join(identifiers)
+        parts.append(f"[{sheet_name}] → {ids_str}")
+
+    error_msg = f"{column_name} must be numeric and not blank: " + " | ".join(parts)
+    return False, error_msg
+
+
 @app.route("/upload_work_file", methods=["POST"])
 @agent_required
 def upload_work_file():
@@ -29141,19 +29941,15 @@ AGENT_TEMPLATE_WITH_SIDEBAR = """
                                 messageContainer.innerHTML = '<i class="fas fa-check-circle"></i> ' + data.message;
                                 // Reset form
                                 form.reset();
-                                // Hide message after 5 seconds
+                                // Hide success message after 5 seconds
                                 setTimeout(() => {
                                     messageContainer.style.display = 'none';
                                 }, 5000);
                             } else {
-                                // Show error message
+                                // Show error message (stays until next upload)
                                 messageContainer.style.display = 'block';
                                 messageContainer.className = 'alert alert-error';
                                 messageContainer.innerHTML = '<i class="fas fa-exclamation-circle"></i> ' + data.message;
-                                // Hide message after 5 seconds
-                                setTimeout(() => {
-                                    messageContainer.style.display = 'none';
-                                }, 5000);
                             }
                             submitBtn.disabled = false;
                             submitBtn.innerHTML = originalText;
@@ -29853,6 +30649,90 @@ def upload_day_shift():
         try:
             file_data = pd.read_excel(filename, sheet_name=None, parse_dates=False)
 
+            # Validate Office Name column is not blank
+            is_valid, error_msg = validate_office_name_not_blank(file_data)
+            if not is_valid:
+                if os.path.exists(filename):
+                    os.remove(filename)
+                return jsonify({"success": False, "message": error_msg}), 400
+
+            # Validate Appointment Date format (MM/DD/YYYY)
+            is_valid, error_msg = validate_appointment_date_format(file_data)
+            if not is_valid:
+                if os.path.exists(filename):
+                    os.remove(filename)
+                return jsonify({"success": False, "message": error_msg}), 400
+
+            # Validate Patient ID is numeric and not blank
+            is_valid, error_msg = validate_patient_id_numeric(file_data)
+            if not is_valid:
+                if os.path.exists(filename):
+                    os.remove(filename)
+                return jsonify({"success": False, "message": error_msg}), 400
+
+            # Validate Patient Name is text and not blank
+            is_valid, error_msg = validate_patient_name_text(file_data)
+            if not is_valid:
+                if os.path.exists(filename):
+                    os.remove(filename)
+                return jsonify({"success": False, "message": error_msg}), 400
+
+            # Validate Dental Primary Ins Carr is text and not blank
+            is_valid, error_msg = validate_dental_primary_ins_carr(file_data)
+            if not is_valid:
+                if os.path.exists(filename):
+                    os.remove(filename)
+                return jsonify({"success": False, "message": error_msg}), 400
+
+            # Validate Received date format (MM/DD/YYYY)
+            is_valid, error_msg = validate_received_date_format(file_data)
+            if not is_valid:
+                if os.path.exists(filename):
+                    os.remove(filename)
+                return jsonify({"success": False, "message": error_msg}), 400
+
+            # Validate Status Code is text and not blank
+            is_valid, error_msg = validate_status_code_text(file_data)
+            if not is_valid:
+                if os.path.exists(filename):
+                    os.remove(filename)
+                return jsonify({"success": False, "message": error_msg}), 400
+
+            # Validate Comment is not blank
+            is_valid, error_msg = validate_column_not_blank(file_data, "Comment")
+            if not is_valid:
+                if os.path.exists(filename):
+                    os.remove(filename)
+                return jsonify({"success": False, "message": error_msg}), 400
+
+            # Validate Plan Name is not blank
+            is_valid, error_msg = validate_column_not_blank(file_data, "Plan Name")
+            if not is_valid:
+                if os.path.exists(filename):
+                    os.remove(filename)
+                return jsonify({"success": False, "message": error_msg}), 400
+
+            # Validate Group Number is not blank
+            is_valid, error_msg = validate_column_not_blank(file_data, "Group Number")
+            if not is_valid:
+                if os.path.exists(filename):
+                    os.remove(filename)
+                return jsonify({"success": False, "message": error_msg}), 400
+
+            # Validate Plan Number is numeric and not blank
+            is_valid, error_msg = validate_column_numeric(file_data, "Plan Number")
+            if not is_valid:
+                if os.path.exists(filename):
+                    os.remove(filename)
+                return jsonify({"success": False, "message": error_msg}), 400
+
+            # Validate Agent Name is not blank
+            is_valid, error_msg = validate_column_not_blank(file_data, "Agent Name")
+            if not is_valid:
+                if os.path.exists(filename):
+                    os.remove(filename)
+                return jsonify({"success": False, "message": error_msg}), 400
+
             # Get notes if provided
             notes = request.form.get("notes", "")
 
@@ -29921,6 +30801,90 @@ def upload_night_shift():
         try:
             file_data = pd.read_excel(filename, sheet_name=None, parse_dates=False)
 
+            # Validate Office Name column is not blank
+            is_valid, error_msg = validate_office_name_not_blank(file_data)
+            if not is_valid:
+                if os.path.exists(filename):
+                    os.remove(filename)
+                return jsonify({"success": False, "message": error_msg}), 400
+
+            # Validate Appointment Date format (MM/DD/YYYY)
+            is_valid, error_msg = validate_appointment_date_format(file_data)
+            if not is_valid:
+                if os.path.exists(filename):
+                    os.remove(filename)
+                return jsonify({"success": False, "message": error_msg}), 400
+
+            # Validate Patient ID is numeric and not blank
+            is_valid, error_msg = validate_patient_id_numeric(file_data)
+            if not is_valid:
+                if os.path.exists(filename):
+                    os.remove(filename)
+                return jsonify({"success": False, "message": error_msg}), 400
+
+            # Validate Patient Name is text and not blank
+            is_valid, error_msg = validate_patient_name_text(file_data)
+            if not is_valid:
+                if os.path.exists(filename):
+                    os.remove(filename)
+                return jsonify({"success": False, "message": error_msg}), 400
+
+            # Validate Dental Primary Ins Carr is text and not blank
+            is_valid, error_msg = validate_dental_primary_ins_carr(file_data)
+            if not is_valid:
+                if os.path.exists(filename):
+                    os.remove(filename)
+                return jsonify({"success": False, "message": error_msg}), 400
+
+            # Validate Received date format (MM/DD/YYYY)
+            is_valid, error_msg = validate_received_date_format(file_data)
+            if not is_valid:
+                if os.path.exists(filename):
+                    os.remove(filename)
+                return jsonify({"success": False, "message": error_msg}), 400
+
+            # Validate Status Code is text and not blank
+            is_valid, error_msg = validate_status_code_text(file_data)
+            if not is_valid:
+                if os.path.exists(filename):
+                    os.remove(filename)
+                return jsonify({"success": False, "message": error_msg}), 400
+
+            # Validate Comment is not blank
+            is_valid, error_msg = validate_column_not_blank(file_data, "Comment")
+            if not is_valid:
+                if os.path.exists(filename):
+                    os.remove(filename)
+                return jsonify({"success": False, "message": error_msg}), 400
+
+            # Validate Plan Name is not blank
+            is_valid, error_msg = validate_column_not_blank(file_data, "Plan Name")
+            if not is_valid:
+                if os.path.exists(filename):
+                    os.remove(filename)
+                return jsonify({"success": False, "message": error_msg}), 400
+
+            # Validate Group Number is not blank
+            is_valid, error_msg = validate_column_not_blank(file_data, "Group Number")
+            if not is_valid:
+                if os.path.exists(filename):
+                    os.remove(filename)
+                return jsonify({"success": False, "message": error_msg}), 400
+
+            # Validate Plan Number is numeric and not blank
+            is_valid, error_msg = validate_column_numeric(file_data, "Plan Number")
+            if not is_valid:
+                if os.path.exists(filename):
+                    os.remove(filename)
+                return jsonify({"success": False, "message": error_msg}), 400
+
+            # Validate Agent Name is not blank
+            is_valid, error_msg = validate_column_not_blank(file_data, "Agent Name")
+            if not is_valid:
+                if os.path.exists(filename):
+                    os.remove(filename)
+                return jsonify({"success": False, "message": error_msg}), 400
+
             # Get notes if provided
             notes = request.form.get("notes", "")
 
@@ -29987,6 +30951,90 @@ def upload_ntbp():
         # Load Excel file
         try:
             file_data = pd.read_excel(filename, sheet_name=None, parse_dates=False)
+
+            # Validate Office Name column is not blank
+            is_valid, error_msg = validate_office_name_not_blank(file_data)
+            if not is_valid:
+                if os.path.exists(filename):
+                    os.remove(filename)
+                return jsonify({"success": False, "message": error_msg}), 400
+
+            # Validate Appointment Date format (MM/DD/YYYY)
+            is_valid, error_msg = validate_appointment_date_format(file_data)
+            if not is_valid:
+                if os.path.exists(filename):
+                    os.remove(filename)
+                return jsonify({"success": False, "message": error_msg}), 400
+
+            # Validate Patient ID is numeric and not blank
+            is_valid, error_msg = validate_patient_id_numeric(file_data)
+            if not is_valid:
+                if os.path.exists(filename):
+                    os.remove(filename)
+                return jsonify({"success": False, "message": error_msg}), 400
+
+            # Validate Patient Name is text and not blank
+            is_valid, error_msg = validate_patient_name_text(file_data)
+            if not is_valid:
+                if os.path.exists(filename):
+                    os.remove(filename)
+                return jsonify({"success": False, "message": error_msg}), 400
+
+            # Validate Dental Primary Ins Carr is text and not blank
+            is_valid, error_msg = validate_dental_primary_ins_carr(file_data)
+            if not is_valid:
+                if os.path.exists(filename):
+                    os.remove(filename)
+                return jsonify({"success": False, "message": error_msg}), 400
+
+            # Validate Received date format (MM/DD/YYYY)
+            is_valid, error_msg = validate_received_date_format(file_data)
+            if not is_valid:
+                if os.path.exists(filename):
+                    os.remove(filename)
+                return jsonify({"success": False, "message": error_msg}), 400
+
+            # Validate Status Code is text and not blank
+            is_valid, error_msg = validate_status_code_text(file_data)
+            if not is_valid:
+                if os.path.exists(filename):
+                    os.remove(filename)
+                return jsonify({"success": False, "message": error_msg}), 400
+
+            # Validate Comment is not blank
+            is_valid, error_msg = validate_column_not_blank(file_data, "Comment")
+            if not is_valid:
+                if os.path.exists(filename):
+                    os.remove(filename)
+                return jsonify({"success": False, "message": error_msg}), 400
+
+            # Validate Plan Name is not blank
+            is_valid, error_msg = validate_column_not_blank(file_data, "Plan Name")
+            if not is_valid:
+                if os.path.exists(filename):
+                    os.remove(filename)
+                return jsonify({"success": False, "message": error_msg}), 400
+
+            # Validate Group Number is not blank
+            is_valid, error_msg = validate_column_not_blank(file_data, "Group Number")
+            if not is_valid:
+                if os.path.exists(filename):
+                    os.remove(filename)
+                return jsonify({"success": False, "message": error_msg}), 400
+
+            # Validate Plan Number is numeric and not blank
+            is_valid, error_msg = validate_column_numeric(file_data, "Plan Number")
+            if not is_valid:
+                if os.path.exists(filename):
+                    os.remove(filename)
+                return jsonify({"success": False, "message": error_msg}), 400
+
+            # Validate Agent Name is not blank
+            is_valid, error_msg = validate_column_not_blank(file_data, "Agent Name")
+            if not is_valid:
+                if os.path.exists(filename):
+                    os.remove(filename)
+                return jsonify({"success": False, "message": error_msg}), 400
 
             # Clear all existing NTBP files for this agent before saving new one (override behavior)
             existing_files = NTBPFile.query.filter_by(agent_id=user.id).all()
@@ -30117,6 +31165,90 @@ def upload_daily_consolidate():
         # Load Excel file
         try:
             file_data = pd.read_excel(filename, sheet_name=None, parse_dates=False)
+
+            # Validate Office Name column is not blank
+            is_valid, error_msg = validate_office_name_not_blank(file_data)
+            if not is_valid:
+                if os.path.exists(filename):
+                    os.remove(filename)
+                return jsonify({"success": False, "message": error_msg}), 400
+
+            # Validate Appointment Date format (MM/DD/YYYY)
+            is_valid, error_msg = validate_appointment_date_format(file_data)
+            if not is_valid:
+                if os.path.exists(filename):
+                    os.remove(filename)
+                return jsonify({"success": False, "message": error_msg}), 400
+
+            # Validate Patient ID is numeric and not blank
+            is_valid, error_msg = validate_patient_id_numeric(file_data)
+            if not is_valid:
+                if os.path.exists(filename):
+                    os.remove(filename)
+                return jsonify({"success": False, "message": error_msg}), 400
+
+            # Validate Patient Name is text and not blank
+            is_valid, error_msg = validate_patient_name_text(file_data)
+            if not is_valid:
+                if os.path.exists(filename):
+                    os.remove(filename)
+                return jsonify({"success": False, "message": error_msg}), 400
+
+            # Validate Dental Primary Ins Carr is text and not blank
+            is_valid, error_msg = validate_dental_primary_ins_carr(file_data)
+            if not is_valid:
+                if os.path.exists(filename):
+                    os.remove(filename)
+                return jsonify({"success": False, "message": error_msg}), 400
+
+            # Validate Received date format (MM/DD/YYYY)
+            is_valid, error_msg = validate_received_date_format(file_data)
+            if not is_valid:
+                if os.path.exists(filename):
+                    os.remove(filename)
+                return jsonify({"success": False, "message": error_msg}), 400
+
+            # Validate Status Code is text and not blank
+            is_valid, error_msg = validate_status_code_text(file_data)
+            if not is_valid:
+                if os.path.exists(filename):
+                    os.remove(filename)
+                return jsonify({"success": False, "message": error_msg}), 400
+
+            # Validate Comment is not blank
+            is_valid, error_msg = validate_column_not_blank(file_data, "Comment")
+            if not is_valid:
+                if os.path.exists(filename):
+                    os.remove(filename)
+                return jsonify({"success": False, "message": error_msg}), 400
+
+            # Validate Plan Name is not blank
+            is_valid, error_msg = validate_column_not_blank(file_data, "Plan Name")
+            if not is_valid:
+                if os.path.exists(filename):
+                    os.remove(filename)
+                return jsonify({"success": False, "message": error_msg}), 400
+
+            # Validate Group Number is not blank
+            is_valid, error_msg = validate_column_not_blank(file_data, "Group Number")
+            if not is_valid:
+                if os.path.exists(filename):
+                    os.remove(filename)
+                return jsonify({"success": False, "message": error_msg}), 400
+
+            # Validate Plan Number is numeric and not blank
+            is_valid, error_msg = validate_column_numeric(file_data, "Plan Number")
+            if not is_valid:
+                if os.path.exists(filename):
+                    os.remove(filename)
+                return jsonify({"success": False, "message": error_msg}), 400
+
+            # Validate Agent Name is not blank
+            is_valid, error_msg = validate_column_not_blank(file_data, "Agent Name")
+            if not is_valid:
+                if os.path.exists(filename):
+                    os.remove(filename)
+                return jsonify({"success": False, "message": error_msg}), 400
 
             # Clear all existing Daily Consolidate files for this agent before saving new one (override behavior)
             existing_files = DailyConsolidateFile.query.filter_by(

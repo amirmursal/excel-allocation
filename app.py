@@ -25252,15 +25252,24 @@ def validate_office_name_not_blank(file_data):
         # Find identifier columns (case-insensitive)
         patient_id_col = None
         patient_name_col = None
+        remark_col = None
         for col_lower, col_original in actual_columns.items():
             if col_lower == "patient id":
                 patient_id_col = col_original
             elif col_lower == "patient name":
                 patient_name_col = col_original
+            elif col_lower in ("remark", "remarks"):
+                remark_col = col_original
 
         # Check each row for blank Office Name
         blank_identifiers = []
         for idx, row in df.iterrows():
+            # Skip rows where Remark is "Workable", "NTC", or "NTBP" (case-insensitive)
+            if remark_col:
+                remark_val = row.get(remark_col)
+                if not pd.isna(remark_val) and str(remark_val).strip().lower() in ("workable", "ntc", "ntbp", "ats"):
+                    continue
+
             val = row.get(office_col)
             if pd.isna(val) or str(val).strip() == "":
                 # Determine identifier for this row
@@ -25341,15 +25350,24 @@ def validate_appointment_date_format(file_data):
         # Find identifier columns (case-insensitive)
         patient_id_col = None
         patient_name_col = None
+        remark_col = None
         for col_lower, col_original in actual_columns.items():
             if col_lower == "patient id":
                 patient_id_col = col_original
             elif col_lower == "patient name":
                 patient_name_col = col_original
+            elif col_lower in ("remark", "remarks"):
+                remark_col = col_original
 
         # Check each row
         invalid_identifiers = []
         for idx, row in df.iterrows():
+            # Skip rows where Remark is "Workable", "NTC", or "NTBP" (case-insensitive)
+            if remark_col:
+                remark_val = row.get(remark_col)
+                if not pd.isna(remark_val) and str(remark_val).strip().lower() in ("workable", "ntc", "ntbp", "ats"):
+                    continue
+
             val = row.get(appt_col)
             reason = None
 
@@ -25446,16 +25464,24 @@ def validate_patient_id_numeric(file_data):
         if pid_col is None:
             continue
 
-        # Find Patient Name column for row identification
+        # Find Patient Name and Remark columns for row identification
         patient_name_col = None
+        remark_col = None
         for col_lower, col_original in actual_columns.items():
             if col_lower == "patient name":
                 patient_name_col = col_original
-                break
+            elif col_lower in ("remark", "remarks"):
+                remark_col = col_original
 
         # Check each row
         invalid_identifiers = []
         for idx, row in df.iterrows():
+            # Skip rows where Remark is "Workable", "NTC", or "NTBP" (case-insensitive)
+            if remark_col:
+                remark_val = row.get(remark_col)
+                if not pd.isna(remark_val) and str(remark_val).strip().lower() in ("workable", "ntc", "ntbp", "ats"):
+                    continue
+
             val = row.get(pid_col)
             reason = None
 
@@ -25533,16 +25559,24 @@ def validate_patient_name_text(file_data):
         if pname_col is None:
             continue
 
-        # Find Patient ID column for row identification
+        # Find Patient ID and Remark columns for row identification
         patient_id_col = None
+        remark_col = None
         for col_lower, col_original in actual_columns.items():
             if col_lower == "patient id":
                 patient_id_col = col_original
-                break
+            elif col_lower in ("remark", "remarks"):
+                remark_col = col_original
 
         # Check each row
         invalid_identifiers = []
         for idx, row in df.iterrows():
+            # Skip rows where Remark is "Workable", "NTC", or "NTBP" (case-insensitive)
+            if remark_col:
+                remark_val = row.get(remark_col)
+                if not pd.isna(remark_val) and str(remark_val).strip().lower() in ("workable", "ntc", "ntbp", "ats"):
+                    continue
+
             val = row.get(pname_col)
             reason = None
 
@@ -25618,14 +25652,23 @@ def validate_dental_primary_ins_carr(file_data):
         # Find identifier columns
         patient_id_col = None
         patient_name_col = None
+        remark_col = None
         for col_lower, col_original in actual_columns.items():
             if col_lower == "patient id":
                 patient_id_col = col_original
             elif col_lower == "patient name":
                 patient_name_col = col_original
+            elif col_lower in ("remark", "remarks"):
+                remark_col = col_original
 
         invalid_identifiers = []
         for idx, row in df.iterrows():
+            # Skip rows where Remark is "Workable", "NTC", or "NTBP" (case-insensitive)
+            if remark_col:
+                remark_val = row.get(remark_col)
+                if not pd.isna(remark_val) and str(remark_val).strip().lower() in ("workable", "ntc", "ntbp", "ats"):
+                    continue
+
             val = row.get(target_col)
             reason = None
 
@@ -25708,14 +25751,23 @@ def validate_received_date_format(file_data):
         # Find identifier columns
         patient_id_col = None
         patient_name_col = None
+        remark_col = None
         for col_lower, col_original in actual_columns.items():
             if col_lower == "patient id":
                 patient_id_col = col_original
             elif col_lower == "patient name":
                 patient_name_col = col_original
+            elif col_lower in ("remark", "remarks"):
+                remark_col = col_original
 
         invalid_identifiers = []
         for idx, row in df.iterrows():
+            # Skip rows where Remark is "Workable", "NTC", or "NTBP" (case-insensitive)
+            if remark_col:
+                remark_val = row.get(remark_col)
+                if not pd.isna(remark_val) and str(remark_val).strip().lower() in ("workable", "ntc", "ntbp", "ats"):
+                    continue
+
             val = row.get(target_col)
             reason = None
 
@@ -25807,14 +25859,23 @@ def validate_status_code_text(file_data):
 
         patient_id_col = None
         patient_name_col = None
+        remark_col = None
         for col_lower, col_original in actual_columns.items():
             if col_lower == "patient id":
                 patient_id_col = col_original
             elif col_lower == "patient name":
                 patient_name_col = col_original
+            elif col_lower in ("remark", "remarks"):
+                remark_col = col_original
 
         invalid_identifiers = []
         for idx, row in df.iterrows():
+            # Skip rows where Remark is "Workable", "NTC", or "NTBP" (case-insensitive)
+            if remark_col:
+                remark_val = row.get(remark_col)
+                if not pd.isna(remark_val) and str(remark_val).strip().lower() in ("workable", "ntc", "ntbp", "ats"):
+                    continue
+
             val = row.get(target_col)
             reason = None
 
@@ -25890,14 +25951,33 @@ def validate_column_not_blank(file_data, column_name):
 
         patient_id_col = None
         patient_name_col = None
+        remark_col = None
         for col_lower, col_original in actual_columns.items():
             if col_lower == "patient id":
                 patient_id_col = col_original
             elif col_lower == "patient name":
                 patient_name_col = col_original
+            elif col_lower in ("remark", "remarks"):
+                remark_col = col_original
 
         blank_identifiers = []
         for idx, row in df.iterrows():
+            # Skip rows where Remark is "Workable" (case-insensitive)
+            if remark_col:
+                remark_val = row.get(remark_col)
+                if not pd.isna(remark_val) and str(remark_val).strip().lower() == "workable":
+                    continue
+            # Skip rows where Remark is "NTC" or "ATS" (case-insensitive) UNLESS validating "Comment" column
+            if remark_col and column_name.strip().lower() != "comment":
+                remark_val = row.get(remark_col)
+                if not pd.isna(remark_val) and str(remark_val).strip().lower() in ("ntc", "ats"):
+                    continue
+            # Skip rows where Remark is "NTBP" (case-insensitive) UNLESS validating "Comment" or "Group Number" column
+            if remark_col and column_name.strip().lower() not in ("comment", "group number"):
+                remark_val = row.get(remark_col)
+                if not pd.isna(remark_val) and str(remark_val).strip().lower() == "ntbp":
+                    continue
+
             val = row.get(target_col)
             if pd.isna(val) or str(val).strip() == "":
                 identifier = None
@@ -25967,14 +26047,23 @@ def validate_column_numeric(file_data, column_name):
 
         patient_id_col = None
         patient_name_col = None
+        remark_col = None
         for col_lower, col_original in actual_columns.items():
             if col_lower == "patient id":
                 patient_id_col = col_original
             elif col_lower == "patient name":
                 patient_name_col = col_original
+            elif col_lower in ("remark", "remarks"):
+                remark_col = col_original
 
         invalid_identifiers = []
         for idx, row in df.iterrows():
+            # Skip rows where Remark is "Workable", "NTC", or "NTBP" (case-insensitive)
+            if remark_col:
+                remark_val = row.get(remark_col)
+                if not pd.isna(remark_val) and str(remark_val).strip().lower() in ("workable", "ntc", "ntbp", "ats"):
+                    continue
+
             val = row.get(target_col)
             reason = None
 

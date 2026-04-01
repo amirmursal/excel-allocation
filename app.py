@@ -30808,8 +30808,8 @@ def upload_day_shift():
                     os.remove(filename)
                 return jsonify({"success": False, "message": error_msg}), 400
 
-            # Validate Plan Number is numeric and not blank
-            is_valid, error_msg = validate_column_numeric(file_data, "Plan Number")
+            # Validate Plan Number is not blank
+            is_valid, error_msg = validate_column_not_blank(file_data, "Plan Number")
             if not is_valid:
                 if os.path.exists(filename):
                     os.remove(filename)
@@ -30960,8 +30960,8 @@ def upload_night_shift():
                     os.remove(filename)
                 return jsonify({"success": False, "message": error_msg}), 400
 
-            # Validate Plan Number is numeric and not blank
-            is_valid, error_msg = validate_column_numeric(file_data, "Plan Number")
+            # Validate Plan Number is not blank
+            is_valid, error_msg = validate_column_not_blank(file_data, "Plan Number")
             if not is_valid:
                 if os.path.exists(filename):
                     os.remove(filename)
@@ -31111,8 +31111,8 @@ def upload_ntbp():
                     os.remove(filename)
                 return jsonify({"success": False, "message": error_msg}), 400
 
-            # Validate Plan Number is numeric and not blank
-            is_valid, error_msg = validate_column_numeric(file_data, "Plan Number")
+            # Validate Plan Number is not blank
+            is_valid, error_msg = validate_column_not_blank(file_data, "Plan Number")
             if not is_valid:
                 if os.path.exists(filename):
                     os.remove(filename)
@@ -31325,8 +31325,8 @@ def upload_daily_consolidate():
                     os.remove(filename)
                 return jsonify({"success": False, "message": error_msg}), 400
 
-            # Validate Plan Number is numeric and not blank
-            is_valid, error_msg = validate_column_numeric(file_data, "Plan Number")
+            # Validate Plan Number is not blank
+            is_valid, error_msg = validate_column_not_blank(file_data, "Plan Number")
             if not is_valid:
                 if os.path.exists(filename):
                     os.remove(filename)

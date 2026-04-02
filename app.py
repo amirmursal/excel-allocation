@@ -20,7 +20,7 @@ from flask_migrate import Migrate
 import pandas as pd
 import os
 import re
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from werkzeug.utils import secure_filename
 from werkzeug.security import generate_password_hash, check_password_hash
 import hashlib
@@ -18643,6 +18643,12 @@ def format_excel_with_priority_status(excel_path, sheet_name):
         # Continue even if formatting fails
 
 
+def get_ist_today_date_str():
+    """Return current date in IST for email subject lines."""
+    ist_tz = timezone(timedelta(hours=5, minutes=30))
+    return datetime.now(ist_tz).strftime("%m/%d/%Y")
+
+
 @app.route("/send_email_to_agent", methods=["POST"])
 @admin_required
 def send_email_to_agent():
@@ -18719,7 +18725,7 @@ def send_email_to_agent():
             """
 
             # Send email
-            today_date = datetime.now().strftime("%m/%d/%Y")
+            today_date = get_ist_today_date_str()
             attachment_filename = (
                 f'{agent_name}_allocation_{datetime.now().strftime("%Y%m%d")}.xlsx'
             )
@@ -18786,7 +18792,7 @@ def send_email_to_all_agents():
 
         results = {"success": [], "failed": [], "skipped": []}
 
-        today_date = datetime.now().strftime("%m/%d/%Y")
+        today_date = get_ist_today_date_str()
 
         # Send email to each agent
         for agent in email_allocation_agents_list:
@@ -19238,7 +19244,7 @@ def send_email_to_auditor():
             </html>
             """
 
-            today_date = datetime.now().strftime("%m/%d/%Y")
+            today_date = get_ist_today_date_str()
             attachment_filename = f'{auditor_name.replace(" ", "_")}_qc_allocation_{datetime.now().strftime("%Y%m%d")}.xlsx'
 
             success, message = send_email_with_resend(
@@ -19332,7 +19338,7 @@ def send_email_to_all_auditors():
                     </html>
                     """
 
-                    today_date = datetime.now().strftime("%m/%d/%Y")
+                    today_date = get_ist_today_date_str()
                     attachment_filename = f'{auditor_name.replace(" ", "_")}_qc_allocation_{datetime.now().strftime("%Y%m%d")}.xlsx'
 
                     success, message = send_email_with_resend(

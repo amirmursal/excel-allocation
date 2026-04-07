@@ -29156,8 +29156,9 @@ def cleanup_all_agent_files():
 
 def daily_consolidate_all_subtabs_and_email():
     """
-    Consolidate all 6 sub-tabs (Day Shift, Night Shift, NTBP, QCP, Daily Consolidate, NH)
-    and send them in one email with attachments at 7 AM daily.
+    Consolidate all agent-consolidation subtabs (Day/Night/NTBP/Auditor, Daily Consolidate,
+    NH, EV, Dental BV, MIS Checklist), email one message with attachments, then delete
+    those uploads from the DB only after the email succeeds.
     """
     print(
         f"🔔 Daily consolidation job triggered at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
@@ -29178,7 +29179,6 @@ def daily_consolidate_all_subtabs_and_email():
 
     try:
         with app.app_context():
-            # Consolidate all 5 sub-tabs
             subtab_configs = [
                 (DayShiftFile, "Day Shift"),
                 (NightShiftFile, "Night Shift"),
@@ -29186,6 +29186,8 @@ def daily_consolidate_all_subtabs_and_email():
                 (QCPFile, "Auditor"),
                 (DailyConsolidateFile, "Daily Consolidate"),
                 (NHFile, "NH"),
+                (EVAgentFile, "EV"),
+                (DentalBVAgentFile, "Dental BV"),
             ]
 
             attachments = []
@@ -29201,6 +29203,15 @@ def daily_consolidate_all_subtabs_and_email():
                     attachments.append({"filename": filename, "data": excel_buffer})
                     total_files_consolidated += file_count
                     subtabs_with_data.append(file_type_name)
+
+            # MIS Checklist uses custom summary (Pulling Agent x Status); do not mark consolidated here
+            mis_buffer, mis_filename, mis_count = consolidate_mis_checklist_files_to_buffer(
+                mark_consolidated=False
+            )
+            if mis_buffer is not None and mis_filename and mis_count > 0:
+                attachments.append({"filename": mis_filename, "data": mis_buffer})
+                total_files_consolidated += mis_count
+                subtabs_with_data.append("MIS Checklist")
 
             # Only send email if we have at least one attachment
             if attachments:
@@ -29241,13 +29252,17 @@ def daily_consolidate_all_subtabs_and_email():
                         f"✅ Daily sub-tab consolidation email sent to {to_email} with {len(attachments)} attachment(s)"
                     )
 
-                    # Perform cleanup after successful email (delete all files from all sub-tabs)
+                    # Perform cleanup after successful email (delete all uploads for these subtabs)
                     cleanup_configs = [
                         (DayShiftFile, "Day Shift"),
                         (NightShiftFile, "Night Shift"),
                         (NTBPFile, "NTBP"),
                         (QCPFile, "Auditor"),
                         (DailyConsolidateFile, "Daily Consolidate"),
+                        (NHFile, "NH"),
+                        (EVAgentFile, "EV"),
+                        (DentalBVAgentFile, "Dental BV"),
+                        (MISChecklistFile, "MIS Checklist"),
                     ]
 
                     total_deleted = 0
@@ -31958,7 +31973,7 @@ if __name__ == "__main__":
         cleanup_hour = int(os.environ.get("CLEANUP_HOUR", "7"))  # 7 AM
         cleanup_minute = int(os.environ.get("CLEANUP_MINUTE", "0"))
 
-        # Daily consolidation for all sub-tabs (Day Shift, Night Shift, NTBP, QCP, Daily Consolidate)
+        # Daily consolidation for all agent-consolidation subtabs (incl. NH, EV, Dental BV, MIS Checklist)
         scheduler.add_job(
             func=lambda: daily_consolidate_all_subtabs_and_email(),
             trigger=CronTrigger(

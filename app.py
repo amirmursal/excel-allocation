@@ -635,6 +635,65 @@ class DentalBVAgentFile(db.Model):
         return None
 
 
+class MISChecklistFile(db.Model):
+    """MIS Checklist uploads (single-sheet .xlsx per agent; replace on re-upload)."""
+
+    __tablename__ = "mis_checklist_files"
+
+    id = db.Column(db.Integer, primary_key=True)
+    agent_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False)
+    filename = db.Column(db.String(255), nullable=False)
+    file_data = db.Column(db.Text)
+    upload_date = db.Column(db.DateTime, default=datetime.utcnow)
+    status = db.Column(db.String(50), default="uploaded")
+    notes = db.Column(db.Text)
+
+    agent = db.relationship("User", backref="mis_checklist_files")
+
+    def set_file_data(self, data):
+        if data is not None:
+            if isinstance(data, dict):
+                serializable_data = {}
+                for key, value in data.items():
+                    if isinstance(value, pd.DataFrame):
+                        df_records = value.to_dict("records")
+                        for record in df_records:
+                            for k, v in record.items():
+                                if hasattr(v, "isoformat"):
+                                    record[k] = v.isoformat()
+                        serializable_data[key] = df_records
+                    else:
+                        serializable_data[key] = value
+                self.file_data = json.dumps(serializable_data)
+            elif isinstance(data, pd.DataFrame):
+                df_records = data.to_dict("records")
+                for record in df_records:
+                    for k, v in record.items():
+                        if hasattr(v, "isoformat"):
+                            record[k] = v.isoformat()
+                self.file_data = json.dumps(df_records)
+            else:
+                self.file_data = json.dumps(data)
+        else:
+            self.file_data = None
+
+    def get_file_data(self):
+        if self.file_data:
+            data = json.loads(self.file_data)
+            if isinstance(data, dict):
+                converted_data = {}
+                for key, value in data.items():
+                    if isinstance(value, list) and len(value) > 0:
+                        converted_data[key] = pd.DataFrame(value)
+                    else:
+                        converted_data[key] = value
+                return converted_data
+            elif isinstance(data, list):
+                return pd.DataFrame(data)
+            return data
+        return None
+
+
 class NHFile(db.Model):
     """NH file model for storing NH uploads"""
 
@@ -1395,6 +1454,231 @@ def get_dental_bv_agent_files(agent_id=None):
     if agent_id:
         return DentalBVAgentFile.query.filter_by(agent_id=agent_id).order_by(DentalBVAgentFile.upload_date.desc()).all()
     return DentalBVAgentFile.query.order_by(DentalBVAgentFile.upload_date.desc()).all()
+
+
+def save_mis_checklist_file(agent_id, filename, file_data, notes=None):
+    """Save MIS Checklist file to database."""
+    f = MISChecklistFile(agent_id=agent_id, filename=filename, notes=notes)
+    f.set_file_data(file_data)
+    db.session.add(f)
+    db.session.commit()
+    return f
+
+
+def get_mis_checklist_files(agent_id=None):
+    """Get MIS Checklist files, optionally filtered by agent."""
+    if agent_id:
+        return MISChecklistFile.query.filter_by(agent_id=agent_id).order_by(
+            MISChecklistFile.upload_date.desc()
+        ).all()
+    return MISChecklistFile.query.order_by(MISChecklistFile.upload_date.desc()).all()
+
+
+def _norm_mis_header(s):
+    import re
+
+    t = str(s).strip().lower()
+    t = re.sub(r"\s+", " ", t)
+    t = t.replace("#", " ").replace(".", " ")
+    t = re.sub(r"\s+", " ", t).strip()
+    return t
+
+
+def _col_compact_mis(s):
+    return _norm_mis_header(s).replace(" ", "")
+
+
+def _mis_col_is_sr(col):
+    c = _col_compact_mis(col)
+    if not c:
+        return False
+    if c in ("sr", "srno", "serial", "sno", "serialno", "serialnumber"):
+        return True
+    if c.startswith("sr") and len(c) <= 8 and "status" not in c:
+        return True
+    if "serial" in c and "number" in c:
+        return True
+    return False
+
+
+def _mis_col_is_software(col):
+    return _col_compact_mis(col) == "software"
+
+
+def _mis_col_is_office_name(col):
+    n = _norm_mis_header(col)
+    return "office" in n and "name" in n
+
+
+def _mis_col_is_pulling_agent(col):
+    n = _norm_mis_header(col)
+    return "pulling" in n and "agent" in n
+
+
+def _mis_col_is_filling_agent(col):
+    n = _norm_mis_header(col)
+    return "filling" in n and "agent" in n
+
+
+def _mis_col_is_status(col):
+    n = _norm_mis_header(col)
+    if n in ("status",):
+        return True
+    if "priority" in n or "qc" in n:
+        return False
+    return n.endswith(" status") and "pulling" not in n and "filling" not in n
+
+
+def _mis_col_is_remark(col):
+    n = _norm_mis_header(col)
+    if n in ("remark", "remarks"):
+        return True
+    if n.startswith("remark") and "qc" not in n:
+        return True
+    return False
+
+
+def validate_and_normalize_mis_checklist_dataframe(df):
+    """
+    Map fuzzy headers to canonical names. Returns (ok, error_message, dataframe_or_none).
+    """
+    if df is None or df.empty:
+        return False, "File is empty", None
+
+    cols = list(df.columns)
+    used = set()
+    mapping = {}
+    targets = [
+        ("SR#", _mis_col_is_sr),
+        ("Software", _mis_col_is_software),
+        ("Office name", _mis_col_is_office_name),
+        ("Pulling Agent", _mis_col_is_pulling_agent),
+        ("Filling Agent", _mis_col_is_filling_agent),
+        ("Status", _mis_col_is_status),
+        ("Remark", _mis_col_is_remark),
+    ]
+
+    for canonical, matcher in targets:
+        found = None
+        for c in cols:
+            if c in used:
+                continue
+            try:
+                if matcher(c):
+                    found = c
+                    break
+            except Exception:
+                continue
+        if not found:
+            return (
+                False,
+                f"Missing or unrecognizable required column (expected something like: {canonical}).",
+                None,
+            )
+        mapping[found] = canonical
+        used.add(found)
+
+    out = df.rename(columns=mapping, copy=True)
+    ordered = [canonical for canonical, _ in targets]
+    extra = [c for c in out.columns if c not in ordered]
+    out = out[ordered + extra]
+    return True, "", out
+
+
+def build_mis_checklist_summary_by_pulling_agent(combined_df):
+    """Pivot: rows = Pulling Agent, columns = Status values, values = counts; plus Total."""
+    pulling = "Pulling Agent"
+    status_col = "Status"
+    if combined_df is None or combined_df.empty:
+        return pd.DataFrame([{"Note": "No data to summarize"}])
+
+    if pulling not in combined_df.columns or status_col not in combined_df.columns:
+        return pd.DataFrame(
+            [{"Error": "Consolidated data must include Pulling Agent and Status columns."}]
+        )
+
+    w = combined_df.copy()
+    w[pulling] = w[pulling].apply(
+        lambda x: "" if pd.isna(x) else str(x).strip()
+    )
+    w[status_col] = w[status_col].apply(
+        lambda x: "(blank)"
+        if pd.isna(x) or str(x).strip() == ""
+        else str(x).strip()
+    )
+
+    counts = (
+        w.groupby([pulling, status_col], dropna=False)
+        .size()
+        .reset_index(name="_n")
+    )
+    pivot = counts.pivot_table(
+        index=pulling, columns=status_col, values="_n", fill_value=0, aggfunc="sum"
+    )
+    pivot = pivot.reset_index()
+    pivot.columns.name = None
+
+    status_columns = [c for c in pivot.columns if c != pulling]
+    priority = ["Done", "System Issue"]
+    ordered_status = [s for s in priority if s in status_columns]
+    ordered_status.extend(sorted(s for s in status_columns if s not in priority))
+
+    if not ordered_status:
+        out = pivot
+        out["Total"] = 0
+        return out
+
+    pivot["Total"] = pivot[ordered_status].sum(axis=1)
+    return pivot[[pulling] + ordered_status + ["Total"]]
+
+
+def consolidate_mis_checklist_files_to_buffer(mark_consolidated=False):
+    """
+    Build consolidated MIS Checklist Excel: Summary (by Pulling Agent x Status) + All Agent Data.
+    """
+    work_files = MISChecklistFile.query.order_by(MISChecklistFile.upload_date.desc()).all()
+    if not work_files:
+        return None, None, 0
+
+    all_dfs = []
+    for work_file in work_files:
+        file_data = work_file.get_file_data()
+        if file_data is None:
+            continue
+        if isinstance(file_data, dict):
+            for sheet_name, sheet_df in file_data.items():
+                if str(sheet_name).lower() == "summary":
+                    continue
+                if isinstance(sheet_df, pd.DataFrame) and not sheet_df.empty:
+                    all_dfs.append(sheet_df.copy())
+                break
+        elif isinstance(file_data, pd.DataFrame) and not file_data.empty:
+            all_dfs.append(file_data.copy())
+
+    excel_buffer = io.BytesIO()
+    with pd.ExcelWriter(excel_buffer, engine="openpyxl") as writer:
+        if not all_dfs:
+            pd.DataFrame([{"Message": "No data available from any agent"}]).to_excel(
+                writer, sheet_name="All Agent Data", index=False
+            )
+            pd.DataFrame([{"Note": "No data to summarize"}]).to_excel(
+                writer, sheet_name="Summary", index=False
+            )
+        else:
+            combined_df = pd.concat(all_dfs, ignore_index=True)
+            summary_df = build_mis_checklist_summary_by_pulling_agent(combined_df)
+            summary_df.to_excel(writer, sheet_name="Summary", index=False)
+            combined_df.to_excel(writer, sheet_name="All Agent Data", index=False)
+
+    excel_buffer.seek(0)
+
+    if mark_consolidated:
+        for work_file in work_files:
+            work_file.status = "consolidated"
+        db.session.commit()
+
+    filename = f"consolidated_mis_checklist_files_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+    return excel_buffer, filename, len(work_files)
 
 
 def save_daily_consolidate_file(
@@ -2949,6 +3233,7 @@ HTML_TEMPLATE = """
                 'nh-consolidate': 'NH',
                 'ev-consolidate': 'EV',
                 'dental-bv-consolidate': 'Dental BV',
+                'mis-checklist-consolidate': 'MIS Checklist',
                 'imagen-tracker': 'Imagen Tracker',
                 'imagen-qc-tracker': 'Imagen QC Tracker'
             };
@@ -3070,6 +3355,11 @@ HTML_TEMPLATE = """
                     <li>
                         <div class="submenu-item {% if current_submenu == 'dental-bv-consolidate' %}active{% endif %}" onclick="switchAdminMenu('agent-consolidation', 'dental-bv-consolidate')">
                             <i class="fas fa-tooth"></i> Dental BV
+                        </div>
+                    </li>
+                    <li>
+                        <div class="submenu-item {% if current_submenu == 'mis-checklist-consolidate' %}active{% endif %}" onclick="switchAdminMenu('agent-consolidation', 'mis-checklist-consolidate')">
+                            <i class="fas fa-clipboard-list"></i> MIS Checklist
                         </div>
                     </li>
                 </ul>
@@ -4654,6 +4944,65 @@ HTML_TEMPLATE = """
                             {% else %}
                             <div style="background: #f8f9fa; padding: 20px; border-radius: 10px;">
                                 <p style="color: #666;">No Dental BV files uploaded yet.</p>
+                            </div>
+                            {% endif %}
+                    </div>
+                </div>
+
+                <!-- MIS Checklist Content (under Agent Consolidation menu) -->
+                <div id="mis-checklist-consolidate-content" class="admin-menu-content" style="display: {% if current_menu == 'agent-consolidation' and current_submenu == 'mis-checklist-consolidate' %}block{% else %}none{% endif %};">
+                    <div class="section">
+                            {% if mis_checklist_files %}
+                            <div style="background: #f8f9fa; padding: 20px; border-radius: 10px; margin-bottom: 20px;">
+                                <h4>Available MIS Checklist Files:</h4>
+                                {% for file in mis_checklist_files %}
+                                <div style="border-bottom: {% if loop.last %}none{% else %}1px solid #dee2e6{% endif %}; padding: 10px 0; display: flex; justify-content: space-between; align-items: center;">
+                                    <div style="flex: 1;">
+                                        <strong>{{ file.agent.name }}</strong> - {{ file.filename }}
+                                        <br>
+                                        <small style="color: #666;">
+                                            Uploaded: {{ (file.upload_date | to_ist).strftime('%Y-%m-%d %I:%M %p') }} IST
+                                            | Status: <span style="color: {% if file.status == 'uploaded' %}#28a745{% elif file.status == 'consolidated' %}#007bff{% else %}#6c757d{% endif %}">{{ file.status.title() if file.status else 'Uploaded' }}</span>
+                                        </small>
+                                        {% if file.notes %}
+                                        <br>
+                                        <small style="color: #666;"><em>{{ file.notes }}</em></small>
+                                        {% endif %}
+                                    </div>
+                                    <div style="margin-left: 15px; display: flex; gap: 8px;">
+                                        <a href="/download_mis_checklist_file/{{ file.id }}" class="process-btn" style="padding: 8px 16px; text-decoration: none; display: inline-block; background: linear-gradient(135deg, #007bff, #0056b3); color: white; border-radius: 5px; font-size: 14px;">
+                                            <i class="fas fa-download"></i> Download
+                                        </a>
+                                        <form action="/delete_mis_checklist_file/{{ file.id }}" method="post" style="margin: 0; display: inline-block;" onsubmit="return confirm('Are you sure you want to delete this file?');">
+                                            <input type="hidden" name="subtab" value="mis-checklist-consolidate">
+                                            <input type="hidden" name="current_menu" value="agent-consolidation">
+                                            <input type="hidden" name="current_submenu" value="mis-checklist-consolidate">
+                                            <button type="submit" class="process-btn" style="padding: 8px 16px; background: linear-gradient(135deg, #dc3545, #c82333); color: white; border: none; border-radius: 5px; font-size: 14px; cursor: pointer;">
+                                                <i class="fas fa-trash-alt"></i> Delete
+                                            </button>
+                                        </form>
+                                    </div>
+                                </div>
+                                {% endfor %}
+                            </div>
+                            <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+                                <form action="/consolidate_mis_checklist_files" method="post" style="margin: 0;">
+                                    <button type="submit" class="process-btn" style="background: linear-gradient(135deg, #28a745, #20c997);">
+                                        <i class="fas fa-compress-arrows-alt"></i> Consolidate All MIS Checklist Files
+                                    </button>
+                                </form>
+                                <form action="/clear_mis_checklist_files" method="post" style="margin: 0;" onsubmit="return confirm('Are you sure you want to delete all MIS Checklist files?');">
+                                    <input type="hidden" name="subtab" value="mis-checklist-consolidate">
+                                    <input type="hidden" name="current_menu" value="agent-consolidation">
+                                    <input type="hidden" name="current_submenu" value="mis-checklist-consolidate">
+                                    <button type="submit" class="process-btn" style="background: linear-gradient(135deg, #dc3545, #c82333);">
+                                        <i class="fas fa-trash-alt"></i> Clear all files
+                                    </button>
+                                </form>
+                            </div>
+                            {% else %}
+                            <div style="background: #f8f9fa; padding: 20px; border-radius: 10px;">
+                                <p style="color: #666;">No MIS Checklist files uploaded yet.</p>
                             </div>
                             {% endif %}
                     </div>
@@ -18035,6 +18384,7 @@ def index():
     nh_files = None
     ev_agent_files = None
     dental_bv_agent_files = None
+    mis_checklist_files = None
 
     # Get menu and submenu from URL parameters (for admin users)
     current_menu = request.args.get(
@@ -18063,6 +18413,7 @@ def index():
         nh_files = get_nh_files()
         ev_agent_files = get_ev_agent_files()
         dental_bv_agent_files = get_dental_bv_agent_files()
+        mis_checklist_files = get_mis_checklist_files()
 
     return render_template_string(
         HTML_TEMPLATE,
@@ -18083,6 +18434,7 @@ def index():
         nh_files=nh_files,
         ev_agent_files=ev_agent_files,
         dental_bv_agent_files=dental_bv_agent_files,
+        mis_checklist_files=mis_checklist_files,
         current_time=current_time,
         email_staff_details=email_staff_details,
         email_staff_filename=email_staff_filename,
@@ -27100,6 +27452,47 @@ def clear_dental_bv_agent_files():
     return clear_files_helper(DentalBVAgentFile, "Dental BV", subtab)
 
 
+@app.route("/consolidate_mis_checklist_files", methods=["POST"])
+@admin_required
+def consolidate_mis_checklist_files():
+    """Consolidate all MIS Checklist agent files with Summary by Pulling Agent x Status."""
+    excel_buffer, filename, file_count = consolidate_mis_checklist_files_to_buffer(
+        mark_consolidated=True
+    )
+    if excel_buffer is None or file_count == 0:
+        flash("No MIS Checklist files found to consolidate", "warning")
+        return redirect("/?menu=agent-consolidation&submenu=mis-checklist-consolidate")
+    return send_file(
+        excel_buffer,
+        as_attachment=True,
+        download_name=filename,
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+
+
+@app.route("/download_mis_checklist_file/<int:file_id>", methods=["GET"])
+@admin_required
+def download_mis_checklist_file(file_id):
+    """Download a single MIS Checklist file."""
+    return download_file_helper(MISChecklistFile, file_id, "MIS Checklist")
+
+
+@app.route("/delete_mis_checklist_file/<int:file_id>", methods=["POST"])
+@admin_required
+def delete_mis_checklist_file(file_id):
+    """Delete a single MIS Checklist file."""
+    subtab = request.form.get("subtab", "mis-checklist-consolidate")
+    return delete_file_helper(MISChecklistFile, file_id, "MIS Checklist", subtab)
+
+
+@app.route("/clear_mis_checklist_files", methods=["POST"])
+@admin_required
+def clear_mis_checklist_files():
+    """Clear all MIS Checklist files."""
+    subtab = request.form.get("subtab", "mis-checklist-consolidate")
+    return clear_files_helper(MISChecklistFile, "MIS Checklist", subtab)
+
+
 @app.route("/clear_daily_consolidate_files", methods=["POST"])
 @admin_required
 def clear_daily_consolidate_files():
@@ -30002,7 +30395,7 @@ AGENT_TEMPLATE_WITH_SIDEBAR = """
     <script>
         // Handle form submissions with AJAX for Day Shift, Night Shift, NTBP, QCP, and Daily Consolidate
         document.addEventListener('DOMContentLoaded', function() {
-            const forms = ['day-shift-form', 'night-shift-form', 'ntbp-form', 'qcp-form', 'consolidate-form', 'nh-agent-form', 'ev-agent-form', 'dental-bv-agent-form'];
+            const forms = ['day-shift-form', 'night-shift-form', 'ntbp-form', 'qcp-form', 'consolidate-form', 'nh-agent-form', 'ev-agent-form', 'dental-bv-agent-form', 'mis-checklist-agent-form'];
             forms.forEach(formId => {
                 const form = document.getElementById(formId);
                 if (form) {
@@ -30092,6 +30485,9 @@ AGENT_TEMPLATE_WITH_SIDEBAR = """
             </a></li>
             <li><a href="/dental-bv" class="{{ 'active' if current_page == 'dental_bv' else '' }}">
                 <i class="fas fa-tooth"></i> Dental BV
+            </a></li>
+            <li><a href="/mis-checklist" class="{{ 'active' if current_page == 'mis_checklist' else '' }}">
+                <i class="fas fa-clipboard-list"></i> MIS Checklist
             </a></li>
         </ul>
     </div>
@@ -30706,6 +31102,128 @@ def upload_dental_bv():
             })
 
         except Exception as e:
+            if os.path.exists(filename):
+                os.remove(filename)
+            raise
+
+    except Exception as e:
+        return jsonify({"success": False, "message": f"Error uploading file: {str(e)}"}), 500
+
+
+@app.route("/mis-checklist")
+@normal_agent_required
+def mis_checklist_agent():
+    """MIS Checklist upload (single .xlsx sheet)."""
+    user_id = session.get("user_id")
+    user = User.query.filter_by(email=user_id, is_active=True).first()
+    if not user:
+        user = User.query.filter_by(id=user_id, is_active=True).first()
+
+    user_name = user.name if user else "Agent"
+    mis_files = get_mis_checklist_files(user.id) if user else []
+
+    files_list = ""
+    if mis_files:
+        files_list = "<h3 style='margin-top: 30px;'>Uploaded Files</h3><ul style='list-style: none; padding: 0;'>"
+        for f in mis_files:
+            upload_date = (
+                f.upload_date.strftime("%Y-%m-%d %H:%M:%S") if f.upload_date else "Unknown"
+            )
+            files_list += f"<li style='padding: 10px; background: #f8f9fa; margin: 5px 0; border-radius: 5px;'><i class='fas fa-file-excel'></i> {f.filename} - {upload_date}</li>"
+        files_list += "</ul>"
+
+    content = """
+    <h2>MIS Checklist</h2>
+    <p>Upload your MIS Checklist file. Required columns (headers can vary slightly): <strong>SR#</strong>, <strong>Software</strong>, <strong>Office name</strong>, <strong>Pulling Agent</strong>, <strong>Filling Agent</strong>, <strong>Status</strong>, <strong>Remark</strong>.</p>
+    <p style="color: #666; font-size: 0.9em;"><strong>.xlsx only</strong>, <strong>one sheet only</strong>. Uploading again replaces your previous file.</p>
+
+    <div style="border: 2px dashed #ddd; padding: 30px; border-radius: 10px; text-align: center; margin-top: 30px; max-width: 500px;">
+        <form action="/upload_mis_checklist" method="post" enctype="multipart/form-data" id="mis-checklist-agent-form">
+            <input type="file" name="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" required style="margin-bottom: 15px; width: 100%; padding: 10px;">
+            <button type="submit" style="padding: 10px 20px; background: #667eea; color: white; border: none; border-radius: 5px; cursor: pointer;">
+                <i class="fas fa-upload"></i> Upload MIS Checklist
+            </button>
+        </form>
+    </div>
+    """ + files_list
+
+    return render_template_string(
+        AGENT_TEMPLATE_WITH_SIDEBAR,
+        page_title="MIS Checklist",
+        current_page="mis_checklist",
+        user_name=user_name,
+        content=content,
+    )
+
+
+@app.route("/upload_mis_checklist", methods=["POST"])
+@normal_agent_required
+def upload_mis_checklist():
+    """Upload MIS Checklist: single-sheet .xlsx, fuzzy column validation."""
+    if "file" not in request.files:
+        return jsonify({"success": False, "message": "No file provided"}), 400
+    file = request.files["file"]
+    if file.filename == "":
+        return jsonify({"success": False, "message": "No file selected"}), 400
+
+    filename = secure_filename(file.filename)
+    if not filename.lower().endswith(".xlsx"):
+        return jsonify(
+            {"success": False, "message": "Only .xlsx files are allowed for MIS Checklist."}
+        ), 400
+
+    try:
+        user_id = session.get("user_id")
+        user = User.query.filter_by(email=user_id, is_active=True).first()
+        if not user:
+            user = User.query.filter_by(id=user_id, is_active=True).first()
+        if not user:
+            return jsonify({"success": False, "message": "User not found"}), 400
+
+        file.save(filename)
+
+        try:
+            xl = pd.ExcelFile(filename)
+            if len(xl.sheet_names) != 1:
+                if os.path.exists(filename):
+                    os.remove(filename)
+                return jsonify(
+                    {
+                        "success": False,
+                        "message": f"Workbook must contain exactly one sheet (found {len(xl.sheet_names)}).",
+                    }
+                ), 400
+
+            df = pd.read_excel(filename, sheet_name=0, parse_dates=False)
+            ok, err_msg, df_norm = validate_and_normalize_mis_checklist_dataframe(df)
+            if not ok:
+                if os.path.exists(filename):
+                    os.remove(filename)
+                return jsonify({"success": False, "message": err_msg}), 400
+
+            file_data = {"MIS Checklist": df_norm}
+
+            existing = MISChecklistFile.query.filter_by(agent_id=user.id).all()
+            for ef in existing:
+                db.session.delete(ef)
+            db.session.commit()
+
+            mis_f = save_mis_checklist_file(
+                agent_id=user.id, filename=filename, file_data=file_data, notes=None
+            )
+
+            if os.path.exists(filename):
+                os.remove(filename)
+
+            return jsonify(
+                {
+                    "success": True,
+                    "message": f"MIS Checklist '{filename}' uploaded successfully",
+                    "file_id": mis_f.id,
+                }
+            )
+
+        except Exception:
             if os.path.exists(filename):
                 os.remove(filename)
             raise

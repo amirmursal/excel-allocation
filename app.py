@@ -29179,6 +29179,19 @@ def daily_consolidate_all_subtabs_and_email():
 
     try:
         with app.app_context():
+            consolidation_email = os.environ.get(
+                "CONSOLIDATION_EMAIL", "amirmursal@gmail.com"
+            )
+            ev_consolidation_email = os.environ.get(
+                "EV_CONSOLIDATION_EMAIL", "ev.tracker.mnc@gmail.com"
+            )
+            dental_bv_consolidation_email = os.environ.get(
+                "DENTAL_BV_CONSOLIDATION_EMAIL", "dbv.tracker.mnc@gmail.com"
+            )
+            nh_consolidation_email = os.environ.get(
+                "NH_CONSOLIDATION_EMAIL", "nhbv.tracker.mnc@gmail.com"
+            )
+
             subtab_configs = [
                 (DayShiftFile, "Day Shift"),
                 (NightShiftFile, "Night Shift"),
@@ -29190,9 +29203,16 @@ def daily_consolidate_all_subtabs_and_email():
                 (DentalBVAgentFile, "Dental BV"),
             ]
 
-            attachments = []
+            main_attachments = []
+            ev_attachment = None
+            ev_files_consolidated = 0
+            dbv_attachment = None
+            dbv_files_consolidated = 0
+            nh_attachment = None
+            nh_files_consolidated = 0
             total_files_consolidated = 0
             subtabs_with_data = []
+            subtabs_main = []
 
             for file_model, file_type_name in subtab_configs:
                 excel_buffer, filename, file_count = consolidate_files_helper_to_buffer(
@@ -29200,56 +29220,158 @@ def daily_consolidate_all_subtabs_and_email():
                 )
 
                 if excel_buffer is not None and filename:
-                    attachments.append({"filename": filename, "data": excel_buffer})
                     total_files_consolidated += file_count
                     subtabs_with_data.append(file_type_name)
+                    item = {"filename": filename, "data": excel_buffer}
+                    if file_type_name == "EV":
+                        ev_attachment = item
+                        ev_files_consolidated = file_count
+                    elif file_type_name == "Dental BV":
+                        dbv_attachment = item
+                        dbv_files_consolidated = file_count
+                    elif file_type_name == "NH":
+                        nh_attachment = item
+                        nh_files_consolidated = file_count
+                    else:
+                        main_attachments.append(item)
+                        subtabs_main.append(file_type_name)
 
             # MIS Checklist uses custom summary (Pulling Agent x Status); do not mark consolidated here
             mis_buffer, mis_filename, mis_count = consolidate_mis_checklist_files_to_buffer(
                 mark_consolidated=False
             )
             if mis_buffer is not None and mis_filename and mis_count > 0:
-                attachments.append({"filename": mis_filename, "data": mis_buffer})
+                main_attachments.append({"filename": mis_filename, "data": mis_buffer})
                 total_files_consolidated += mis_count
                 subtabs_with_data.append("MIS Checklist")
+                subtabs_main.append("MIS Checklist")
 
-            # Only send email if we have at least one attachment
-            if attachments:
-                # Use env var for recipient, fallback to sandbox-allowed email for testing
-                to_email = os.environ.get("CONSOLIDATION_EMAIL", "amirmursal@gmail.com")
+            has_any_data = bool(
+                main_attachments or ev_attachment or dbv_attachment or nh_attachment
+            )
+
+            # Only send when there is at least one sub-tab with data
+            if has_any_data:
                 date_str = datetime.now().strftime("%Y-%m-%d")
                 time_str = datetime.now().strftime("%H:%M:%S")
 
-                subject = f"Daily Consolidated Files - All Sub-tabs - {date_str}"
-
-                # Create HTML content listing all sub-tabs
-                subtabs_list = (
-                    "<ul>"
-                    + "".join([f"<li>{st}</li>" for st in subtabs_with_data])
-                    + "</ul>"
-                )
-                html_content = f"""
-                <p>Please find attached consolidated files for all sub-tabs generated at {date_str} {time_str}.</p>
-                <p><strong>Consolidated Sub-tabs ({len(subtabs_with_data)}):</strong></p>
-                {subtabs_list}
-                <p>Total files consolidated: {total_files_consolidated}</p>
+                main_ok = True
+                if main_attachments:
+                    main_total = total_files_consolidated
+                    if ev_attachment:
+                        main_total -= ev_files_consolidated
+                    if dbv_attachment:
+                        main_total -= dbv_files_consolidated
+                    if nh_attachment:
+                        main_total -= nh_files_consolidated
+                    subtabs_list_main = (
+                        "<ul>"
+                        + "".join([f"<li>{st}</li>" for st in subtabs_main])
+                        + "</ul>"
+                    )
+                    subject_main = f"Daily Consolidated Files - All Sub-tabs - {date_str}"
+                    html_main = f"""
+                <p>Please find attached consolidated files (excluding <strong>NH</strong>, <strong>EV</strong>, and <strong>Dental BV</strong>; those are sent in separate emails) generated at {date_str} {time_str}.</p>
+                <p><strong>Consolidated Sub-tabs ({len(subtabs_main)}):</strong></p>
+                {subtabs_list_main}
+                <p>Total source files in this bundle: {main_total}</p>
                 """
+                    text_main = f"Daily consolidated files (excluding NH, EV, and Dental BV). Generated at {date_str} {time_str}."
+                    main_ok, main_msg = send_email_with_resend(
+                        to_email=consolidation_email,
+                        subject=subject_main,
+                        html_content=html_main,
+                        text_content=text_main,
+                        attachments=main_attachments,
+                    )
+                    if main_ok:
+                        print(
+                            f"✅ Daily sub-tab consolidation email sent to {consolidation_email} with {len(main_attachments)} attachment(s)"
+                        )
+                    else:
+                        print(
+                            f"❌ Failed to send main consolidation email to {consolidation_email}: {main_msg}"
+                        )
 
-                text_content = f"Daily consolidated files for all sub-tabs. Generated at {date_str} {time_str}. Total files consolidated: {total_files_consolidated}."
+                ev_ok = True
+                if ev_attachment:
+                    subject_ev = f"Daily Consolidated EV Files - {date_str}"
+                    html_ev = f"""
+                <p>Please find attached the consolidated <strong>EV</strong> agent files generated at {date_str} {time_str}.</p>
+                <p>Source files consolidated: {ev_files_consolidated}</p>
+                """
+                    text_ev = f"Daily consolidated EV files. Generated at {date_str} {time_str}."
+                    ev_ok, ev_msg = send_email_with_resend(
+                        to_email=ev_consolidation_email,
+                        subject=subject_ev,
+                        html_content=html_ev,
+                        text_content=text_ev,
+                        attachments=[ev_attachment],
+                    )
+                    if ev_ok:
+                        print(
+                            f"✅ Daily EV consolidation email sent to {ev_consolidation_email}"
+                        )
+                    else:
+                        print(
+                            f"❌ Failed to send EV consolidation email to {ev_consolidation_email}: {ev_msg}"
+                        )
 
-                success, message = send_email_with_resend(
-                    to_email=to_email,
-                    subject=subject,
-                    html_content=html_content,
-                    text_content=text_content,
-                    attachments=attachments,
-                )
+                dbv_ok = True
+                if dbv_attachment:
+                    subject_dbv = f"Daily Consolidated Dental BV Files - {date_str}"
+                    html_dbv = f"""
+                <p>Please find attached the consolidated <strong>Dental BV</strong> agent files generated at {date_str} {time_str}.</p>
+                <p>Source files consolidated: {dbv_files_consolidated}</p>
+                """
+                    text_dbv = f"Daily consolidated Dental BV files. Generated at {date_str} {time_str}."
+                    dbv_ok, dbv_msg = send_email_with_resend(
+                        to_email=dental_bv_consolidation_email,
+                        subject=subject_dbv,
+                        html_content=html_dbv,
+                        text_content=text_dbv,
+                        attachments=[dbv_attachment],
+                    )
+                    if dbv_ok:
+                        print(
+                            f"✅ Daily Dental BV consolidation email sent to {dental_bv_consolidation_email}"
+                        )
+                    else:
+                        print(
+                            f"❌ Failed to send Dental BV consolidation email to {dental_bv_consolidation_email}: {dbv_msg}"
+                        )
+
+                nh_ok = True
+                if nh_attachment:
+                    subject_nh = f"Daily Consolidated NH Files - {date_str}"
+                    html_nh = f"""
+                <p>Please find attached the consolidated <strong>NH</strong> agent files generated at {date_str} {time_str}.</p>
+                <p>Source files consolidated: {nh_files_consolidated}</p>
+                """
+                    text_nh = f"Daily consolidated NH files. Generated at {date_str} {time_str}."
+                    nh_ok, nh_msg = send_email_with_resend(
+                        to_email=nh_consolidation_email,
+                        subject=subject_nh,
+                        html_content=html_nh,
+                        text_content=text_nh,
+                        attachments=[nh_attachment],
+                    )
+                    if nh_ok:
+                        print(
+                            f"✅ Daily NH consolidation email sent to {nh_consolidation_email}"
+                        )
+                    else:
+                        print(
+                            f"❌ Failed to send NH consolidation email to {nh_consolidation_email}: {nh_msg}"
+                        )
+
+                success = main_ok and ev_ok and dbv_ok and nh_ok
 
                 if success:
                     # Mark as executed today
                     app._last_subtab_consolidation_date = today
                     print(
-                        f"✅ Daily sub-tab consolidation email sent to {to_email} with {len(attachments)} attachment(s)"
+                        f"✅ Daily sub-tab consolidation emails completed (main→{consolidation_email}, NH→{nh_consolidation_email}, EV→{ev_consolidation_email}, Dental BV→{dental_bv_consolidation_email})"
                     )
 
                     # Perform cleanup after successful email (delete all uploads for these subtabs)
@@ -29284,8 +29406,10 @@ def daily_consolidate_all_subtabs_and_email():
 
                     return True, total_deleted
                 else:
-                    print(f"❌ Failed to send sub-tab consolidation email: {message}")
-                    return False, message
+                    print(
+                        "❌ One or more daily consolidation emails failed; skipping cleanup."
+                    )
+                    return False, "Email send failed"
             else:
                 print(f"⚠️ No files found in any sub-tab to consolidate")
                 return False, "No files to consolidate"
@@ -30881,13 +31005,36 @@ def upload_nh():
 
 
 EV_REQUIRED_COLUMNS = [
-    "system", "office/doctor name", "practice id", "location/entitycode",
-    "department", "source", "received date", "appointment", "reference",
-    "patients name", "dob", "patient id/chart#", "group/employer",
-    "insurance", "policy id", "carrier phone", "status", "comments",
-    "pre auth status", "subscriber name", "subscriber dob", "zip code",
-    "rep", "agent", "remark", "work date", "qc agent", "qc comments",
-    "qc date work", "agent name",
+    "software",
+    "office/doctor name",
+    "practiceid",
+    "location/entitycode",
+    "department",
+    "source",
+    "received date",
+    "appointment",
+    "appttype",
+    "reference",
+    "patients name",
+    "dob",
+    "patient id/chart#",
+    "group/employer",
+    "insurance",
+    "policy id",
+    "carrier phone",
+    "status",
+    "comments",
+    "pre auth status",
+    "subscriber name",
+    "subscriber dob",
+    "zip code",
+    "rep",
+    "agent",
+    "remark",
+    "work date",
+    "qc agent",
+    "qc comments",
+    "qc date work",
 ]
 
 

@@ -28,6 +28,7 @@ import tempfile
 import io
 import uuid
 import json
+from collections import Counter
 from functools import wraps
 from urllib.parse import quote
 from dotenv import load_dotenv
@@ -31037,6 +31038,69 @@ EV_REQUIRED_COLUMNS = [
     "qc date work",
 ]
 
+EV_REQUIRED_COLUMN_SET = frozenset(EV_REQUIRED_COLUMNS)
+EV_REQUIRED_COLUMN_COUNT = len(EV_REQUIRED_COLUMNS)
+
+
+def validate_ev_worksheet_columns(sdf):
+    """
+    Return (True, None) if the sheet has exactly the required EV columns (no extras, no duplicates).
+    Otherwise (False, error_message).
+    """
+    if not isinstance(sdf, pd.DataFrame):
+        return False, "Invalid sheet data."
+    col_list = [str(c).strip().lower() for c in sdf.columns]
+    col_display = [str(c).strip() for c in sdf.columns]
+    if len(col_list) == 0:
+        return True, None
+
+    col_set = set(col_list)
+    missing = EV_REQUIRED_COLUMN_SET - col_set
+    extra_lowers = col_set - EV_REQUIRED_COLUMN_SET
+    # Preserve file order; include every occurrence so duplicate extras are visible
+    extra_labels = [disp for lo, disp in zip(col_list, col_display) if lo in extra_lowers]
+    cnt = Counter(col_list)
+
+    if len(col_list) != EV_REQUIRED_COLUMN_COUNT:
+        parts = [
+            f"Expected exactly {EV_REQUIRED_COLUMN_COUNT} columns; this sheet has {len(col_list)}."
+        ]
+        if extra_labels:
+            parts.append("Extra column(s) (remove these): " + ", ".join(extra_labels))
+        elif any(v > 1 for v in cnt.values()):
+            dup_detail = []
+            for lo in sorted(k for k, v in cnt.items() if v > 1):
+                names = [d for l, d in zip(col_list, col_display) if l == lo]
+                dup_detail.append(f"{names[0]} ({len(names)}×)" if names else f"{lo} ({cnt[lo]}×)")
+            parts.append("Duplicate column header(s): " + "; ".join(dup_detail))
+        elif missing:
+            parts.append("Missing column(s): " + ", ".join(sorted(missing)))
+        else:
+            parts.append("Adjust columns to match the required template.")
+        return False, " ".join(parts)
+
+    if len(col_set) != EV_REQUIRED_COLUMN_COUNT:
+        dup_detail = []
+        for lo in sorted(k for k, v in cnt.items() if v > 1):
+            names = [d for l, d in zip(col_list, col_display) if l == lo]
+            dup_detail.append(f"{names[0]} ({len(names)}×)" if names else f"{lo} ({cnt[lo]}×)")
+        return False, "Duplicate column headers: " + "; ".join(dup_detail)
+
+    if missing:
+        return False, "Missing columns: " + ", ".join(sorted(missing))
+    if extra_lowers:
+        return False, "Extra column(s) (remove these): " + ", ".join(extra_labels)
+    return True, None
+
+
+def normalize_ev_worksheet_to_required_columns(sdf):
+    """Return a copy with columns exactly EV_REQUIRED_COLUMNS (order and labels)."""
+    lower_to_orig = {str(c).strip().lower(): c for c in sdf.columns}
+    pieces = [sdf[lower_to_orig[req]] for req in EV_REQUIRED_COLUMNS]
+    out = pd.concat(pieces, axis=1)
+    out.columns = list(EV_REQUIRED_COLUMNS)
+    return out
+
 
 @app.route("/ev")
 @normal_agent_required
@@ -31106,24 +31170,47 @@ def upload_ev():
         try:
             file_data = pd.read_excel(filename, sheet_name=None, parse_dates=False)
 
-            valid_sheet = False
-            found_cols = []
-            for sn, sdf in file_data.items():
-                cols_lower = [str(c).strip().lower() for c in sdf.columns]
-                missing = [rc for rc in EV_REQUIRED_COLUMNS if rc not in cols_lower]
-                if len(missing) == 0:
-                    valid_sheet = True
-                    break
-                found_cols = cols_lower
+            normalized = {}
+            valid_worksheet = False
 
-            if not valid_sheet:
-                missing = [rc for rc in EV_REQUIRED_COLUMNS if rc not in found_cols]
+            for sn, sdf in file_data.items():
+                if not isinstance(sdf, pd.DataFrame):
+                    normalized[sn] = sdf
+                    continue
+                sn_lower = str(sn).strip().lower()
+                if sn_lower == "summary":
+                    normalized[sn] = sdf.copy()
+                    continue
+
+                col_list = [str(c).strip().lower() for c in sdf.columns]
+                if len(col_list) == 0 and sdf.empty:
+                    normalized[sn] = sdf.copy()
+                    continue
+
+                ok, err = validate_ev_worksheet_columns(sdf)
+                if not ok:
+                    if os.path.exists(filename):
+                        os.remove(filename)
+                    return jsonify({
+                        "success": False,
+                        "message": f"File validation failed on sheet '{sn}': {err}",
+                    }), 400
+
+                valid_worksheet = True
+                normalized[sn] = normalize_ev_worksheet_to_required_columns(sdf)
+
+            if not valid_worksheet:
                 if os.path.exists(filename):
                     os.remove(filename)
                 return jsonify({
                     "success": False,
-                    "message": f"File validation failed. Missing columns: {', '.join(missing)}"
+                    "message": (
+                        "No data sheet found. Add a sheet (other than Summary) with exactly the "
+                        f"{EV_REQUIRED_COLUMN_COUNT} required EV columns and no others."
+                    ),
                 }), 400
+
+            file_data = normalized
 
             existing_files = EVAgentFile.query.filter_by(agent_id=user.id).all()
             for ef in existing_files:

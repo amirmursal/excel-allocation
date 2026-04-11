@@ -29896,6 +29896,7 @@ def process_nh_allocation():
         s_exceptions = find_col(staff_df, ["exceptions", "exception"])
         s_insurance = find_col(staff_df, ["insurance preference", "insurance"])
         s_category = find_col(staff_df, ["category"])
+        s_level = find_col(staff_df, ["level"])
 
         a_office = find_col(alloc_df, ["office", "office name"])
         a_remark = find_col(alloc_df, ["remark", "remarks"])
@@ -29948,6 +29949,9 @@ def process_nh_allocation():
             category_val = str(row[s_category]).strip().lower() if s_category and pd.notna(row.get(s_category)) else ""
             is_caller = category_val == "caller"
 
+            level_val = str(row[s_level]).strip().lower() if s_level and pd.notna(row.get(s_level)) else ""
+            is_senior = level_val == "senior"
+
             has_nadg = any("nadg" in o.lower() for o in offices_list)
             nadg_offices = [o for o in offices_list if "nadg" in o.lower()]
             non_nadg_offices = [o for o in offices_list if "nadg" not in o.lower()]
@@ -29981,6 +29985,7 @@ def process_nh_allocation():
                 "all_insurance": len(insurance_list) == 0,
                 "assigned": 0,
                 "is_caller": is_caller,
+                "is_senior": is_senior,
             })
 
         # Ensure Agent Name column exists (use existing if present, else add)
@@ -30031,14 +30036,16 @@ def process_nh_allocation():
             return False
 
         def is_caller_row(row):
-            """True if Remark contains 'NTC' or starts with 'Allocate ' (case-insensitive)."""
+            """True if Remark starts with 'Allocate ' (case-insensitive), excluding senior-only remarks."""
             if a_remark is None:
                 return False
-            val = str(row.get(a_remark) if hasattr(row, "get") else row[a_remark]).strip().lower() if pd.notna(row.get(a_remark) if hasattr(row, "get") else row[a_remark]) else ""
+            raw = row.get(a_remark) if hasattr(row, "get") else row[a_remark]
+            val = str(raw).strip().lower() if pd.notna(raw) else ""
             if not val or val == "nan":
                 return False
-            if "ntc" in val:
-                return True
+            # Whole-remark NTC / allocate to senior handled in senior + caller-fallback pass first
+            if val == "ntc" or val == "allocate to senior":
+                return False
             if val.startswith("allocate "):
                 return True
             return False
@@ -30085,6 +30092,234 @@ def process_nh_allocation():
             v = alloc_df.at[idx, a_agent_name]
             return pd.isna(v) or not str(v).strip() or str(v).strip().lower() == "nan"
 
+        def is_nagd_wip_office(row_office_val):
+            o = str(row_office_val).strip().lower() if pd.notna(row_office_val) else ""
+            if not o or o == "nan":
+                return False
+            collapsed = re.sub(r"[^a-z0-9]", "", o)
+            if "nagd" not in collapsed or "wip" not in collapsed:
+                return False
+            return collapsed.find("nagd") < collapsed.find("wip")
+
+        def row_matches_insurance_priority(row_ins_val):
+            row_ins = str(row_ins_val).strip() if pd.notna(row_ins_val) else ""
+            if not row_ins or row_ins.lower() == "nan":
+                return False
+            rl = row_ins.lower()
+            if "bcbs" in rl or rl.startswith("bcbs"):
+                return True
+            formatted = format_insurance_company_name(row_ins)
+            fl = (formatted or "").lower()
+            for token in ("metlife", "guardian", "ucci"):
+                if token in rl or token in fl:
+                    return True
+            return False
+
+        def get_remark_whole_lower(idx):
+            if a_remark is None:
+                return ""
+            try:
+                val = alloc_df.at[idx, a_remark]
+            except (KeyError, TypeError):
+                return ""
+            return str(val).strip().lower() if pd.notna(val) else ""
+
+        def is_senior_remark_idx(idx):
+            w = get_remark_whole_lower(idx)
+            return w == "ntc" or w == "allocate to senior"
+
+        def staff_status_for_name_substring(sub):
+            sub_l = sub.lower()
+            for _, row in staff_df.iterrows():
+                n = str(row[s_agent]).strip() if pd.notna(row[s_agent]) else ""
+                if not n or n.lower() == "nan":
+                    continue
+                if sub_l in n.lower():
+                    return str(row[s_status]).strip().lower() if s_status and pd.notna(row[s_status]) else ""
+            return ""
+
+        # --- Pass 0a: Aarti Sharma first (same office/insurance/TFD rules as normal matching) ---
+        aarti_agent = next(
+            (
+                a
+                for a in agents
+                if "aarti" in str(a["name"]).strip().lower()
+                and "sharma" in str(a["name"]).strip().lower()
+            ),
+            None,
+        )
+        if aarti_agent is not None:
+            for idx in alloc_df.index:
+                if not is_row_unassigned(idx):
+                    continue
+                if is_remark_excluded(idx):
+                    continue
+                if aarti_agent["tfd"] > 0 and aarti_agent["assigned"] >= aarti_agent["tfd"]:
+                    continue
+                row = alloc_df.loc[idx]
+                if not matches_office(aarti_agent, row[a_office]):
+                    continue
+                if not matches_insurance(aarti_agent, row[a_insurance]):
+                    continue
+                alloc_df.at[idx, a_agent_name] = aarti_agent["name"]
+                aarti_agent["assigned"] += 1
+
+        # --- Pass 0b: NAGD WIP office → Asaad (unless No Allocation in staff) → Faisal; full match + TFD ---
+        asaad_status = staff_status_for_name_substring("asaad")
+        asaad_agent = next((a for a in agents if "asaad" in str(a["name"]).strip().lower()), None)
+        faisal_agent = next(
+            (
+                a
+                for a in agents
+                if "faisal" in str(a["name"]).strip().lower()
+                and "shaikh" in str(a["name"]).strip().lower()
+            ),
+            None,
+        )
+        for idx in alloc_df.index:
+            if not is_row_unassigned(idx):
+                continue
+            if is_remark_excluded(idx):
+                continue
+            row = alloc_df.loc[idx]
+            if not is_nagd_wip_office(row[a_office]):
+                continue
+            target = None
+            if asaad_status == "no allocation":
+                target = faisal_agent
+            else:
+                target = asaad_agent
+            if target is None:
+                continue
+            if target["tfd"] > 0 and target["assigned"] >= target["tfd"]:
+                continue
+            if not matches_office(target, row[a_office]):
+                continue
+            if not matches_insurance(target, row[a_insurance]):
+                continue
+            alloc_df.at[idx, a_agent_name] = target["name"]
+            target["assigned"] += 1
+
+        # --- Pass 0c: Whole remark NTC / allocate to senior → seniors (RR, TFD only); else callers w/ full match ---
+        senior_agents = [a for a in agents if a.get("is_senior")]
+        senior_rr = 0
+        n_senior = len(senior_agents)
+        for idx in alloc_df.index:
+            if not is_row_unassigned(idx):
+                continue
+            if is_remark_excluded(idx):
+                continue
+            if not is_senior_remark_idx(idx):
+                continue
+            assigned_here = False
+            if n_senior:
+                for step in range(n_senior):
+                    ag = senior_agents[(senior_rr + step) % n_senior]
+                    if ag["tfd"] > 0 and ag["assigned"] >= ag["tfd"]:
+                        continue
+                    alloc_df.at[idx, a_agent_name] = ag["name"]
+                    ag["assigned"] += 1
+                    senior_rr = (senior_rr + step + 1) % n_senior
+                    assigned_here = True
+                    break
+            if not assigned_here:
+                for ag in caller_agents:
+                    if ag["tfd"] > 0 and ag["assigned"] >= ag["tfd"]:
+                        continue
+                    row = alloc_df.loc[idx]
+                    if not matches_office(ag, row[a_office]):
+                        continue
+                    if not matches_insurance(ag, row[a_insurance]):
+                        continue
+                    alloc_df.at[idx, a_agent_name] = ag["name"]
+                    ag["assigned"] += 1
+                    break
+
+        # --- Pass 0d: Metlife / BCBS / Guardian / UCCI → Alisha Mulani, then Aliya Sayed, then Khalil Patel ---
+        ins_priority_agents = []
+        for sub_a, sub_b in (
+            ("alisha", "mulani"),
+            ("aliya", "sayed"),
+            ("khalil", "patel"),
+        ):
+            ag = next(
+                (
+                    a
+                    for a in agents
+                    if sub_a in str(a["name"]).strip().lower()
+                    and sub_b in str(a["name"]).strip().lower()
+                ),
+                None,
+            )
+            ins_priority_agents.append(ag)
+        for idx in alloc_df.index:
+            if not is_row_unassigned(idx):
+                continue
+            if is_remark_excluded(idx):
+                continue
+            row = alloc_df.loc[idx]
+            if not row_matches_insurance_priority(row[a_insurance]):
+                continue
+            for ag in ins_priority_agents:
+                if ag is None:
+                    continue
+                if ag["tfd"] > 0 and ag["assigned"] >= ag["tfd"]:
+                    continue
+                if not matches_office(ag, row[a_office]):
+                    continue
+                if not matches_insurance(ag, row[a_insurance]):
+                    continue
+                alloc_df.at[idx, a_agent_name] = ag["name"]
+                ag["assigned"] += 1
+                break
+
+        # --- Pass 0e: Dr. Insoft & Hurst → Richa Yadav and Ketan Bamaniya alternately (TFD only; same pattern as Startaloo remainder) ---
+        INSOFT_OFFICE = "dr. insoft & hurst"
+        insoft_richa = next(
+            (
+                a
+                for a in agents
+                if "richa" in str(a["name"]).strip().lower()
+                and "yadav" in str(a["name"]).strip().lower()
+            ),
+            None,
+        )
+        insoft_ketan = next(
+            (
+                a
+                for a in agents
+                if "ketan" in str(a["name"]).strip().lower()
+                and "bamaniya" in str(a["name"]).strip().lower()
+            ),
+            None,
+        )
+        insoft_turn = 0
+        for idx in alloc_df.index:
+            if not is_row_unassigned(idx):
+                continue
+            if is_remark_excluded(idx):
+                continue
+            raw_off = alloc_df.at[idx, a_office]
+            row_office = (
+                re.sub(r"\s+", " ", str(raw_off).strip().lower())
+                if pd.notna(raw_off)
+                else ""
+            )
+            if row_office != INSOFT_OFFICE:
+                continue
+            for _ in range(2):
+                agent = (insoft_richa, insoft_ketan)[insoft_turn % 2]
+                if agent is None:
+                    insoft_turn += 1
+                    continue
+                if agent["tfd"] > 0 and agent["assigned"] >= agent["tfd"]:
+                    insoft_turn += 1
+                    continue
+                alloc_df.at[idx, a_agent_name] = agent["name"]
+                agent["assigned"] += 1
+                insoft_turn += 1
+                break
+
         richa_agent = next((a for a in agents if "richa" in str(a["name"]).strip().lower() and "yadav" in str(a["name"]).strip().lower()), None)
         if richa_agent is not None:
             for idx in alloc_df.index:
@@ -30100,7 +30335,7 @@ def process_nh_allocation():
                 richa_agent["assigned"] += 1
 
             # Remaining Dr. Startaloo rows (after Richa is full) go to Mohammed Asaad Shaikh and Ketan Bamaniya alternately
-            mohammed_agent = next((a for a in agents if "mohammed" in str(a["name"]).strip().lower() and "asaad" in str(a["name"]).strip().lower()), None)
+            mohammed_agent = next((a for a in agents if "asaad" in str(a["name"]).strip().lower()), None)
             ketan_agent = next((a for a in agents if "ketan" in str(a["name"]).strip().lower() and "bamaniya" in str(a["name"]).strip().lower()), None)
             startaloo_remainder = [i for i in alloc_df.index if is_startaloo_row(i) and is_row_unassigned(i) and not is_remark_excluded(i)]
             turn = 0
@@ -30116,7 +30351,7 @@ def process_nh_allocation():
                 agent["assigned"] += 1
                 turn += 1
 
-        # --- Priority: Caller — rows where Remark contains NTC or starts with "Allocate <Someone>" go only to agents with Category = Caller ---
+        # --- Priority: Caller — Remark starts with "Allocate ..." (excl. senior-only) → Category = Caller, office + insurance + TFD ---
         for idx, row in alloc_df.iterrows():
             if not is_row_unassigned(idx):
                 continue
@@ -30127,13 +30362,17 @@ def process_nh_allocation():
             for agent in caller_agents:
                 if agent["tfd"] > 0 and agent["assigned"] >= agent["tfd"]:
                     continue
+                if not matches_office(agent, row[a_office]):
+                    continue
+                if not matches_insurance(agent, row[a_insurance]):
+                    continue
                 alloc_df.at[idx, a_agent_name] = agent["name"]
                 agent["assigned"] += 1
                 break
 
-        # --- Priority: Mohd Danish Varshani gets all rows where Office Name == "Dr. Hickory (Evenly Location)" until his capacity is full ---
+        # --- Priority: Danish Varshani gets all rows where Office Name == "Dr. Hickory (Evenly Location)" until his capacity is full ---
         HICKORY_OFFICE = "dr. hickory (evenly location)"
-        danish_agent = next((a for a in agents if str(a["name"]).strip().lower() == "mohd danish varshani".lower()), None)
+        danish_agent = next((a for a in agents if str(a["name"]).strip().lower() == "danish varshani".lower()), None)
         if danish_agent is not None:
             for idx, row in alloc_df.iterrows():
                 if not is_row_unassigned(idx):
@@ -30165,8 +30404,10 @@ def process_nh_allocation():
                 alloc_df.at[idx, a_agent_name] = nazir_agent["name"]
                 nazir_agent["assigned"] += 1
 
-        # --- Pass 1: NADG priority (skip NTC/Allocate and Dr. Startaloo rows) ---
+        # --- Pass 1: NADG priority — Office "NADG <anything>" (case-insensitive): round-robin among eligible NADG agents ---
         nadg_agents = [a for a in agents if a["has_nadg"]]
+        nadg_rr = 0
+        n_nadg = len(nadg_agents)
         for idx, row in alloc_df.iterrows():
             if not is_row_unassigned(idx):
                 continue
@@ -30179,7 +30420,10 @@ def process_nh_allocation():
             row_office = str(row[a_office]).strip().lower() if pd.notna(row[a_office]) else ""
             if not row_office.startswith("nadg"):
                 continue
-            for agent in nadg_agents:
+            if n_nadg == 0:
+                continue
+            for step in range(n_nadg):
+                agent = nadg_agents[(nadg_rr + step) % n_nadg]
                 if agent["assigned"] >= agent["tfd"] and agent["tfd"] > 0:
                     continue
                 if not matches_office(agent, row[a_office]):
@@ -30188,6 +30432,7 @@ def process_nh_allocation():
                     continue
                 alloc_df.at[idx, a_agent_name] = agent["name"]
                 agent["assigned"] += 1
+                nadg_rr = (nadg_rr + step + 1) % n_nadg
                 break
 
         # --- Pass 2: Regular matching (skip Dr. Startaloo — assigned in first pass only; NTC/Allocate only to Caller) ---

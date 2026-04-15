@@ -26593,6 +26593,137 @@ def validate_column_not_blank(file_data, column_name):
     return False, error_msg
 
 
+def validate_plan_number_numeric_slash_only(file_data):
+    """
+    Plan Number: digit groups separated by '/', optional spaces around '/'
+    (e.g. "12/34", "12 / 34"). Letters or other punctuation are invalid.
+
+    Remark Workable / NTC / ATS / NTBP (exact match, case-insensitive): Plan
+    Number may be left blank; if present, it must match the pattern above.
+
+    Any other Remark: Plan Number is required (blank is an error).
+    """
+    if not file_data:
+        return False, "No data found in file"
+
+    column_name = "Plan Number"
+    invalid_rows_by_sheet = {}
+    col_found = False
+
+    for sheet_name, df in file_data.items():
+        if df.empty:
+            continue
+
+        actual_columns = {str(col).strip().lower(): str(col).strip() for col in df.columns}
+        target_col = None
+        for col_lower, col_original in actual_columns.items():
+            if col_lower == column_name.strip().lower():
+                target_col = col_original
+                col_found = True
+                break
+
+        if target_col is None:
+            continue
+
+        patient_id_col = None
+        patient_name_col = None
+        remark_col = None
+        for col_lower, col_original in actual_columns.items():
+            if col_lower == "patient id":
+                patient_id_col = col_original
+            elif col_lower == "patient name":
+                patient_name_col = col_original
+            elif col_lower in ("remark", "remarks"):
+                remark_col = col_original
+
+        _plan_blank_err = (
+            "Plan Number cannot be blank unless Remark is exactly Workable, "
+            "NTC, ATS, or NTBP (case-insensitive)"
+        )
+        invalid_identifiers = []
+        for idx, row in df.iterrows():
+            rv = ""
+            if remark_col:
+                remark_val = row.get(remark_col)
+                if not pd.isna(remark_val):
+                    rv = str(remark_val).strip().lower()
+            allow_blank_plan = rv in ("workable", "ntc", "ats", "ntbp")
+
+            val = row.get(target_col)
+            reason = None
+            s = None
+
+            if pd.isna(val):
+                if allow_blank_plan:
+                    continue
+                reason = _plan_blank_err
+            elif isinstance(val, str):
+                raw_s = val.strip()
+                if raw_s == "" or raw_s.lower() == "nan":
+                    if allow_blank_plan:
+                        continue
+                    reason = _plan_blank_err
+                else:
+                    s = raw_s
+            elif isinstance(val, (int, float)) and not isinstance(val, bool):
+                try:
+                    fv = float(val)
+                    if fv == int(fv):
+                        s = str(int(fv))
+                    else:
+                        s = str(val).strip()
+                except (TypeError, ValueError):
+                    s = str(val).strip()
+            else:
+                s = str(val).strip()
+                if s == "" or s.lower() == "nan":
+                    if allow_blank_plan:
+                        continue
+                    reason = _plan_blank_err
+
+            if reason is None and s is not None:
+                if not re.fullmatch(r"\d+(\s*/\s*\d+)*", s):
+                    reason = (
+                        "only digits with '/' between groups (spaces allowed around "
+                        f"'/'); value: '{s}'"
+                    )
+
+            if reason:
+                identifier = None
+                if patient_id_col:
+                    pid = row.get(patient_id_col)
+                    if not pd.isna(pid) and str(pid).strip() != "":
+                        identifier = f"Patient ID: {str(pid).strip()}"
+                if identifier is None and patient_name_col:
+                    pname = row.get(patient_name_col)
+                    if not pd.isna(pname) and str(pname).strip() != "":
+                        identifier = f"Patient Name: {str(pname).strip()}"
+                if identifier is None:
+                    identifier = f"Row {idx + 2}"
+                invalid_identifiers.append(f"{identifier}: {reason}")
+
+        if invalid_identifiers:
+            invalid_rows_by_sheet[sheet_name] = invalid_identifiers
+
+    if not col_found:
+        return False, f"'{column_name}' column not found in the uploaded file."
+
+    if not invalid_rows_by_sheet:
+        return True, ""
+
+    parts = []
+    for sheet_name, identifiers in invalid_rows_by_sheet.items():
+        ids_str = ", ".join(identifiers)
+        parts.append(f"[{sheet_name}] → {ids_str}")
+
+    error_msg = (
+        "Plan Number validation failed (required for all remarks except "
+        "Workable, NTC, ATS, NTBP; when present use digits and '/' only, "
+        "spaces allowed around '/'): " + " | ".join(parts)
+    )
+    return False, error_msg
+
+
 def validate_column_numeric(file_data, column_name):
     """
     Generic validation that a column exists, is not blank, and contains only
@@ -33400,8 +33531,8 @@ def upload_day_shift():
                     os.remove(filename)
                 return jsonify({"success": False, "message": error_msg}), 400
 
-            # Validate Plan Number is not blank
-            is_valid, error_msg = validate_column_not_blank(file_data, "Plan Number")
+            # Validate Plan Number: digits + '/' between groups; spaces allowed around '/'
+            is_valid, error_msg = validate_plan_number_numeric_slash_only(file_data)
             if not is_valid:
                 if os.path.exists(filename):
                     os.remove(filename)
@@ -33552,8 +33683,8 @@ def upload_night_shift():
                     os.remove(filename)
                 return jsonify({"success": False, "message": error_msg}), 400
 
-            # Validate Plan Number is not blank
-            is_valid, error_msg = validate_column_not_blank(file_data, "Plan Number")
+            # Validate Plan Number: digits + '/' between groups; spaces allowed around '/'
+            is_valid, error_msg = validate_plan_number_numeric_slash_only(file_data)
             if not is_valid:
                 if os.path.exists(filename):
                     os.remove(filename)
@@ -33703,8 +33834,8 @@ def upload_ntbp():
                     os.remove(filename)
                 return jsonify({"success": False, "message": error_msg}), 400
 
-            # Validate Plan Number is not blank
-            is_valid, error_msg = validate_column_not_blank(file_data, "Plan Number")
+            # Validate Plan Number: digits + '/' between groups; spaces allowed around '/'
+            is_valid, error_msg = validate_plan_number_numeric_slash_only(file_data)
             if not is_valid:
                 if os.path.exists(filename):
                     os.remove(filename)
@@ -33917,8 +34048,8 @@ def upload_daily_consolidate():
                     os.remove(filename)
                 return jsonify({"success": False, "message": error_msg}), 400
 
-            # Validate Plan Number is not blank
-            is_valid, error_msg = validate_column_not_blank(file_data, "Plan Number")
+            # Validate Plan Number: digits + '/' between groups; spaces allowed around '/'
+            is_valid, error_msg = validate_plan_number_numeric_slash_only(file_data)
             if not is_valid:
                 if os.path.exists(filename):
                     os.remove(filename)

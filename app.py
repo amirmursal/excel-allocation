@@ -27397,6 +27397,59 @@ def clear_all_agent_files():
         return redirect("/")
 
 
+def apply_nh_consolidated_workbook_formatting(writer):
+    """
+    NH consolidate output: green header row (#06b050) on every sheet; on
+    "All Agent Data", yellow fill for full rows where Status Code is set and
+    not BV (blank and BV rows are not highlighted).
+    """
+    from openpyxl.styles import Font, PatternFill
+
+    header_fill = PatternFill(
+        start_color="FF06B050", end_color="FF06B050", fill_type="solid"
+    )
+    header_font = Font(color="FF000000", bold=True)
+    yellow_fill = PatternFill(
+        start_color="FFFFFF00", end_color="FFFFFF00", fill_type="solid"
+    )
+
+    wb = writer.book
+    for sheet in wb.worksheets:
+        max_col = sheet.max_column
+        if max_col < 1:
+            continue
+        for col in range(1, max_col + 1):
+            cell = sheet.cell(row=1, column=col)
+            cell.fill = header_fill
+            cell.font = header_font
+
+    if "All Agent Data" not in wb.sheetnames:
+        return
+
+    ws = wb["All Agent Data"]
+    max_col = ws.max_column
+    status_col_idx = None
+    for col in range(1, max_col + 1):
+        val = ws.cell(row=1, column=col).value
+        if val is not None and str(val).strip().lower() == "status code":
+            status_col_idx = col
+            break
+
+    if status_col_idx is None:
+        return
+
+    for row in range(2, ws.max_row + 1):
+        sc_val = ws.cell(row=row, column=status_col_idx).value
+        if pd.isna(sc_val):
+            continue
+        if isinstance(sc_val, str) and not sc_val.strip():
+            continue
+        if str(sc_val).strip().upper() == "BV":
+            continue
+        for col in range(1, max_col + 1):
+            ws.cell(row=row, column=col).fill = yellow_fill
+
+
 def consolidate_files_helper_to_buffer(
     file_model, file_type_name, mark_consolidated=False
 ):
@@ -27467,6 +27520,9 @@ def consolidate_files_helper_to_buffer(
                     [{"Message": "No data available from any agent"}]
                 )
                 simple_df.to_excel(writer, sheet_name="All Agent Data", index=False)
+
+            if file_type_name == "NH":
+                apply_nh_consolidated_workbook_formatting(writer)
 
         excel_buffer.seek(0)
 

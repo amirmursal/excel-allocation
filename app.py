@@ -19143,6 +19143,69 @@ def upload_email_allocation():
         return redirect("/?tab=email-allocation")
 
 
+def apply_nh_style_priority_row_red_highlights_openpyxl(wb, sheet_name):
+    """
+    NH / Email agent sheet: entire row red (Font FF0000) when any of:
+    - Priority Status is FIRST PRIORITY or SECOND PRIORITY (when that column exists), or
+    - Appointment before today or within today..today+3 (parse_excel_date), or
+    - Source is email/mail (case-insensitive).
+
+    Matches NH download + modal-style priority rows for email attachments.
+    Mutates wb in place; caller must save the workbook.
+    """
+    try:
+        from openpyxl.styles import Font
+        from datetime import date as date_type
+
+        if sheet_name not in wb.sheetnames:
+            return
+        ws = wb[sheet_name]
+        today = date_type.today()
+        end_date = today + timedelta(days=3)
+        appointment_col_idx = None
+        source_col_idx = None
+        priority_status_col_idx = None
+        for col_idx in range(1, ws.max_column + 1):
+            val = ws.cell(row=1, column=col_idx).value
+            if val is None:
+                continue
+            v = str(val).strip().lower()
+            if v == "appointment":
+                appointment_col_idx = col_idx
+            if v == "source":
+                source_col_idx = col_idx
+            if "priority" in v and "status" in v:
+                priority_status_col_idx = col_idx
+        red_font = Font(color="FF0000")
+        for row_idx in range(2, ws.max_row + 1):
+            is_priority = False
+            if priority_status_col_idx is not None:
+                ps = ws.cell(row=row_idx, column=priority_status_col_idx).value
+                if ps is not None:
+                    psu = str(ps).strip().upper()
+                    if psu in ("FIRST PRIORITY", "SECOND PRIORITY"):
+                        is_priority = True
+            if not is_priority and appointment_col_idx is not None:
+                cell_val = ws.cell(row=row_idx, column=appointment_col_idx).value
+                if cell_val is not None and str(cell_val).strip() and str(cell_val).strip().upper() != "N/A":
+                    dt = parse_excel_date(cell_val)
+                    if dt is not None:
+                        try:
+                            if dt < today or (today <= dt <= end_date):
+                                is_priority = True
+                        except (TypeError, ValueError):
+                            pass
+            if not is_priority and source_col_idx is not None:
+                cell_val = ws.cell(row=row_idx, column=source_col_idx).value
+                if cell_val is not None and str(cell_val).strip().lower() in ("email", "mail"):
+                    is_priority = True
+            if is_priority:
+                for col_idx in range(1, ws.max_column + 1):
+                    ws.cell(row=row_idx, column=col_idx).font = red_font
+    except Exception as e:
+        print(f"Error applying NH-style priority row highlights: {str(e)}", flush=True)
+
+
 def format_excel_with_priority_status(excel_path, sheet_name):
     """
     Format Excel file to color the "Priority Status" column cell red where value is "First Priority".
@@ -19277,7 +19340,14 @@ def send_email_to_agent():
             with pd.ExcelWriter(temp_path, engine="openpyxl") as writer:
                 agent_rows.to_excel(writer, sheet_name=sheet_name, index=False)
 
-            # Format Excel file to highlight "First Priority" rows
+            from openpyxl import load_workbook
+
+            wb = load_workbook(temp_path)
+            apply_nh_style_priority_row_red_highlights_openpyxl(wb, sheet_name)
+            wb.save(temp_path)
+            wb.close()
+
+            # Imagen: Priority Status "First Priority" cell color (NH rows already full-row red above)
             format_excel_with_priority_status(temp_path, sheet_name)
 
             # Read the Excel file as bytes
@@ -19410,7 +19480,13 @@ def send_email_to_all_agents():
                     with pd.ExcelWriter(temp_path, engine="openpyxl") as writer:
                         agent_rows.to_excel(writer, sheet_name=sheet_name, index=False)
 
-                    # Format Excel file to highlight "First Priority" rows
+                    from openpyxl import load_workbook
+
+                    wb = load_workbook(temp_path)
+                    apply_nh_style_priority_row_red_highlights_openpyxl(wb, sheet_name)
+                    wb.save(temp_path)
+                    wb.close()
+
                     format_excel_with_priority_status(temp_path, sheet_name)
 
                     # Read the Excel file as bytes
@@ -19988,41 +20064,27 @@ def get_agent_allocation_data():
                 {"success": False, "error": f"No rows found for agent '{agent_name}'"}
             )
 
-        # Find Appointment and Source columns for priority highlighting (case-insensitive)
-        appointment_col = None
-        source_col = None
+        priority_status_col = None
         for col in agent_rows.columns:
             c = str(col).strip().lower()
-            if c == "appointment":
-                appointment_col = col
-            if c == "source":
-                source_col = col
+            if "priority" in c and "status" in c:
+                priority_status_col = col
+                break
 
         def is_priority_row_email(row):
-            """Priority: Appointment today→today+3 or before today, or Source = Email/Mail (case-insensitive)."""
-            if source_col is not None:
-                sv = row.get(source_col)
-                if pd.notna(sv) and str(sv).strip().lower() in ("email", "mail"):
-                    return True
-            if appointment_col is not None:
-                av = row.get(appointment_col)
-                if pd.isna(av) or av is None or str(av).strip() == "" or str(av).strip().upper() == "N/A":
-                    return False
-                try:
-                    if hasattr(av, "date"):
-                        dt = av.date()
-                    elif hasattr(av, "year"):
-                        dt = datetime(av.year, av.month, av.day).date() if hasattr(av, "month") else None
-                    else:
-                        dt = datetime.strptime(str(av).strip(), "%m/%d/%Y").date()
-                    if dt is None:
-                        return False
-                    today = datetime.now().date()
-                    end_date = today + timedelta(days=3)
-                    if dt < today or (today <= dt <= end_date):
+            """Same rules as NH email attachment / download: Priority Status First/Second, or modal rule (Appointment window / Source)."""
+            if priority_status_col is not None:
+                pv = row.get(priority_status_col)
+                if pd.notna(pv):
+                    psu = str(pv).strip().upper()
+                    if psu in ("FIRST PRIORITY", "SECOND PRIORITY"):
                         return True
-                except (ValueError, TypeError):
-                    pass
+            try:
+                idx = row.name
+                if idx is not None:
+                    return is_priority_row_modal_style(agent_rows, idx)
+            except (KeyError, TypeError, AttributeError):
+                pass
             return False
 
         # Convert to dictionary format for JSON response (include _priority for red highlighting in UI)
@@ -20118,51 +20180,11 @@ def download_agent_allocation_excel():
 
         excel_buffer.seek(0)
 
-        # Apply red font to priority rows (Appointment today→today+3 or before today, or Source = Email/Mail)
         from openpyxl import load_workbook
-        from openpyxl.styles import Font
-        from datetime import date as date_type
 
         wb = load_workbook(excel_buffer)
         sheet_name = f"{agent_name}_Allocation"
-        ws = wb[sheet_name]
-        today = date_type.today()
-        end_date = today + timedelta(days=3)
-        appointment_col_idx = None
-        source_col_idx = None
-        for col_idx in range(1, ws.max_column + 1):
-            val = ws.cell(row=1, column=col_idx).value
-            if val is None:
-                continue
-            v = str(val).strip().lower()
-            if v == "appointment":
-                appointment_col_idx = col_idx
-            if v == "source":
-                source_col_idx = col_idx
-        red_font = Font(color="FF0000")
-        for row_idx in range(2, ws.max_row + 1):
-            is_priority = False
-            if appointment_col_idx is not None:
-                cell_val = ws.cell(row=row_idx, column=appointment_col_idx).value
-                if cell_val is not None and str(cell_val).strip() and str(cell_val).strip().upper() != "N/A":
-                    try:
-                        if hasattr(cell_val, "date"):
-                            dt = cell_val.date()
-                        elif hasattr(cell_val, "year") and hasattr(cell_val, "month") and hasattr(cell_val, "day"):
-                            dt = date_type(cell_val.year, cell_val.month, cell_val.day)
-                        else:
-                            dt = datetime.strptime(str(cell_val).strip(), "%m/%d/%Y").date()
-                        if dt < today or (today <= dt <= end_date):
-                            is_priority = True
-                    except (ValueError, TypeError):
-                        pass
-            if not is_priority and source_col_idx is not None:
-                cell_val = ws.cell(row=row_idx, column=source_col_idx).value
-                if cell_val is not None and str(cell_val).strip().lower() in ("email", "mail"):
-                    is_priority = True
-            if is_priority:
-                for c in range(1, ws.max_column + 1):
-                    ws.cell(row=row_idx, column=c).font = red_font
+        apply_nh_style_priority_row_red_highlights_openpyxl(wb, sheet_name)
         out_buffer = io.BytesIO()
         wb.save(out_buffer)
         wb.close()
@@ -32271,49 +32293,10 @@ def download_nh_allocation():
             with pd.ExcelWriter(temp_path, engine="openpyxl") as writer:
                 export_df.to_excel(writer, sheet_name="NH_Allocation", index=False)
 
-            # Highlight priority rows in red: Appointment today→today+3 or before today, or Source = Email/Mail
             from openpyxl import load_workbook
-            from openpyxl.styles import Font
-            from datetime import date as date_type, timedelta
+
             wb = load_workbook(temp_path)
-            ws = wb["NH_Allocation"]
-            today = date_type.today()
-            end_date = today + timedelta(days=3)
-            appointment_col_idx = None
-            source_col_idx = None
-            for col_idx in range(1, ws.max_column + 1):
-                val = ws.cell(row=1, column=col_idx).value
-                if val is None:
-                    continue
-                v = str(val).strip().lower()
-                if v == "appointment":
-                    appointment_col_idx = col_idx
-                if v == "source":
-                    source_col_idx = col_idx
-            red_font = Font(color="FF0000")
-            for row_idx in range(2, ws.max_row + 1):
-                is_priority = False
-                if appointment_col_idx is not None:
-                    cell_val = ws.cell(row=row_idx, column=appointment_col_idx).value
-                    if cell_val is not None and str(cell_val).strip() and str(cell_val).strip().upper() != "N/A":
-                        try:
-                            if hasattr(cell_val, "date"):
-                                dt = cell_val.date()
-                            elif hasattr(cell_val, "year") and hasattr(cell_val, "month") and hasattr(cell_val, "day"):
-                                dt = date_type(cell_val.year, cell_val.month, cell_val.day)
-                            else:
-                                dt = datetime.strptime(str(cell_val).strip(), "%m/%d/%Y").date()
-                            if dt < today or (today <= dt <= end_date):
-                                is_priority = True
-                        except (ValueError, TypeError):
-                            pass
-                if not is_priority and source_col_idx is not None:
-                    cell_val = ws.cell(row=row_idx, column=source_col_idx).value
-                    if cell_val is not None and str(cell_val).strip().lower() in ("email", "mail"):
-                        is_priority = True
-                if is_priority:
-                    for col_idx in range(1, ws.max_column + 1):
-                        ws.cell(row=row_idx, column=col_idx).font = red_font
+            apply_nh_style_priority_row_red_highlights_openpyxl(wb, "NH_Allocation")
             wb.save(temp_path)
             wb.close()
 

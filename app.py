@@ -30745,7 +30745,12 @@ def process_nh_allocation():
             for x in _NH_FATEH_SHAIKH_OFFICE_BLOCK_LABELS
         )
 
-        _NH_DR_STARTALOO_OFFICE_KEYS = frozenset({nh_office_key("Dr. Startaloo")})
+        _NH_DR_STARTALOO_OFFICE_KEYS = frozenset(
+            {
+                nh_office_key("Dr. Startaloo"),
+                nh_office_key("Dr Startaloo"),
+            }
+        )
 
         # --- Dr. Insoft & Hurst: only Richa Yadav + Ketan Bamaniya (matches_office + caller skips + Pass 0e) ---
         _NH_DR_INSOFT_HURST_EXCLUSIVE_KEYS = frozenset(
@@ -30798,7 +30803,7 @@ def process_nh_allocation():
             {nh_office_key("Dr. Startaloo")}
         ) | _NH_VINAYAK_KETAN_ELCHAHAL_OFFICE_KEYS
 
-        # --- Omair Ansari: blocklist; 0f prefers Bibona + Reed (Dr. Reed not in blocklist — also first-preference) ---
+        # --- Omair Ansari: blocklist; Dr. Bibona + Dr. Reed exclusive to Omair (matches_office + caller skip); 0f prefers those offices ---
         _NH_OMAIR_ANSARI_OFFICE_BLOCK_LABELS = (
             "Dr. Rita Chuang",
             "Dr. Perez",
@@ -30990,6 +30995,20 @@ def process_nh_allocation():
                 if len(k) > len(b) and k.startswith(b) and k[len(b)] in "- ":
                     return True
             return False
+
+        def _nh_row_office_is_dr_startaloo(row_office_val):
+            """True when Office is the Dr. Startaloo practice (exact keys + common spelling variants)."""
+            if _nh_row_office_matches_keyset(row_office_val, _NH_DR_STARTALOO_OFFICE_KEYS):
+                return True
+            k = nh_office_key(row_office_val)
+            if not k or "startaloo" not in k:
+                return False
+            if k.startswith("nadg") or k.startswith("nagd"):
+                return False
+            c = re.sub(r"[^a-z0-9]", "", k)
+            if "drstartaloo" in c:
+                return True
+            return k.startswith("dr") or k.startswith("dr.")
 
         def _nh_faisal_tier1_office_only(row_office_val):
             if is_nadg_wip_office(row_office_val):
@@ -31240,8 +31259,17 @@ def process_nh_allocation():
 
         _nh_asaad_shaikh_agent = next((a for a in agents if _nh_asaad_shaikh(a)), None)
 
+        def _nh_asaad_agent_effective():
+            """Same as Pass 0b: match 'asaad' in name if 'Shaikh/Sheikh' variant missing from staff."""
+            if _nh_asaad_shaikh_agent is not None:
+                return _nh_asaad_shaikh_agent
+            return next(
+                (a for a in agents if "asaad" in str(a.get("name", "")).strip().lower()),
+                None,
+            )
+
         def _nh_asaad_shaikh_startaloo_assigned_count():
-            a = _nh_asaad_shaikh_agent
+            a = _nh_asaad_agent_effective()
             if a is None:
                 return 0
             want = str(a["name"]).strip().lower()
@@ -31256,7 +31284,7 @@ def process_nh_allocation():
                     ro = alloc_df.at[i, a_office]
                 except (KeyError, TypeError):
                     continue
-                if _nh_row_office_matches_keyset(ro, _NH_DR_STARTALOO_OFFICE_KEYS):
+                if _nh_row_office_is_dr_startaloo(ro):
                     n += 1
             return n
 
@@ -31265,9 +31293,9 @@ def process_nh_allocation():
             k = nh_office_key(row_office_val)
             if k.startswith("nadg") or k.startswith("nagd"):
                 return True
-            if not _nh_row_office_matches_keyset(row_office_val, _NH_DR_STARTALOO_OFFICE_KEYS):
+            if not _nh_row_office_is_dr_startaloo(row_office_val):
                 return False
-            if _nh_asaad_shaikh_agent is None:
+            if _nh_asaad_agent_effective() is None:
                 return False
             return _nh_asaad_shaikh_startaloo_assigned_count() < 2
 
@@ -31338,7 +31366,12 @@ def process_nh_allocation():
                 row_office_val
             ):
                 return True
-            if _nh_asaad_shaikh(agent) and not _nh_asaad_shaikh_office_allowed(row_office_val):
+            _ae_asaad = _nh_asaad_agent_effective()
+            if (
+                _ae_asaad is not None
+                and agent is _ae_asaad
+                and not _nh_asaad_shaikh_office_allowed(row_office_val)
+            ):
                 return True
             if _nh_danish_varshani(agent) and not _nh_danish_varshani_office_allowed(
                 row_office_val
@@ -31409,6 +31442,21 @@ def process_nh_allocation():
             ):
                 return True
             if (
+                _nh_row_office_matches_keyset(
+                    row_office_val, _NH_VINAYAK_KETAN_ELCHAHAL_OFFICE_KEYS
+                )
+                and not _nh_vinayak_shewale(agent)
+                and not _nh_ketan_bamaniya(agent)
+            ):
+                return True
+            if (
+                _nh_row_office_matches_keyset(
+                    row_office_val, _NH_OMAIR_ANSARI_PREFERRED_OFFICE_KEYS
+                )
+                and not _nh_omair_ansari(agent)
+            ):
+                return True
+            if (
                 not _nh_nazir_sheikh(agent)
                 and _nh_row_office_matches_keyset(
                     row_office_val, _NH_NAZIR_PRIORITY_OFFICE_KEYS
@@ -31436,6 +31484,14 @@ def process_nh_allocation():
             if _nh_row_office_matches_keyset(
                 row_office_val, _NH_DR_SHAWN_LEHMAN_EXCLUSIVE_KEYS
             ) and not (_nh_vinayak_shewale(agent) or _nh_nazir_sheikh(agent)):
+                return False
+            if _nh_row_office_matches_keyset(
+                row_office_val, _NH_VINAYAK_KETAN_ELCHAHAL_OFFICE_KEYS
+            ) and not (_nh_vinayak_shewale(agent) or _nh_ketan_bamaniya(agent)):
+                return False
+            if _nh_row_office_matches_keyset(
+                row_office_val, _NH_OMAIR_ANSARI_PREFERRED_OFFICE_KEYS
+            ) and not _nh_omair_ansari(agent):
                 return False
             if _nh_vinayak_shewale(agent) and _nh_vinayak_nazir_office_blocked(row_office_val):
                 return False
@@ -31505,8 +31561,9 @@ def process_nh_allocation():
             # Siddhantraj Rokade: only NADG-Cloud9 or Dr. Hickory (Evenly Location); insurance = staff preference
             if _nh_siddhantraj_rokade(agent):
                 return _nh_siddhantraj_rokade_office_allowed(row_office_val)
-            # Asaad Shaikh: NADG/NAGD offices only, plus Dr. Startaloo (max 2); any insurance
-            if _nh_asaad_shaikh(agent):
+            # Asaad Shaikh (incl. name match without Shaikh): NADG/NAGD + Dr. Startaloo (max 2); any insurance
+            _ae_asaad_mo = _nh_asaad_agent_effective()
+            if _ae_asaad_mo is not None and agent is _ae_asaad_mo:
                 return _nh_asaad_shaikh_office_allowed(row_office_val)
             # Danish Varshani: Dr. Hickory (Evenly Location) or Dr. Irani only; any insurance
             if _nh_danish_varshani(agent):
@@ -31562,11 +31619,13 @@ def process_nh_allocation():
             row_ins = str(row_ins_val).strip() if pd.notna(row_ins_val) else ""
             if not row_ins or row_ins.lower() == "nan":
                 return True
+            _ae_asaad_ins = _nh_asaad_agent_effective()
             if (
                 _nh_vinayak_shewale(agent)
                 or _nh_nazir_sheikh(agent)
                 or _nh_nida_khan(agent)
                 or _nh_asaad_shaikh(agent)
+                or (_ae_asaad_ins is not None and agent is _ae_asaad_ins)
                 or _nh_danish_varshani(agent)
                 or _nh_faisal_shaikh(agent)
                 or _nh_is_affan_chowdhary(agent)
@@ -31602,6 +31661,58 @@ def process_nh_allocation():
                 return False
             return True
 
+        def _nh_try_assign_compulsory_dr_startaloo_to_asaad(idx):
+            """
+            Business rule: exactly 2 Dr. Startaloo-office rows for Asaad. Skips office/insurance
+            / priority checks that can block normal matching; only TFD + remark + office + not caller.
+            """
+            aa = _nh_asaad_agent_effective()
+            if aa is None:
+                return False
+            if _nh_asaad_shaikh_startaloo_assigned_count() >= 2:
+                return False
+            try:
+                roff = alloc_df.at[idx, a_office]
+            except (KeyError, TypeError):
+                return False
+            if not _nh_row_office_is_dr_startaloo(roff):
+                return False
+            if aa["tfd"] > 0 and aa["assigned"] >= aa["tfd"]:
+                return False
+            alloc_df.at[idx, a_agent_name] = aa["name"]
+            aa["assigned"] += 1
+            return True
+
+        # Clear pre-filled Agent Name on Dr. Startaloo rows (uploads often assign Richa) so Asaad can take compulsory slots.
+        _ae_clear_st = _nh_asaad_agent_effective()
+        if _ae_clear_st is not None:
+            _asaad_norm_clear = re.sub(
+                r"\s+", " ", str(_ae_clear_st["name"]).strip().lower()
+            )
+            for _nh_stc_i in alloc_df.index:
+                if is_remark_excluded(_nh_stc_i):
+                    continue
+                try:
+                    _ro_stc = alloc_df.at[_nh_stc_i, a_office]
+                except (KeyError, TypeError):
+                    continue
+                if not _nh_row_office_is_dr_startaloo(_ro_stc):
+                    continue
+                if is_nh_caller_only_row(alloc_df.loc[_nh_stc_i]):
+                    continue
+                if is_row_unassigned(_nh_stc_i):
+                    continue
+                _ag_stc = re.sub(
+                    r"\s+",
+                    " ",
+                    str(alloc_df.at[_nh_stc_i, a_agent_name]).strip().lower(),
+                )
+                if not _ag_stc or _ag_stc == "nan":
+                    continue
+                if _ag_stc == _asaad_norm_clear:
+                    continue
+                alloc_df.at[_nh_stc_i, a_agent_name] = ""
+
         # --- Pass 0 (global first among allocation passes): Rule 1 or non-web insurance → Caller only; TFD; office blocks for Nazir/Vinayak ---
         n_caller_only = len(caller_agents)
         caller_only_rr = 0
@@ -31632,6 +31743,19 @@ def process_nh_allocation():
                 _nh_set_remark_workable_if_rule1_caller_assigned(idx)
                 caller_only_rr = (caller_only_rr + step + 1) % n_caller_only
                 break
+
+        # --- Pass 0a: Asaad Shaikh — compulsory 2 Dr. Startaloo office rows (before web pool / Aarti / Pass 0d / Richa) ---
+        for _nh_p0a_idx in alloc_df.index:
+            if _nh_asaad_shaikh_startaloo_assigned_count() >= 2:
+                break
+            if not is_row_unassigned(_nh_p0a_idx):
+                continue
+            if is_remark_excluded(_nh_p0a_idx):
+                continue
+            row_p0a = alloc_df.loc[_nh_p0a_idx]
+            if is_nh_caller_only_row(row_p0a):
+                continue
+            _nh_try_assign_compulsory_dr_startaloo_to_asaad(_nh_p0a_idx)
 
         # Detect Startaloo by scanning ALL columns for "startaloo" (used for Richa/Ketan pass + NADG/Pass2 skips)
         def is_startaloo_row(idx):
@@ -31928,6 +32052,8 @@ def process_nh_allocation():
                     continue
                 if not is_startaloo_row(idx):
                     continue
+                if _nh_try_assign_compulsory_dr_startaloo_to_asaad(idx):
+                    continue
                 if richa_agent["tfd"] > 0 and richa_agent["assigned"] >= richa_agent["tfd"]:
                     break
                 if not _nh_richa_yadav_office_allowed(alloc_df.at[idx, a_office]):
@@ -31953,6 +32079,8 @@ def process_nh_allocation():
                 if is_nh_caller_only_row(alloc_df.loc[idx]):
                     continue
                 if is_startaloo_row(idx):
+                    continue
+                if _nh_try_assign_compulsory_dr_startaloo_to_asaad(idx):
                     continue
                 if richa_agent["tfd"] > 0 and richa_agent["assigned"] >= richa_agent["tfd"]:
                     break
@@ -31982,6 +32110,8 @@ def process_nh_allocation():
             and not is_nh_caller_only_row(alloc_df.loc[i])
         ]
         for i in startaloo_remainder:
+            if _nh_try_assign_compulsory_dr_startaloo_to_asaad(i):
+                continue
             if (
                 _nh_richa_priority_reserved()
                 and _nh_row_office_matches_keyset(

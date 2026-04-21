@@ -20539,10 +20539,23 @@ def match_ev_allocation_row(allocation_row, allocation_df, staff_df):
     Matching criteria (all case-insensitive):
     - Office/Doctor Name: OR logic (staff "ABC Clinic, XYZ Hospital" matches allocation "ABC Clinic" OR "XYZ Hospital")
       Special: If staff has "All", it matches any Office/Doctor Name value
-    - System: OR logic (staff "System1, System2" matches allocation "System1" OR "System2")
-    - Reference: OR logic (staff "MCD+Commercial" matches allocation "MCD" OR "Commercial")
+    - System (allocation column "Software" or "System"): OR logic vs staff "System" comma list
+    - Reference vs staff "Reference" (+ = OR on staff):
+      Prefer allocation "Department": values starting with "Medicaid …" → token "mcd";
+      values starting with "Commercial …" → token "commercial". Otherwise legacy allocation "Reference" cell.
     - Source: OR logic (staff "Evening+Morning" matches allocation "Evening" OR "Morning")
     """
+
+    def _ev_department_to_staff_reference_token(raw):
+        """Map allocation Department text to a token compared against staff Reference (+-split) parts."""
+        s = str(raw).strip().lower() if pd.notna(raw) else ""
+        if not s or s == "nan":
+            return ""
+        if s.startswith("medicaid"):
+            return "mcd"
+        if s.startswith("commercial"):
+            return "commercial"
+        return s
 
     # Find column names (case-insensitive)
     def find_column(df, possible_names):
@@ -20557,11 +20570,14 @@ def match_ev_allocation_row(allocation_row, allocation_df, staff_df):
     office_col = find_column(
         allocation_df, ["Office/Doctor Name", "Office", "Doctor Name"]
     )
-    system_col = find_column(allocation_df, ["System"])
+    system_col = find_column(allocation_df, ["Software", "System"])
+    department_col = find_column(allocation_df, ["Department"])
     reference_col = find_column(allocation_df, ["Reference"])
     source_col = find_column(allocation_df, ["Source"])
 
-    if not all([office_col, system_col, reference_col, source_col]):
+    if not all([office_col, system_col, source_col]):
+        return None
+    if not department_col and not reference_col:
         return None
 
     # Get values from allocation row
@@ -20575,11 +20591,16 @@ def match_ev_allocation_row(allocation_row, allocation_df, staff_df):
         if pd.notna(allocation_row[system_col])
         else ""
     )
-    allocation_reference = (
-        str(allocation_row[reference_col]).strip().lower()
-        if pd.notna(allocation_row[reference_col])
-        else ""
-    )
+    if department_col:
+        allocation_reference = _ev_department_to_staff_reference_token(
+            allocation_row[department_col]
+        )
+    else:
+        allocation_reference = (
+            str(allocation_row[reference_col]).strip().lower()
+            if pd.notna(allocation_row[reference_col])
+            else ""
+        )
     allocation_source = (
         str(allocation_row[source_col]).strip().lower()
         if pd.notna(allocation_row[source_col])
@@ -33127,29 +33148,25 @@ def upload_nh():
 EV_REQUIRED_COLUMNS = [
     "software",
     "office/doctor name",
-    "practiceid",
+    "practice id",
     "location/entitycode",
     "department",
     "source",
     "received date",
     "appointment",
-    "appttype",
-    "reference",
     "patients name",
     "dob",
     "patient id/chart#",
-    "group/employer",
     "insurance",
     "policy id",
     "carrier phone",
     "status",
     "comments",
-    "pre auth status",
     "subscriber name",
     "subscriber dob",
-    "zip code",
     "rep",
-    "agent",
+    "agent 1",
+    "agent name",
     "remark",
     "work date",
     "qc agent",

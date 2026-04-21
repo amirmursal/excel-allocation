@@ -33165,13 +33165,43 @@ EV_REQUIRED_COLUMNS = [
     "subscriber name",
     "subscriber dob",
     "rep",
-    "agent 1",
-    "agent name",
     "remark",
     "work date",
     "qc agent",
     "qc comments",
     "qc date work",
+    "agent 1",
+    "agent name",
+]
+
+# Display headers written to stored/consolidated workbooks (upload validation still uses lowercase keys above).
+EV_REQUIRED_COLUMNS_DISPLAY = [
+    "Software",
+    "Office/Doctor Name",
+    "Practice ID",
+    "Location/EntityCode",
+    "Department",
+    "Source",
+    "Received Date",
+    "Appointment",
+    "Patients Name",
+    "DOB",
+    "Patient ID/Chart#",
+    "Insurance",
+    "Policy ID",
+    "Carrier Phone",
+    "Status",
+    "Comments",
+    "Subscriber Name",
+    "Subscriber DOB",
+    "Rep",
+    "Remark",
+    "Work Date",
+    "QC Agent",
+    "QC Comments",
+    "QC Date Work",
+    "Agent 1",
+    "Agent Name",
 ]
 
 EV_REQUIRED_COLUMN_SET = frozenset(EV_REQUIRED_COLUMNS)
@@ -33230,11 +33260,13 @@ def validate_ev_worksheet_columns(sdf):
 
 
 def normalize_ev_worksheet_to_required_columns(sdf):
-    """Return a copy with columns exactly EV_REQUIRED_COLUMNS (order and labels)."""
+    """Return columns in EV_REQUIRED_COLUMNS order with display headers (EV_REQUIRED_COLUMNS_DISPLAY)."""
+    if len(EV_REQUIRED_COLUMNS) != len(EV_REQUIRED_COLUMNS_DISPLAY):
+        raise ValueError("EV_REQUIRED_COLUMNS and EV_REQUIRED_COLUMNS_DISPLAY length mismatch")
     lower_to_orig = {str(c).strip().lower(): c for c in sdf.columns}
     pieces = [sdf[lower_to_orig[req]] for req in EV_REQUIRED_COLUMNS]
     out = pd.concat(pieces, axis=1)
-    out.columns = list(EV_REQUIRED_COLUMNS)
+    out.columns = list(EV_REQUIRED_COLUMNS_DISPLAY)
     return out
 
 

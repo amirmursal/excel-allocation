@@ -5082,7 +5082,7 @@ HTML_TEMPLATE = """
                                         <i class="fas fa-file-excel"></i> Upload QC allocation file:
                                     </label>
                                     <input type="file" id="imagen_qc_tracker_file" name="file" accept=".xlsx,.xls" required style="width: 100%; padding: 12px; border: 2px solid #ddd; border-radius: 8px; font-size: 16px;">
-                                </div>
+            </div>
                                 <button type="submit" id="imagen-qc-tracker-upload-btn" class="process-btn" style="width: 100%;">
                                     <i class="fas fa-upload"></i> Upload allocation &amp; prepare trackers
                                 </button>
@@ -5848,15 +5848,18 @@ HTML_TEMPLATE = """
                     headerHtml += '</tr>';
                     modalTableHead.innerHTML = headerHtml;
                     
-                    // Build table body (priority rows highlighted in red)
+                    // Build table body (First Priority rows: red text)
                     let bodyHtml = '';
                     data.rows.forEach((row, idx) => {
-                        const isPriority = row._priority === true;
-                        const trStyle = isPriority ? 'border-bottom: 1px solid #e9ecef; color: #dc3545; font-weight: 500;' : 'border-bottom: 1px solid #e9ecef;';
+                        const isFirstPriority = row._priority === true;
+                        const trStyle = isFirstPriority ? 'border-bottom: 1px solid #e9ecef; color: #dc3545; font-weight: 600;' : 'border-bottom: 1px solid #e9ecef;';
                         bodyHtml += '<tr style="' + trStyle + '">';
                         data.columns.forEach(col => {
                             const value = row[col] !== null && row[col] !== undefined ? String(row[col]) : '';
-                            bodyHtml += `<td style="padding: 12px 15px;">${value}</td>`;
+                            const tdStyle = isFirstPriority
+                                ? 'padding: 12px 15px; color: #dc3545; font-weight: 600;'
+                                : 'padding: 12px 15px;';
+                            bodyHtml += `<td style="${tdStyle}">${value}</td>`;
                         });
                         bodyHtml += '</tr>';
                     });
@@ -18468,7 +18471,7 @@ def _get_imagen_qc_auditors():
         if not name or name.lower() == "nan":
             continue
         if status_col and staff_status_is_no_allocation(row[status_col]):
-            continue
+                continue
         auditors.append(name)
     return auditors
 
@@ -18501,7 +18504,7 @@ def _get_imagen_qc_auditor_agents():
         if not name or name.lower() == "nan":
             continue
         if status_col and staff_status_is_no_allocation(row[status_col]):
-            continue
+                continue
         agents = []
         for pcol in [pref1_col, pref2_col]:
             if pcol:
@@ -19206,10 +19209,46 @@ def apply_nh_style_priority_row_red_highlights_openpyxl(wb, sheet_name):
         print(f"Error applying NH-style priority row highlights: {str(e)}", flush=True)
 
 
+def apply_first_priority_full_row_red_openpyxl(wb, sheet_name):
+    """
+    Set font color to red (FF0000) for every cell in a row when Priority Status is "First Priority"
+    (case-insensitive). Used for Email Allocation attachments and related downloads.
+    Mutates wb in place; caller saves.
+    """
+    try:
+        from openpyxl.styles import Font
+
+        if sheet_name not in wb.sheetnames:
+            return
+        ws = wb[sheet_name]
+        priority_status_col_idx = None
+        for col_idx in range(1, ws.max_column + 1):
+            val = ws.cell(row=1, column=col_idx).value
+            if val is None:
+                continue
+            v = str(val).strip().lower()
+            if "priority" in v and "status" in v:
+                priority_status_col_idx = col_idx
+                break
+        if priority_status_col_idx is None:
+            return
+        red_font = Font(color="FF0000")
+        for row_idx in range(2, ws.max_row + 1):
+            ps = ws.cell(row=row_idx, column=priority_status_col_idx).value
+            if ps is None:
+                continue
+            if str(ps).strip().upper() != "FIRST PRIORITY":
+                continue
+            for col_idx in range(1, ws.max_column + 1):
+                ws.cell(row=row_idx, column=col_idx).font = red_font
+    except Exception as e:
+        print(f"Error applying First Priority row red font: {str(e)}", flush=True)
+
+
 def format_excel_with_priority_status(excel_path, sheet_name):
     """
-    Format Excel file to color the "Priority Status" column cell red where value is "First Priority".
-    Only the "Priority Status" cell text will be colored red (#e74c3c), not the entire row.
+    Format Excel file: rows with Priority Status \"First Priority\" get red font (FF0000)
+    on all cells in that row (Imagen / QC allocation exports and auditor email attachments).
 
     Args:
         excel_path: Path to the Excel file
@@ -19217,64 +19256,12 @@ def format_excel_with_priority_status(excel_path, sheet_name):
     """
     try:
         from openpyxl import load_workbook
-        from openpyxl.styles import Font
 
-        # Load the workbook
         wb = load_workbook(excel_path)
-
         if sheet_name not in wb.sheetnames:
-            return  # Sheet doesn't exist, skip formatting
-
-        ws = wb[sheet_name]
-
-        # Find the "Priority Status" column
-        priority_status_col = None
-        header_row = 1
-
-        # Check header row to find Priority Status column
-        # Iterate through all cells in the header row
-        for cell in ws[header_row]:
-            if cell.value:
-                cell_value_str = str(cell.value).strip().lower()
-                if "priority" in cell_value_str and "status" in cell_value_str:
-                    priority_status_col = cell.column
-                    break
-
-        if priority_status_col is None:
-            return  # Priority Status column not found, skip formatting
-
-        # Define formatting - only change text color to red, no background fill
-        red_font = Font(color="E74C3C")
-
-        # Format only the "Priority Status" column cell where value is "First Priority" (case-insensitive)
-        # Start from row 2 (skip header row)
-        for row_idx in range(2, ws.max_row + 1):
-            priority_cell = ws.cell(row=row_idx, column=priority_status_col)
-
-            if priority_cell.value:
-                priority_value = str(priority_cell.value).strip().upper()
-
-                # Check if it's "First Priority" (case-insensitive)
-                if priority_value == "FIRST PRIORITY":
-                    # Format only the Priority Status cell - change text color to red
-                    if priority_cell.font:
-                        # Preserve existing font properties, only change color
-                        priority_cell.font = Font(
-                            name=priority_cell.font.name,
-                            size=priority_cell.font.size,
-                            bold=priority_cell.font.bold,
-                            italic=priority_cell.font.italic,
-                            underline=priority_cell.font.underline,
-                            strike=priority_cell.font.strike,
-                            color="E74C3C",
-                        )
-                    else:
-                        # No existing font, just set color
-                        priority_cell.font = red_font
-
-        # Save the workbook
+            return
+        apply_first_priority_full_row_red_openpyxl(wb, sheet_name)
         wb.save(excel_path)
-
     except Exception as e:
         print(f"Error formatting Excel file: {str(e)}")
         # Continue even if formatting fails
@@ -19343,12 +19330,9 @@ def send_email_to_agent():
             from openpyxl import load_workbook
 
             wb = load_workbook(temp_path)
-            apply_nh_style_priority_row_red_highlights_openpyxl(wb, sheet_name)
+            apply_first_priority_full_row_red_openpyxl(wb, sheet_name)
             wb.save(temp_path)
             wb.close()
-
-            # Imagen: Priority Status "First Priority" cell color (NH rows already full-row red above)
-            format_excel_with_priority_status(temp_path, sheet_name)
 
             # Read the Excel file as bytes
             with open(temp_path, "rb") as f:
@@ -19483,11 +19467,9 @@ def send_email_to_all_agents():
                     from openpyxl import load_workbook
 
                     wb = load_workbook(temp_path)
-                    apply_nh_style_priority_row_red_highlights_openpyxl(wb, sheet_name)
+                    apply_first_priority_full_row_red_openpyxl(wb, sheet_name)
                     wb.save(temp_path)
                     wb.close()
-
-                    format_excel_with_priority_status(temp_path, sheet_name)
 
                     # Read the Excel file as bytes
                     with open(temp_path, "rb") as f:
@@ -20071,21 +20053,14 @@ def get_agent_allocation_data():
                 priority_status_col = col
                 break
 
-        def is_priority_row_email(row):
-            """Same rules as NH email attachment / download: Priority Status First/Second, or modal rule (Appointment window / Source)."""
-            if priority_status_col is not None:
-                pv = row.get(priority_status_col)
-                if pd.notna(pv):
-                    psu = str(pv).strip().upper()
-                    if psu in ("FIRST PRIORITY", "SECOND PRIORITY"):
-                        return True
-            try:
-                idx = row.name
-                if idx is not None:
-                    return is_priority_row_modal_style(agent_rows, idx)
-            except (KeyError, TypeError, AttributeError):
-                pass
-            return False
+        def is_first_priority_row(row):
+            """Email Allocation modal: highlight rows where Priority Status is First Priority only."""
+            if priority_status_col is None:
+                return False
+            pv = row.get(priority_status_col)
+            if pd.isna(pv):
+                return False
+            return str(pv).strip().upper() == "FIRST PRIORITY"
 
         # Convert to dictionary format for JSON response (include _priority for red highlighting in UI)
         columns = list(agent_rows.columns)
@@ -20098,7 +20073,7 @@ def get_agent_allocation_data():
                     row_dict[col] = ""
                 else:
                     row_dict[col] = str(value)
-            row_dict["_priority"] = is_priority_row_email(row)
+            row_dict["_priority"] = is_first_priority_row(row)
             rows.append(row_dict)
 
         return jsonify(
@@ -20184,7 +20159,7 @@ def download_agent_allocation_excel():
 
         wb = load_workbook(excel_buffer)
         sheet_name = f"{agent_name}_Allocation"
-        apply_nh_style_priority_row_red_highlights_openpyxl(wb, sheet_name)
+        apply_first_priority_full_row_red_openpyxl(wb, sheet_name)
         out_buffer = io.BytesIO()
         wb.save(out_buffer)
         wb.close()
@@ -22312,6 +22287,117 @@ def download_result():
                         # Store in a way that's accessible during formatting
                         agent_insurance_agent_names = sorted_agent_names.copy()
 
+                # Create Agent Priority by Date sheet (per agent: priority level × appointment date × row count)
+                if processed_df is not None:
+                    ap_agent_col = None
+                    ap_appt_col = None
+                    ap_ps_col = None
+                    for col in processed_df.columns:
+                        cl = str(col).lower()
+                        if "agent" in cl and "name" in cl:
+                            ap_agent_col = col
+                        if "appointment" in cl and "date" in cl:
+                            ap_appt_col = col
+                        if "priority" in cl and "status" in cl:
+                            ap_ps_col = col
+                    if ap_agent_col and ap_appt_col and ap_ps_col:
+                        allowed_ps = {
+                            "FIRST PRIORITY",
+                            "SECOND PRIORITY",
+                            "THIRD PRIORITY",
+                        }
+                        priority_rank = {
+                            "FIRST PRIORITY": 0,
+                            "SECOND PRIORITY": 1,
+                            "THIRD PRIORITY": 2,
+                        }
+                        ps_canonical = {
+                            "FIRST PRIORITY": "First Priority",
+                            "SECOND PRIORITY": "Second Priority",
+                            "THIRD PRIORITY": "Third Priority",
+                        }
+                        # key: (agent_name, priority_display, date_iso) -> count
+                        apbd_counts = {}
+                        for _idx, row in processed_df.iterrows():
+                            agent_val = row.get(ap_agent_col)
+                            if pd.isna(agent_val) or not str(agent_val).strip():
+                                continue
+                            agent_str = str(agent_val).strip()
+                            au = agent_str.upper()
+                            if au == "NEED TO ALLOCATE":
+                                continue
+                            if au == "NTC" or "NOT TO WORK" in au.replace(
+                                "-", " "
+                            ).replace("_", " "):
+                                continue
+                            ps_val = row.get(ap_ps_col)
+                            if pd.isna(ps_val) or not str(ps_val).strip():
+                                continue
+                            psu = str(ps_val).strip().upper()
+                            if psu not in allowed_ps:
+                                continue
+                            ps_display = ps_canonical.get(psu, str(ps_val).strip())
+                            appt_val = row.get(ap_appt_col)
+                            if pd.isna(appt_val):
+                                continue
+                            date_obj = None
+                            if hasattr(appt_val, "date") and callable(
+                                getattr(appt_val, "date", None)
+                            ):
+                                try:
+                                    date_obj = appt_val.date()
+                                except (TypeError, ValueError, AttributeError):
+                                    date_obj = None
+                            if date_obj is None:
+                                try:
+                                    date_obj = pd.to_datetime(appt_val).date()
+                                except (TypeError, ValueError, AttributeError):
+                                    continue
+                            date_iso = date_obj.strftime("%Y-%m-%d")
+                            k = (agent_str, ps_display, date_iso)
+                            apbd_counts[k] = apbd_counts.get(k, 0) + 1
+
+                        def _apbd_sort_key(item):
+                            (an, ps_disp, date_iso), _cnt = item
+                            pu = ps_disp.strip().upper()
+                            return (
+                                an.lower(),
+                                priority_rank.get(pu, 9),
+                                date_iso,
+                            )
+
+                        rows_apbd = []
+                        for (an, ps_disp, date_iso), cnt in sorted(
+                            apbd_counts.items(), key=_apbd_sort_key
+                        ):
+                            date_disp = datetime.strptime(
+                                date_iso, "%Y-%m-%d"
+                            ).strftime("%m/%d/%Y")
+                            rows_apbd.append(
+                                {
+                                    "Agent Name": an,
+                                    "Priority Status": ps_disp,
+                                    "Appointment Date": date_disp,
+                                    "Assigned Count": cnt,
+                                }
+                            )
+                        if not rows_apbd:
+                            agent_priority_by_date_df = pd.DataFrame(
+                                columns=[
+                                    "Agent Name",
+                                    "Priority Status",
+                                    "Appointment Date",
+                                    "Assigned Count",
+                                ]
+                            )
+                        else:
+                            agent_priority_by_date_df = pd.DataFrame(rows_apbd)
+                        agent_priority_by_date_df.to_excel(
+                            writer,
+                            sheet_name="Agent Priority by Date",
+                            index=False,
+                        )
+
                 # Create Priority Appointment Pending sheet
                 if processed_df is not None:
                     # Find Office Name and Appointment Date columns
@@ -22733,6 +22819,10 @@ def download_result():
                                 ws.cell(row=row_idx, column=col_idx).font = Font(
                                     bold=True
                                 )
+
+            # Imagen Allocation download: red font on every cell in rows where Priority Status is First Priority
+            for sn in wb.sheetnames:
+                apply_first_priority_full_row_red_openpyxl(wb, sn)
 
             wb.save(temp_path)
             wb.close()
@@ -23804,13 +23894,17 @@ def load_imagen_qc_allocation_from_excel_path(filepath):
         matches = sum(1 for ec in expected_cols if any(ec in cl for cl in cols_lower))
         return matches >= 3
 
-    def try_find_header_in_sheet(df, sheet_name_to_read):
+    def try_find_header_in_sheet(sheet_df, sheet_name_to_read):
         """Scan first 20 rows for the real header row containing expected column names."""
-        for i in range(min(20, len(df))):
+        for i in range(min(20, len(sheet_df))):
             row_vals = [
-                str(v).strip().lower() for v in df.iloc[i].values if pd.notna(v)
+                str(v).strip().lower()
+                for v in sheet_df.iloc[i].values
+                if pd.notna(v)
             ]
-            matches = sum(1 for ec in expected_cols if any(ec in rv for rv in row_vals))
+            matches = sum(
+                1 for ec in expected_cols if any(ec in rv for rv in row_vals)
+            )
             if matches >= 3:
                 reread_df = pd.read_excel(
                     filepath,
@@ -24058,8 +24152,8 @@ def match_imagen_qc_allocation(
 
         # Skip auditors with "No allocation" status
         if staff_status_col and staff_status_is_no_allocation(row[staff_status_col]):
-            skipped_auditors.append(auditor_name)
-            continue
+                skipped_auditors.append(auditor_name)
+                continue
 
         cc_limit = row[staff_cc_col]
         try:
@@ -28232,7 +28326,7 @@ def get_agents_by_shift():
 
             # Check Status column - exclude if "No Allocation"
             if status_col and staff_status_is_no_allocation(row[status_col]):
-                continue
+                    continue
 
             # Check Category column - exclude if "Caller" or "Auditor"
             if category_col and pd.notna(row[category_col]):
@@ -29713,10 +29807,10 @@ def daily_consolidate_all_subtabs_and_email():
                     if nh_attachment:
                         main_total -= nh_files_consolidated
                     subtabs_list_main = (
-                        "<ul>"
+                    "<ul>"
                         + "".join([f"<li>{st}</li>" for st in subtabs_main])
-                        + "</ul>"
-                    )
+                    + "</ul>"
+                )
                     subject_main = f"Daily Consolidated Files - All Sub-tabs - {date_str}"
                     html_main = f"""
                 <p>Please find attached consolidated files (excluding <strong>NH</strong>, <strong>EV</strong>, and <strong>Dental BV</strong>; those are sent in separate emails) generated at {date_str} {time_str}.</p>
@@ -30512,7 +30606,7 @@ def process_nh_allocation():
                 if token in rl or token in fl:
                     return True
             if re.search(r"\buhc\b", rl) or fl == "uhc" or (fl and fl.startswith("uhc ")):
-                return True
+                    return True
             return False
 
         def _nh_rule1_remark_matches(raw):
@@ -30525,7 +30619,7 @@ def process_nh_allocation():
             if re.search(r"(?<![a-z0-9])ntc(?![a-z0-9])", val):
                 return True
             if re.search(r"(?<![a-z0-9])allocate\s+to\b", val):
-                return True
+                        return True
             return False
 
         def is_nh_rule1_remark_row(idx):

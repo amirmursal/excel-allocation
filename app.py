@@ -9941,6 +9941,44 @@ def is_nh_dd_related_insurance(insurance_text):
     return False
 
 
+def nh_insurance_excluded_for_aarti_sharma(insurance_text):
+    """
+    NH: primary carriers that must never be allocated to Aarti Sharma
+    (even when they would otherwise match DD-related / web / allowlist rules).
+    """
+    if insurance_text is None:
+        return False
+    try:
+        if pd.isna(insurance_text):
+            return False
+    except (TypeError, ValueError):
+        pass
+    raw = str(insurance_text).strip()
+    if not raw or raw.lower() == "nan":
+        return False
+
+    formatted = format_insurance_company_name(insurance_text)
+    if formatted is not None and not (
+        isinstance(formatted, float) and pd.isna(formatted)
+    ):
+        s = str(formatted).strip().lower()
+    else:
+        s = raw.lower()
+    s = re.sub(r"\s+", " ", s).strip()
+    sc = re.sub(r"[^a-z0-9]", "", s)
+
+    if s in ("delta dental ma", "delta dental nj"):
+        return True
+    if sc in ("deltadentalma", "deltadentalnj"):
+        return True
+    if "delta dental" in s:
+        if re.search(r"\bmassachusetts\b|\bma\b", s):
+            return True
+        if re.search(r"\bnew jersey\b|\bnj\b", s):
+            return True
+    return False
+
+
 def expand_insurance_groups(insurance_list_str):
     """
     Expand insurance group names to include all companies in those groups.
@@ -32469,8 +32507,14 @@ def process_nh_allocation():
                     return True
             return False
 
-        def matches_insurance(agent, row_ins_val):
-            """Imagen-style formatted row value; Alisha / Aliya / Khalil / Aarti allowlists; Vinayak / … / Faisal / Affan / Sana any carrier."""
+        def matches_insurance(agent, row_ins_val, row_office_val=None):
+            """Imagen-style formatted row value; Alisha / Aliya / Khalil / Aarti allowlists; Vinayak / … / Faisal / Affan / Sana any carrier.
+            row_office_val: when set, Siddhantraj Rokade must not take NADG-Cloud9 rows with Delta Dental / DD-family primary insurance."""
+            if _nh_siddhantraj_rokade(agent) and row_office_val is not None:
+                _oc_s = re.sub(r"[^a-z0-9]", "", nh_office_key(row_office_val))
+                if _oc_s == _NH_SIDDH_ROKADE_NADG_CLOUD9_COLLAPSED:
+                    if is_nh_dd_related_insurance(row_ins_val):
+                        return False
             _nh_allow = (
                 agent.get("nh_alisha_insurance_allowlist")
                 or agent.get("nh_aliya_insurance_allowlist")
@@ -32684,7 +32728,9 @@ def process_nh_allocation():
                     continue
                 if not matches_office(agent, row[a_office]):
                     continue
-                if not matches_insurance(agent, nh_alloc_insurance_for_match(idx)):
+                if not matches_insurance(
+                    agent, nh_alloc_insurance_for_match(idx), row[a_office]
+                ):
                     continue
                 if not nh_alisha_triple_may_take_row(idx, agent):
                     continue
@@ -32703,6 +32749,10 @@ def process_nh_allocation():
                 if is_nh_caller_only_row(row):
                     continue
                 if not is_nh_dd_related_insurance(nh_alloc_insurance_for_match(idx)):
+                    continue
+                if nh_insurance_excluded_for_aarti_sharma(
+                    nh_alloc_insurance_for_match(idx)
+                ):
                     continue
                 if aarti_agent["tfd"] > 0 and aarti_agent["assigned"] >= aarti_agent["tfd"]:
                     continue
@@ -32725,11 +32775,17 @@ def process_nh_allocation():
                     continue
                 if not is_nh_web_insurance_carrier(nh_alloc_insurance_for_match(idx)):
                     continue
+                if nh_insurance_excluded_for_aarti_sharma(
+                    nh_alloc_insurance_for_match(idx)
+                ):
+                    continue
                 if aarti_agent["tfd"] > 0 and aarti_agent["assigned"] >= aarti_agent["tfd"]:
                     continue
                 if not matches_office(aarti_agent, row[a_office]):
                     continue
-                if not matches_insurance(aarti_agent, nh_alloc_insurance_for_match(idx)):
+                if not matches_insurance(
+                    aarti_agent, nh_alloc_insurance_for_match(idx), row[a_office]
+                ):
                     continue
                 if not nh_alisha_triple_may_take_row(idx, aarti_agent):
                     continue
@@ -32760,7 +32816,9 @@ def process_nh_allocation():
                     continue
                 if not matches_office(ag, row[a_office]):
                     continue
-                if not matches_insurance(ag, nh_alloc_insurance_for_match(idx)):
+                if not matches_insurance(
+                    ag, nh_alloc_insurance_for_match(idx), row[a_office]
+                ):
                     continue
                 if not nh_alisha_triple_may_take_row(idx, ag):
                     continue
@@ -32781,11 +32839,17 @@ def process_nh_allocation():
                     continue
                 if is_nh_web_insurance_carrier(nh_alloc_insurance_for_match(idx)):
                     continue
+                if nh_insurance_excluded_for_aarti_sharma(
+                    nh_alloc_insurance_for_match(idx)
+                ):
+                    continue
                 if aarti_agent["tfd"] > 0 and aarti_agent["assigned"] >= aarti_agent["tfd"]:
                     continue
                 if not matches_office(aarti_agent, row[a_office]):
                     continue
-                if not matches_insurance(aarti_agent, nh_alloc_insurance_for_match(idx)):
+                if not matches_insurance(
+                    aarti_agent, nh_alloc_insurance_for_match(idx), row[a_office]
+                ):
                     continue
                 if not nh_alisha_triple_may_take_row(idx, aarti_agent):
                     continue
@@ -32818,7 +32882,9 @@ def process_nh_allocation():
                 continue
             if not matches_office(target, row[a_office]):
                 continue
-            if not matches_insurance(target, nh_alloc_insurance_for_match(idx)):
+            if not matches_insurance(
+                target, nh_alloc_insurance_for_match(idx), row[a_office]
+            ):
                 continue
             if not nh_alisha_triple_may_take_row(idx, target):
                 continue
@@ -32861,7 +32927,9 @@ def process_nh_allocation():
                     continue
                 if not matches_office(ag, row[a_office]):
                     continue
-                if not matches_insurance(ag, nh_alloc_insurance_for_match(idx)):
+                if not matches_insurance(
+                    ag, nh_alloc_insurance_for_match(idx), row[a_office]
+                ):
                     continue
                 alloc_df.at[idx, a_agent_name] = ag["name"]
                 ag["assigned"] += 1
@@ -32891,7 +32959,11 @@ def process_nh_allocation():
                     continue
                 if agent["tfd"] > 0 and agent["assigned"] >= agent["tfd"]:
                     continue
-                if not matches_insurance(agent, nh_alloc_insurance_for_match(idx)):
+                if not matches_insurance(
+                    agent,
+                    nh_alloc_insurance_for_match(idx),
+                    alloc_df.at[idx, a_office],
+                ):
                     continue
                 if not nh_alisha_triple_may_take_row(idx, agent):
                     continue
@@ -32936,7 +33008,11 @@ def process_nh_allocation():
                     and _nh_sana_priority_reserved()
                 ):
                     continue
-                if not matches_insurance(richa_agent, nh_alloc_insurance_for_match(idx)):
+                if not matches_insurance(
+                    richa_agent,
+                    nh_alloc_insurance_for_match(idx),
+                    alloc_df.at[idx, a_office],
+                ):
                     continue
                 if not nh_alisha_triple_may_take_row(idx, richa_agent):
                     continue
@@ -32964,7 +33040,11 @@ def process_nh_allocation():
                     and _nh_sana_priority_reserved()
                 ):
                     continue
-                if not matches_insurance(richa_agent, nh_alloc_insurance_for_match(idx)):
+                if not matches_insurance(
+                    richa_agent,
+                    nh_alloc_insurance_for_match(idx),
+                    alloc_df.at[idx, a_office],
+                ):
                     continue
                 if not nh_alisha_triple_may_take_row(idx, richa_agent):
                     continue
@@ -32998,7 +33078,9 @@ def process_nh_allocation():
                     continue
                 if not matches_office(agent, row[a_office]):
                     continue
-                if not matches_insurance(agent, nh_alloc_insurance_for_match(i)):
+                if not matches_insurance(
+                    agent, nh_alloc_insurance_for_match(i), row[a_office]
+                ):
                     continue
                 if not nh_alisha_triple_may_take_row(i, agent):
                     continue
@@ -33130,7 +33212,9 @@ def process_nh_allocation():
                     continue
                 if not matches_office(agent, row[a_office]):
                     continue
-                if not matches_insurance(agent, nh_alloc_insurance_for_match(idx)):
+                if not matches_insurance(
+                    agent, nh_alloc_insurance_for_match(idx), row[a_office]
+                ):
                     continue
                 if not nh_alisha_triple_may_take_row(idx, agent):
                     continue
@@ -33166,7 +33250,9 @@ def process_nh_allocation():
                     break
                 if not matches_office(agent, row[a_office]):
                     continue
-                if not matches_insurance(agent, nh_alloc_insurance_for_match(idx)):
+                if not matches_insurance(
+                    agent, nh_alloc_insurance_for_match(idx), row[a_office]
+                ):
                     continue
                 if not nh_alisha_triple_may_take_row(idx, agent):
                     continue
@@ -33202,7 +33288,9 @@ def process_nh_allocation():
                 return True
             if not matches_office(agent, row[a_office]):
                 return False
-            if not matches_insurance(agent, nh_alloc_insurance_for_match(idx)):
+            if not matches_insurance(
+                agent, nh_alloc_insurance_for_match(idx), row[a_office]
+            ):
                 return False
             if not nh_alisha_triple_may_take_row(idx, agent):
                 return False

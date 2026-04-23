@@ -1672,6 +1672,7 @@ def consolidate_mis_checklist_files_to_buffer(mark_consolidated=False):
             combined_df.to_excel(writer, sheet_name="All Agent Data", index=False)
 
     excel_buffer.seek(0)
+    excel_buffer = apply_comparison_styling_to_excel_buffer(excel_buffer)
 
     if mark_consolidated:
         for work_file in work_files:
@@ -3399,6 +3400,17 @@ HTML_TEMPLATE = """
         <div class="admin-content-area">
             <!-- Admin Panel Content -->
             <div id="admin-panel" class="panel active">
+                <!-- Agent Consolidation: overlay for single-file GET downloads + consolidate POST downloads -->
+                <div class="processing-status" id="agent-consolidation-processing-modal" style="display: none;">
+                    <div class="processing-content">
+                        <div class="spinner"></div>
+                        <h3 id="agent-consolidation-processing-title">Preparing file</h3>
+                        <div class="progress-container">
+                            <div class="progress-bar" style="width: 100%;">Please wait…</div>
+                        </div>
+                        <div class="progress-text" id="agent-consolidation-processing-text">Building your Excel file…</div>
+                    </div>
+                </div>
                 
                 <!-- Imagen Allocation Content (under Allocations menu) -->
                 <div id="image-allocation-content" class="admin-menu-content" style="display: {% if current_menu == 'allocations' and current_submenu == 'image-allocation' %}block{% else %}none{% endif %};">
@@ -3586,11 +3598,23 @@ HTML_TEMPLATE = """
                 {% if processing_result and ('Priority processing completed successfully' in processing_result or 'Imagen Allocation Complete' in processing_result) %}
                 <div class="section">
                     <h3>💾 Download your Excel file with updated Priority Status assignments.</h3>
-                    <form action="/download_result" method="post">
-                        <button type="submit" class="process-btn" style="background: linear-gradient(135deg, #3498db, #2980b9);">
+                    <form action="/download_result" method="post" id="imagen-download-form">
+                        <input type="hidden" name="current_menu" value="allocations">
+                        <input type="hidden" name="current_submenu" value="image-allocation">
+                        <button type="submit" class="process-btn" id="imagen-download-btn" style="background: linear-gradient(135deg, #3498db, #2980b9);">
                             <i class="fas fa-download"></i> Download Processed File
                         </button>
                     </form>
+                </div>
+                <div class="processing-status" id="imagen-download-processing-status" style="display: none;">
+                    <div class="processing-content">
+                        <div class="spinner"></div>
+                        <h3 id="imagen-download-processing-title">Preparing download</h3>
+                        <div class="progress-container">
+                            <div class="progress-bar" style="width: 100%;">Please wait</div>
+                        </div>
+                        <div class="progress-text" id="imagen-download-processing-text">Building your processed Excel file…</div>
+                    </div>
                 </div>
                 {% endif %}
 
@@ -4054,13 +4078,23 @@ HTML_TEMPLATE = """
                         </div>
                     </div>
                     <div class="section" style="text-align: left;">
-                        <form action="/download_nh_allocation" method="post">
+                        <form action="/download_nh_allocation" method="post" id="nh-download-allocation-form">
                             <input type="hidden" name="current_menu" value="allocations">
                             <input type="hidden" name="current_submenu" value="nh-allocation">
-                            <button type="submit" class="process-btn" style="background: linear-gradient(135deg, #27ae60, #2ecc71);">
+                            <button type="submit" class="process-btn" id="nh-download-allocation-btn" style="background: linear-gradient(135deg, #27ae60, #2ecc71);">
                                 <i class="fas fa-download"></i> Download Allocated File
                             </button>
                         </form>
+                    </div>
+                    <div class="processing-status" id="nh-download-processing-status" style="display: none;">
+                        <div class="processing-content">
+                            <div class="spinner"></div>
+                            <h3 id="nh-download-processing-title">Preparing download</h3>
+                            <div class="progress-container">
+                                <div class="progress-bar" style="width: 100%;">Please wait</div>
+                            </div>
+                            <div class="progress-text" id="nh-download-processing-text">Building NH allocation export…</div>
+                        </div>
                     </div>
                     {% endif %}
 
@@ -4499,7 +4533,7 @@ HTML_TEMPLATE = """
                                     {% endif %}
                                 </div>
                                 <div style="margin-left: 15px; display: flex; gap: 8px;">
-                                        <a href="/download_day_shift_file/{{ file.id }}" class="process-btn" style="padding: 8px 16px; text-decoration: none; display: inline-block; background: linear-gradient(135deg, #007bff, #0056b3); color: white; border-radius: 5px; font-size: 14px;">
+                                        <a href="/download_day_shift_file/{{ file.id }}" class="process-btn js-ac-consolidation-xlsx-download" style="padding: 8px 16px; text-decoration: none; display: inline-block; background: linear-gradient(135deg, #007bff, #0056b3); color: white; border-radius: 5px; font-size: 14px;">
                                         <i class="fas fa-download"></i> Download
                                     </a>
                                     <form action="/delete_day_shift_file/{{ file.id }}" method="post" style="margin: 0; display: inline-block;" onsubmit="return confirm('Are you sure you want to delete this file? This action cannot be undone.');">
@@ -4515,7 +4549,7 @@ HTML_TEMPLATE = """
                             {% endfor %}
                         </div>
                         <div style="display: flex; gap: 10px; flex-wrap: wrap;">
-                                <form action="/consolidate_day_shift_files" method="post" style="margin: 0;">
+                                <form action="/consolidate_day_shift_files" method="post" class="js-ac-consolidation-xlsx-form" data-ac-fallback-filename="consolidated_day_shift_files.xlsx" style="margin: 0;">
                                 <button type="submit" class="process-btn" style="background: linear-gradient(135deg, #28a745, #20c997);">
                                         <i class="fas fa-compress-arrows-alt"></i> Consolidate All Day Shift Files
                                 </button>
@@ -4558,7 +4592,7 @@ HTML_TEMPLATE = """
                                     {% endif %}
                                 </div>
                                     <div style="margin-left: 15px; display: flex; gap: 8px;">
-                                        <a href="/download_night_shift_file/{{ file.id }}" class="process-btn" style="padding: 8px 16px; text-decoration: none; display: inline-block; background: linear-gradient(135deg, #007bff, #0056b3); color: white; border-radius: 5px; font-size: 14px;">
+                                        <a href="/download_night_shift_file/{{ file.id }}" class="process-btn js-ac-consolidation-xlsx-download" style="padding: 8px 16px; text-decoration: none; display: inline-block; background: linear-gradient(135deg, #007bff, #0056b3); color: white; border-radius: 5px; font-size: 14px;">
                                             <i class="fas fa-download"></i> Download
                                         </a>
                                         <form action="/delete_night_shift_file/{{ file.id }}" method="post" style="margin: 0; display: inline-block;" onsubmit="return confirm('Are you sure you want to delete this file? This action cannot be undone.');">
@@ -4574,7 +4608,7 @@ HTML_TEMPLATE = """
                             {% endfor %}
                         </div>
                         <div style="display: flex; gap: 10px; flex-wrap: wrap;">
-                                <form action="/consolidate_night_shift_files" method="post" style="margin: 0;">
+                                <form action="/consolidate_night_shift_files" method="post" class="js-ac-consolidation-xlsx-form" data-ac-fallback-filename="consolidated_night_shift_files.xlsx" style="margin: 0;">
                                 <button type="submit" class="process-btn" style="background: linear-gradient(135deg, #28a745, #20c997);">
                                         <i class="fas fa-compress-arrows-alt"></i> Consolidate All Night Shift Files
                                 </button>
@@ -4617,7 +4651,7 @@ HTML_TEMPLATE = """
                                         {% endif %}
                                     </div>
                                     <div style="margin-left: 15px; display: flex; gap: 8px;">
-                                        <a href="/download_ntbp_file/{{ file.id }}" class="process-btn" style="padding: 8px 16px; text-decoration: none; display: inline-block; background: linear-gradient(135deg, #007bff, #0056b3); color: white; border-radius: 5px; font-size: 14px;">
+                                        <a href="/download_ntbp_file/{{ file.id }}" class="process-btn js-ac-consolidation-xlsx-download" style="padding: 8px 16px; text-decoration: none; display: inline-block; background: linear-gradient(135deg, #007bff, #0056b3); color: white; border-radius: 5px; font-size: 14px;">
                                             <i class="fas fa-download"></i> Download
                                         </a>
                                         <form action="/delete_ntbp_file/{{ file.id }}" method="post" style="margin: 0; display: inline-block;" onsubmit="return confirm('Are you sure you want to delete this file? This action cannot be undone.');">
@@ -4633,7 +4667,7 @@ HTML_TEMPLATE = """
                                 {% endfor %}
                             </div>
                             <div style="display: flex; gap: 10px; flex-wrap: wrap;">
-                                <form action="/consolidate_ntbp_files" method="post" style="margin: 0;">
+                                <form action="/consolidate_ntbp_files" method="post" class="js-ac-consolidation-xlsx-form" data-ac-fallback-filename="consolidated_ntbp_files.xlsx" style="margin: 0;">
                                     <button type="submit" class="process-btn" style="background: linear-gradient(135deg, #28a745, #20c997);">
                                         <i class="fas fa-compress-arrows-alt"></i> Consolidate All NTBP Files
                                     </button>
@@ -4676,7 +4710,7 @@ HTML_TEMPLATE = """
                                         {% endif %}
                                     </div>
                                     <div style="margin-left: 15px; display: flex; gap: 8px;">
-                                        <a href="/download_qcp_file/{{ file.id }}" class="process-btn" style="padding: 8px 16px; text-decoration: none; display: inline-block; background: linear-gradient(135deg, #007bff, #0056b3); color: white; border-radius: 5px; font-size: 14px;">
+                                        <a href="/download_qcp_file/{{ file.id }}" class="process-btn js-ac-consolidation-xlsx-download" style="padding: 8px 16px; text-decoration: none; display: inline-block; background: linear-gradient(135deg, #007bff, #0056b3); color: white; border-radius: 5px; font-size: 14px;">
                                             <i class="fas fa-download"></i> Download
                                         </a>
                                         <form action="/delete_qcp_file/{{ file.id }}" method="post" style="margin: 0; display: inline-block;" onsubmit="return confirm('Are you sure you want to delete this file? This action cannot be undone.');">
@@ -4692,7 +4726,7 @@ HTML_TEMPLATE = """
                                 {% endfor %}
                             </div>
                             <div style="display: flex; gap: 10px; flex-wrap: wrap;">
-                                <form action="/consolidate_qcp_files" method="post" style="margin: 0;">
+                                <form action="/consolidate_qcp_files" method="post" class="js-ac-consolidation-xlsx-form" data-ac-fallback-filename="consolidated_auditor_files.xlsx" style="margin: 0;">
                                     <button type="submit" class="process-btn" style="background: linear-gradient(135deg, #28a745, #20c997);">
                                         <i class="fas fa-compress-arrows-alt"></i> Consolidate All Auditor Files
                                     </button>
@@ -4735,7 +4769,7 @@ HTML_TEMPLATE = """
                                         {% endif %}
                                     </div>
                                     <div style="margin-left: 15px; display: flex; gap: 8px;">
-                                        <a href="/download_daily_consolidate_file/{{ file.id }}" class="process-btn" style="padding: 8px 16px; text-decoration: none; display: inline-block; background: linear-gradient(135deg, #007bff, #0056b3); color: white; border-radius: 5px; font-size: 14px;">
+                                        <a href="/download_daily_consolidate_file/{{ file.id }}" class="process-btn js-ac-consolidation-xlsx-download" style="padding: 8px 16px; text-decoration: none; display: inline-block; background: linear-gradient(135deg, #007bff, #0056b3); color: white; border-radius: 5px; font-size: 14px;">
                                             <i class="fas fa-download"></i> Download
                                         </a>
                                         <form action="/delete_daily_consolidate_file/{{ file.id }}" method="post" style="margin: 0; display: inline-block;" onsubmit="return confirm('Are you sure you want to delete this file? This action cannot be undone.');">
@@ -4751,7 +4785,7 @@ HTML_TEMPLATE = """
                                 {% endfor %}
                             </div>
                             <div style="display: flex; gap: 10px; flex-wrap: wrap;">
-                                <form action="/consolidate_daily_consolidate_files" method="post" style="margin: 0;">
+                                <form action="/consolidate_daily_consolidate_files" method="post" class="js-ac-consolidation-xlsx-form" data-ac-fallback-filename="consolidated_daily_consolidate_files.xlsx" style="margin: 0;">
                                     <button type="submit" class="process-btn" style="background: linear-gradient(135deg, #28a745, #20c997);">
                                         <i class="fas fa-compress-arrows-alt"></i> Consolidate All Daily Consolidate Files
                                     </button>
@@ -4794,7 +4828,7 @@ HTML_TEMPLATE = """
                                         {% endif %}
                                     </div>
                                     <div style="margin-left: 15px; display: flex; gap: 8px;">
-                                        <a href="/download_nh_file/{{ file.id }}" class="process-btn" style="padding: 8px 16px; text-decoration: none; display: inline-block; background: linear-gradient(135deg, #007bff, #0056b3); color: white; border-radius: 5px; font-size: 14px;">
+                                        <a href="/download_nh_file/{{ file.id }}" class="process-btn js-ac-consolidation-xlsx-download" style="padding: 8px 16px; text-decoration: none; display: inline-block; background: linear-gradient(135deg, #007bff, #0056b3); color: white; border-radius: 5px; font-size: 14px;">
                                             <i class="fas fa-download"></i> Download
                                         </a>
                                         <form action="/delete_nh_file/{{ file.id }}" method="post" style="margin: 0; display: inline-block;" onsubmit="return confirm('Are you sure you want to delete this file?');">
@@ -4810,7 +4844,7 @@ HTML_TEMPLATE = """
                                 {% endfor %}
                             </div>
                             <div style="display: flex; gap: 10px; flex-wrap: wrap;">
-                                <form action="/consolidate_nh_files" method="post" style="margin: 0;">
+                                <form action="/consolidate_nh_files" method="post" class="js-ac-consolidation-xlsx-form" data-ac-fallback-filename="consolidated_nh_files.xlsx" style="margin: 0;">
                                     <button type="submit" class="process-btn" style="background: linear-gradient(135deg, #28a745, #20c997);">
                                         <i class="fas fa-compress-arrows-alt"></i> Consolidate All NH Files
                                     </button>
@@ -4853,7 +4887,7 @@ HTML_TEMPLATE = """
                                         {% endif %}
                                     </div>
                                     <div style="margin-left: 15px; display: flex; gap: 8px;">
-                                        <a href="/download_ev_agent_file/{{ file.id }}" class="process-btn" style="padding: 8px 16px; text-decoration: none; display: inline-block; background: linear-gradient(135deg, #007bff, #0056b3); color: white; border-radius: 5px; font-size: 14px;">
+                                        <a href="/download_ev_agent_file/{{ file.id }}" class="process-btn js-ac-consolidation-xlsx-download" style="padding: 8px 16px; text-decoration: none; display: inline-block; background: linear-gradient(135deg, #007bff, #0056b3); color: white; border-radius: 5px; font-size: 14px;">
                                             <i class="fas fa-download"></i> Download
                                         </a>
                                         <form action="/delete_ev_agent_file/{{ file.id }}" method="post" style="margin: 0; display: inline-block;" onsubmit="return confirm('Are you sure you want to delete this file?');">
@@ -4869,7 +4903,7 @@ HTML_TEMPLATE = """
                                 {% endfor %}
                             </div>
                             <div style="display: flex; gap: 10px; flex-wrap: wrap;">
-                                <form action="/consolidate_ev_agent_files" method="post" style="margin: 0;">
+                                <form action="/consolidate_ev_agent_files" method="post" class="js-ac-consolidation-xlsx-form" data-ac-fallback-filename="consolidated_ev_files.xlsx" style="margin: 0;">
                                     <button type="submit" class="process-btn" style="background: linear-gradient(135deg, #28a745, #20c997);">
                                         <i class="fas fa-compress-arrows-alt"></i> Consolidate All EV Files
                                     </button>
@@ -4912,7 +4946,7 @@ HTML_TEMPLATE = """
                                         {% endif %}
                                     </div>
                                     <div style="margin-left: 15px; display: flex; gap: 8px;">
-                                        <a href="/download_dental_bv_agent_file/{{ file.id }}" class="process-btn" style="padding: 8px 16px; text-decoration: none; display: inline-block; background: linear-gradient(135deg, #007bff, #0056b3); color: white; border-radius: 5px; font-size: 14px;">
+                                        <a href="/download_dental_bv_agent_file/{{ file.id }}" class="process-btn js-ac-consolidation-xlsx-download" style="padding: 8px 16px; text-decoration: none; display: inline-block; background: linear-gradient(135deg, #007bff, #0056b3); color: white; border-radius: 5px; font-size: 14px;">
                                             <i class="fas fa-download"></i> Download
                                         </a>
                                         <form action="/delete_dental_bv_agent_file/{{ file.id }}" method="post" style="margin: 0; display: inline-block;" onsubmit="return confirm('Are you sure you want to delete this file?');">
@@ -4928,7 +4962,7 @@ HTML_TEMPLATE = """
                                 {% endfor %}
                             </div>
                             <div style="display: flex; gap: 10px; flex-wrap: wrap;">
-                                <form action="/consolidate_dental_bv_agent_files" method="post" style="margin: 0;">
+                                <form action="/consolidate_dental_bv_agent_files" method="post" class="js-ac-consolidation-xlsx-form" data-ac-fallback-filename="consolidated_dental_bv_files.xlsx" style="margin: 0;">
                                     <button type="submit" class="process-btn" style="background: linear-gradient(135deg, #28a745, #20c997);">
                                         <i class="fas fa-compress-arrows-alt"></i> Consolidate All Dental BV Files
                                     </button>
@@ -4971,7 +5005,7 @@ HTML_TEMPLATE = """
                                         {% endif %}
                                     </div>
                                     <div style="margin-left: 15px; display: flex; gap: 8px;">
-                                        <a href="/download_mis_checklist_file/{{ file.id }}" class="process-btn" style="padding: 8px 16px; text-decoration: none; display: inline-block; background: linear-gradient(135deg, #007bff, #0056b3); color: white; border-radius: 5px; font-size: 14px;">
+                                        <a href="/download_mis_checklist_file/{{ file.id }}" class="process-btn js-ac-consolidation-xlsx-download" style="padding: 8px 16px; text-decoration: none; display: inline-block; background: linear-gradient(135deg, #007bff, #0056b3); color: white; border-radius: 5px; font-size: 14px;">
                                             <i class="fas fa-download"></i> Download
                                         </a>
                                         <form action="/delete_mis_checklist_file/{{ file.id }}" method="post" style="margin: 0; display: inline-block;" onsubmit="return confirm('Are you sure you want to delete this file?');">
@@ -4987,7 +5021,7 @@ HTML_TEMPLATE = """
                                 {% endfor %}
                             </div>
                             <div style="display: flex; gap: 10px; flex-wrap: wrap;">
-                                <form action="/consolidate_mis_checklist_files" method="post" style="margin: 0;">
+                                <form action="/consolidate_mis_checklist_files" method="post" class="js-ac-consolidation-xlsx-form" data-ac-fallback-filename="consolidated_mis_checklist_files.xlsx" style="margin: 0;">
                                     <button type="submit" class="process-btn" style="background: linear-gradient(135deg, #28a745, #20c997);">
                                         <i class="fas fa-compress-arrows-alt"></i> Consolidate All MIS Checklist Files
                                     </button>
@@ -5396,32 +5430,6 @@ HTML_TEMPLATE = """
                 });
             }
             
-            // EV Download form
-            const evDownloadForm = document.getElementById('ev-download-form');
-            if (evDownloadForm) {
-                evDownloadForm.addEventListener('submit', function(e) {
-                    const btn = document.getElementById('ev-download-btn');
-                    if (btn) {
-                        btn.disabled = true;
-                        btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Downloading...';
-                    }
-                    showEVProcessingModal('Preparing Download', 'Generating Excel file... Please wait.');
-                    
-                    // Hide modal after download starts (file downloads don't cause page redirect)
-                    // Wait a bit longer to ensure download has started
-                    setTimeout(function() {
-                        hideEVProcessingModal();
-                        // Re-enable button after a delay
-                        if (btn) {
-                            setTimeout(function() {
-                                btn.disabled = false;
-                                btn.innerHTML = '<i class="fas fa-download"></i> Download Processed File';
-                            }, 1000);
-                        }
-                    }, 2000);
-                });
-            }
-            
             // Hide modal when page loads (in case it was left open)
             hideEVProcessingModal();
         });
@@ -5482,28 +5490,6 @@ HTML_TEMPLATE = """
                 });
             }
             
-            const dentalBVDownloadForm = document.getElementById('dental-bv-download-form');
-            if (dentalBVDownloadForm) {
-                dentalBVDownloadForm.addEventListener('submit', function(e) {
-                    const btn = document.getElementById('dental-bv-download-btn');
-                    if (btn) {
-                        btn.disabled = true;
-                        btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Downloading...';
-                    }
-                    showDentalBVProcessingModal('Preparing Download', 'Generating Excel file... Please wait.');
-                    
-                    setTimeout(function() {
-                        hideDentalBVProcessingModal();
-                        if (btn) {
-                            setTimeout(function() {
-                                btn.disabled = false;
-                                btn.innerHTML = '<i class="fas fa-download"></i> Download Processed File';
-                            }, 1000);
-                        }
-                    }, 2000);
-                });
-            }
-            
             hideDentalBVProcessingModal();
         });
         
@@ -5560,28 +5546,6 @@ HTML_TEMPLATE = """
                         btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Processing...';
                     }
                     showImagenQCProcessingModal('Processing Imagen QC Allocation', 'Matching agents to auditors... This may take a moment.');
-                });
-            }
-            
-            const imagenQCDownloadForm = document.getElementById('imagen-qc-download-form');
-            if (imagenQCDownloadForm) {
-                imagenQCDownloadForm.addEventListener('submit', function(e) {
-                    const btn = document.getElementById('imagen-qc-download-btn');
-                    if (btn) {
-                        btn.disabled = true;
-                        btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Downloading...';
-                    }
-                    showImagenQCProcessingModal('Preparing Download', 'Generating Excel file... Please wait.');
-                    
-                    setTimeout(function() {
-                        hideImagenQCProcessingModal();
-                        if (btn) {
-                            setTimeout(function() {
-                                btn.disabled = false;
-                                btn.innerHTML = '<i class="fas fa-download"></i> Download Processed File';
-                            }, 1000);
-                        }
-                    }, 2000);
                 });
             }
             
@@ -5840,10 +5804,10 @@ HTML_TEMPLATE = """
                     // Update row count
                     modalRowCount.textContent = data.rows.length;
                     
-                    // Build table header
-                    let headerHtml = '<tr style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white;">';
+                    // Build table header (match excel-comparison-tool / download: #92d050, bold, centered, borders)
+                    let headerHtml = '<tr>';
                     data.columns.forEach(col => {
-                        headerHtml += `<th style="padding: 12px 15px; text-align: left; font-weight: 600;">${col}</th>`;
+                        headerHtml += `<th style="background-color:#92d050;color:#000;font-weight:700;text-align:center;vertical-align:middle;padding:10px 12px;border:1px solid #808080;white-space:normal;word-break:break-word;">${col}</th>`;
                     });
                     headerHtml += '</tr>';
                     modalTableHead.innerHTML = headerHtml;
@@ -6169,8 +6133,10 @@ HTML_TEMPLATE = """
             .then(function(data) {
                 if (data.success && data.columns && data.rows) {
                     document.getElementById('auditor-modal-row-count').textContent = data.rows.length;
-                    var headHtml = '<tr style="background:linear-gradient(135deg,#667eea 0%,#764ba2 100%);color:white;">';
-                    data.columns.forEach(function(col) { headHtml += '<th style="padding:10px 12px;text-align:left;font-size:12px;white-space:nowrap;">' + col + '</th>'; });
+                    var headHtml = '<tr>';
+                    data.columns.forEach(function(col) {
+                        headHtml += '<th style="background-color:#92d050;color:#000;font-weight:700;text-align:center;vertical-align:middle;padding:10px 12px;border:1px solid #808080;font-size:12px;white-space:normal;word-break:break-word;">' + col + '</th>';
+                    });
                     headHtml += '</tr>';
                     document.getElementById('auditor-modal-table-head').innerHTML = headHtml;
 
@@ -6505,6 +6471,283 @@ HTML_TEMPLATE = """
                 processFiles();
             });
         }
+
+        /**
+         * Intercept allocation/tracker download forms: show modal until fetch completes,
+         * then trigger file save from blob (reliable feedback for long-running exports).
+         */
+        function bindFileDownloadFormWithModal(opts) {
+            var form = document.getElementById(opts.formId);
+            if (!form) return;
+            var modal = document.getElementById(opts.modalId);
+            var titleEl = opts.titleId ? document.getElementById(opts.titleId) : null;
+            var textEl = opts.textId ? document.getElementById(opts.textId) : null;
+            var btn = opts.btnId ? document.getElementById(opts.btnId) : null;
+            var defaultBtnHtml = opts.defaultBtnHtml || '<i class="fas fa-download"></i> Download';
+
+            function parseFilenameFromCD(cd) {
+                if (!cd) return null;
+                var m = /filename\\*=UTF-8''([^;]+)/i.exec(cd);
+                if (m) {
+                    try {
+                        return decodeURIComponent(m[1].trim());
+                    } catch (e) {
+                        return m[1].trim();
+                    }
+                }
+                m = /filename="((?:\\\\.|[^"\\\\])*)"/i.exec(cd);
+                if (m) return m[1].replace(/\\\\"/g, '"');
+                m = /filename=([^;]+)/i.exec(cd);
+                if (m) return m[1].trim().replace(/^["']|["']$/g, '');
+                return null;
+            }
+
+            function showModal() {
+                if (titleEl) titleEl.textContent = opts.titleMsg || 'Preparing download';
+                if (textEl) textEl.textContent = opts.bodyMsg || 'Please wait…';
+                if (modal) modal.style.display = 'flex';
+                if (btn) {
+                    btn.disabled = true;
+                    btn.innerHTML =
+                        '<i class="fas fa-spinner fa-spin"></i> Preparing…';
+                }
+            }
+
+            function hideModal() {
+                if (modal) modal.style.display = 'none';
+                if (btn) {
+                    btn.disabled = false;
+                    btn.innerHTML = defaultBtnHtml;
+                }
+            }
+
+            form.addEventListener('submit', function(e) {
+                e.preventDefault();
+                showModal();
+                var fd = new FormData(form);
+                fetch(form.action, {
+                    method: 'POST',
+                    body: fd,
+                    credentials: 'same-origin',
+                })
+                    .then(function(resp) {
+                        var ct = (resp.headers.get('Content-Type') || '').toLowerCase();
+                        if (!resp.ok) {
+                            if (ct.indexOf('json') >= 0) {
+                                return resp.json().then(function(j) {
+                                    throw new Error(
+                                        (j && (j.error || j.message)) ||
+                                            'Download failed'
+                                    );
+                                });
+                            }
+                            return resp.text().then(function(t) {
+                                throw new Error(
+                                    (t && t.substring(0, 400)) || resp.statusText
+                                );
+                            });
+                        }
+                        if (ct.indexOf('application/json') >= 0) {
+                            return resp.json().then(function(j) {
+                                throw new Error(
+                                    (j && j.error) || 'Unexpected response'
+                                );
+                            });
+                        }
+                        var cd = resp.headers.get('Content-Disposition');
+                        return resp.blob().then(function(blob) {
+                            return { blob: blob, cd: cd };
+                        });
+                    })
+                    .then(function(result) {
+                        if (!result || !result.blob) return;
+                        var fn =
+                            parseFilenameFromCD(result.cd) ||
+                            opts.fallbackFilename ||
+                            'download.xlsx';
+                        var url = URL.createObjectURL(result.blob);
+                        var a = document.createElement('a');
+                        a.href = url;
+                        a.download = fn;
+                        document.body.appendChild(a);
+                        a.click();
+                        a.remove();
+                        setTimeout(function() {
+                            URL.revokeObjectURL(url);
+                        }, 5000);
+                    })
+                    .catch(function(err) {
+                        alert(
+                            'Download failed: ' +
+                                (err && err.message ? err.message : String(err))
+                        );
+                    })
+                    .finally(function() {
+                        hideModal();
+                    });
+            });
+        }
+
+        function parseAgentConsolidationFilenameFromCD(cd) {
+            if (!cd) return null;
+            var m = /filename\\*=UTF-8''([^;]+)/i.exec(cd);
+            if (m) {
+                try {
+                    return decodeURIComponent(m[1].trim());
+                } catch (e) {
+                    return m[1].trim();
+                }
+            }
+            m = /filename="((?:\\\\.|[^"\\\\])*)"/i.exec(cd);
+            if (m) return m[1].replace(/\\\\"/g, '"');
+            m = /filename=([^;]+)/i.exec(cd);
+            if (m) return m[1].trim().replace(/^["']|["']$/g, '');
+            return null;
+        }
+
+        function showAgentConsolidationProcessingModal(title, message) {
+            var modal = document.getElementById('agent-consolidation-processing-modal');
+            var tEl = document.getElementById('agent-consolidation-processing-title');
+            var pEl = document.getElementById('agent-consolidation-processing-text');
+            if (tEl) tEl.textContent = title || 'Please wait';
+            if (pEl) pEl.textContent = message || 'Preparing your file…';
+            if (modal) modal.style.display = 'flex';
+        }
+
+        function hideAgentConsolidationProcessingModal() {
+            var modal = document.getElementById('agent-consolidation-processing-modal');
+            if (modal) modal.style.display = 'none';
+        }
+
+        function agentConsolidationFinishExcelDownload(resp, fallbackFilename) {
+            var ct = (resp.headers.get('Content-Type') || '').toLowerCase();
+            if (!resp.ok) {
+                if (ct.indexOf('application/json') >= 0) {
+                    return resp.json().then(function(j) {
+                        throw new Error(
+                            (j && (j.error || j.message)) || 'Request failed'
+                        );
+                    });
+                }
+                return resp.text().then(function(t) {
+                    throw new Error((t && t.substring(0, 400)) || resp.statusText);
+                });
+            }
+            if (ct.indexOf('application/json') >= 0) {
+                return resp.json().then(function(j) {
+                    throw new Error(
+                        (j && (j.error || j.message)) || 'Unexpected response'
+                    );
+                });
+            }
+            if (
+                ct.indexOf('spreadsheet') < 0 &&
+                ct.indexOf('octet-stream') < 0 &&
+                ct.indexOf('excel') < 0
+            ) {
+                return resp.text().then(function() {
+                    throw new Error(
+                        'No Excel file was returned. If consolidation failed, check the message at the top of the page and try again.'
+                    );
+                });
+            }
+            var cd = resp.headers.get('Content-Disposition');
+            return resp.blob().then(function(blob) {
+                var fn =
+                    parseAgentConsolidationFilenameFromCD(cd) ||
+                    fallbackFilename ||
+                    'download.xlsx';
+                var url = URL.createObjectURL(blob);
+                var a = document.createElement('a');
+                a.href = url;
+                a.download = fn;
+                document.body.appendChild(a);
+                a.click();
+                a.remove();
+                setTimeout(function() {
+                    URL.revokeObjectURL(url);
+                }, 5000);
+            });
+        }
+
+        function bindAgentConsolidationExcelDownloads() {
+            if (!document.getElementById('agent-consolidation-processing-modal')) {
+                return;
+            }
+            document
+                .querySelectorAll('a.js-ac-consolidation-xlsx-download')
+                .forEach(function(anchor) {
+                    anchor.addEventListener('click', function(ev) {
+                        ev.preventDefault();
+                        var href = anchor.getAttribute('href');
+                        if (!href) return;
+                        showAgentConsolidationProcessingModal(
+                            'Preparing download',
+                            'Building your Excel file. Please wait…'
+                        );
+                        fetch(href, { method: 'GET', credentials: 'same-origin' })
+                            .then(function(resp) {
+                                return agentConsolidationFinishExcelDownload(
+                                    resp,
+                                    'download.xlsx'
+                                );
+                            })
+                            .catch(function(err) {
+                                alert(
+                                    'Download failed: ' +
+                                        (err && err.message ? err.message : String(err))
+                                );
+                            })
+                            .finally(hideAgentConsolidationProcessingModal);
+                    });
+                });
+
+            document
+                .querySelectorAll('form.js-ac-consolidation-xlsx-form')
+                .forEach(function(form) {
+                    form.addEventListener('submit', function(ev) {
+                        ev.preventDefault();
+                        var fallback =
+                            form.getAttribute('data-ac-fallback-filename') ||
+                            'consolidated_export.xlsx';
+                        var submitBtn = form.querySelector('button[type="submit"]');
+                        var prevHtml = submitBtn ? submitBtn.innerHTML : '';
+                        showAgentConsolidationProcessingModal(
+                            'Consolidating files',
+                            'Combining uploads into one workbook. This may take a moment…'
+                        );
+                        if (submitBtn) {
+                            submitBtn.disabled = true;
+                            submitBtn.innerHTML =
+                                '<i class="fas fa-spinner fa-spin"></i> Working…';
+                        }
+                        fetch(form.action, {
+                            method: 'POST',
+                            body: new FormData(form),
+                            credentials: 'same-origin',
+                        })
+                            .then(function(resp) {
+                                return agentConsolidationFinishExcelDownload(
+                                    resp,
+                                    fallback
+                                );
+                            })
+                            .catch(function(err) {
+                                alert(
+                                    'Failed: ' +
+                                        (err && err.message ? err.message : String(err))
+                                );
+                            })
+                            .finally(function() {
+                                hideAgentConsolidationProcessingModal();
+                                if (submitBtn) {
+                                    submitBtn.disabled = false;
+                                    submitBtn.innerHTML = prevHtml;
+                                }
+                            });
+                    });
+                });
+        }
         
         // Tracker upload form handler
         // Helper functions for tracker processing modal
@@ -6614,32 +6857,6 @@ HTML_TEMPLATE = """
             });
         }
         
-        // Tracker download form handler
-        const trackerDownloadForm = document.getElementById('tracker-download-form');
-        if (trackerDownloadForm) {
-            trackerDownloadForm.addEventListener('submit', function(e) {
-                const btn = document.getElementById('tracker-download-btn');
-                if (btn) {
-                    btn.disabled = true;
-                    btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Downloading...';
-                }
-                showTrackerProcessingModal('Preparing Download', 'Generating tracker file with all 10 sheets... Please wait.');
-                
-                // Hide modal after download starts (file downloads don't cause page redirect)
-                // Wait a bit longer to ensure download has started
-                setTimeout(function() {
-                    hideTrackerProcessingModal();
-                    // Re-enable button after a delay
-                    if (btn) {
-                        setTimeout(function() {
-                            btn.disabled = false;
-                            btn.innerHTML = '<i class="fas fa-download"></i> Download Trackers File';
-                        }, 1000);
-                    }
-                }, 2000);
-            });
-        }
-        
         function showImagenQCTrackerProcessingModal(title, message) {
             const modal = document.getElementById('imagen-qc-tracker-processing-status');
             const titleEl = document.getElementById('imagen-qc-tracker-processing-title');
@@ -6714,27 +6931,6 @@ HTML_TEMPLATE = """
             });
         }
         
-        const imagenQCTrackerDownloadForm = document.getElementById('imagen-qc-tracker-download-form');
-        if (imagenQCTrackerDownloadForm) {
-            imagenQCTrackerDownloadForm.addEventListener('submit', function(e) {
-                const btn = document.getElementById('imagen-qc-tracker-download-btn');
-                if (btn) {
-                    btn.disabled = true;
-                    btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Downloading...';
-                }
-                showImagenQCTrackerProcessingModal('Preparing download', 'Building workbook with tracker sheets...');
-                setTimeout(function() {
-                    hideImagenQCTrackerProcessingModal();
-                    if (btn) {
-                        setTimeout(function() {
-                            btn.disabled = false;
-                            btn.innerHTML = '<i class="fas fa-download"></i> Download Imagen QC trackers';
-                        }, 1000);
-                    }
-                }, 2000);
-            });
-        }
-        
         // Agent upload form handler
         const agentUploadForm = document.getElementById('agentUploadForm');
         if (agentUploadForm) {
@@ -6749,6 +6945,87 @@ HTML_TEMPLATE = """
             // Hide tracker modal when page loads (in case it was left open)
             hideTrackerProcessingModal();
             hideImagenQCTrackerProcessingModal();
+            hideAgentConsolidationProcessingModal();
+            bindAgentConsolidationExcelDownloads();
+
+            bindFileDownloadFormWithModal({
+                formId: 'imagen-download-form',
+                btnId: 'imagen-download-btn',
+                modalId: 'imagen-download-processing-status',
+                titleId: 'imagen-download-processing-title',
+                textId: 'imagen-download-processing-text',
+                titleMsg: 'Preparing download',
+                bodyMsg: 'Building your processed Excel file with trackers. This may take a minute.',
+                defaultBtnHtml:
+                    '<i class="fas fa-download"></i> Download Processed File',
+                fallbackFilename: 'processed_data.xlsx',
+            });
+            bindFileDownloadFormWithModal({
+                formId: 'ev-download-form',
+                btnId: 'ev-download-btn',
+                modalId: 'ev-processing-status',
+                titleId: 'ev-processing-title',
+                textId: 'ev-progress-text',
+                titleMsg: 'Preparing download',
+                bodyMsg: 'Generating EV allocation Excel file. Please wait…',
+                defaultBtnHtml:
+                    '<i class="fas fa-download"></i> Download Processed File',
+            });
+            bindFileDownloadFormWithModal({
+                formId: 'dental-bv-download-form',
+                btnId: 'dental-bv-download-btn',
+                modalId: 'dental-bv-processing-status',
+                titleId: 'dental-bv-processing-title',
+                textId: 'dental-bv-progress-text',
+                titleMsg: 'Preparing download',
+                bodyMsg: 'Generating Dental BV allocation Excel file. Please wait…',
+                defaultBtnHtml:
+                    '<i class="fas fa-download"></i> Download Processed File',
+            });
+            bindFileDownloadFormWithModal({
+                formId: 'imagen-qc-download-form',
+                btnId: 'imagen-qc-download-btn',
+                modalId: 'imagen-qc-processing-status',
+                titleId: 'imagen-qc-processing-title',
+                textId: 'imagen-qc-progress-text',
+                titleMsg: 'Preparing download',
+                bodyMsg: 'Generating Imagen QC allocation Excel file. Please wait…',
+                defaultBtnHtml:
+                    '<i class="fas fa-download"></i> Download Processed File',
+            });
+            bindFileDownloadFormWithModal({
+                formId: 'nh-download-allocation-form',
+                btnId: 'nh-download-allocation-btn',
+                modalId: 'nh-download-processing-status',
+                titleId: 'nh-download-processing-title',
+                textId: 'nh-download-processing-text',
+                titleMsg: 'Preparing download',
+                bodyMsg: 'Building NH allocation export. Please wait…',
+                defaultBtnHtml:
+                    '<i class="fas fa-download"></i> Download Allocated File',
+            });
+            bindFileDownloadFormWithModal({
+                formId: 'tracker-download-form',
+                btnId: 'tracker-download-btn',
+                modalId: 'tracker-processing-status',
+                titleId: 'tracker-processing-title',
+                textId: 'tracker-progress-text',
+                titleMsg: 'Preparing download',
+                bodyMsg: 'Generating tracker workbook with all tracking sheets. This may take a moment.',
+                defaultBtnHtml:
+                    '<i class="fas fa-download"></i> Download Trackers File',
+            });
+            bindFileDownloadFormWithModal({
+                formId: 'imagen-qc-tracker-download-form',
+                btnId: 'imagen-qc-tracker-download-btn',
+                modalId: 'imagen-qc-tracker-processing-status',
+                titleId: 'imagen-qc-tracker-processing-title',
+                textId: 'imagen-qc-tracker-progress-text',
+                titleMsg: 'Preparing download',
+                bodyMsg: 'Building Imagen QC trackers workbook. Please wait…',
+                defaultBtnHtml:
+                    '<i class="fas fa-download"></i> Download Imagen QC trackers',
+            });
             
             // Check if Imagen Allocation content is visible and initialize it
             const imageAllocationContent = document.getElementById('image-allocation-content');
@@ -9846,7 +10123,7 @@ def can_allocate_row_by_appointment_date(
     if not appointment_date_col or appointment_date_col not in processed_df.columns:
         return True  # No appointment date column - allow allocation
 
-    if row_idx >= len(processed_df):
+    if row_idx not in processed_df.index:
         return False
 
     # Initialize appointment date tracking for agent if not exists
@@ -9912,6 +10189,320 @@ def can_allocate_row_by_appointment_date(
     else:
         # If no appointment date, allow allocation (fallback)
         return True
+
+
+def can_allocate_row_by_appointment_date_peek(
+    agent, row_idx, processed_df, appointment_date_col
+):
+    """
+    Read-only: True if the agent is under the per-appointment-date row cap for this row.
+    Does not mutate agent (unlike can_allocate_row_by_appointment_date).
+    """
+    if not appointment_date_col or appointment_date_col not in processed_df.columns:
+        return True
+    if row_idx not in processed_df.index:
+        return False
+    if "appointment_date_counts" not in agent:
+        counts = {}
+    else:
+        counts = agent["appointment_date_counts"]
+    appointment_date_val = processed_df.at[row_idx, appointment_date_col]
+    date_key = None
+    if pd.notna(appointment_date_val):
+        if hasattr(appointment_date_val, "date") and callable(
+            getattr(appointment_date_val, "date", None)
+        ):
+            try:
+                date_key = appointment_date_val.date().isoformat()
+            except (TypeError, ValueError, AttributeError):
+                date_key = None
+        if date_key is None:
+            try:
+                date_key = pd.to_datetime(appointment_date_val).date().isoformat()
+            except (TypeError, ValueError, AttributeError):
+                try:
+                    date_str = str(appointment_date_val).split()[0].strip()
+                    for fmt in ["%Y-%m-%d", "%m/%d/%Y", "%d/%m/%Y", "%Y/%m/%d"]:
+                        try:
+                            date_key = datetime.strptime(date_str, fmt).date().isoformat()
+                            break
+                        except ValueError:
+                            continue
+                except Exception:
+                    date_key = str(appointment_date_val).strip() or None
+    if not date_key:
+        return True
+    date_key = str(date_key).strip()
+    current = counts.get(date_key, 0)
+    return current < MAX_ROWS_PER_APPOINTMENT_DATE
+
+
+def _count_first_priority_rows_on_agent(agent, processed_df, priority_status_col_name):
+    """How many First Priority rows this agent already holds (by row_indices)."""
+    if not priority_status_col_name or priority_status_col_name not in processed_df.columns:
+        return 0
+    n = 0
+    for idx in agent.get("row_indices", []):
+        if idx not in processed_df.index:
+            continue
+        pv = processed_df.at[idx, priority_status_col_name]
+        if pd.isna(pv):
+            continue
+        if str(pv).strip().upper() == "FIRST PRIORITY":
+            n += 1
+    return n
+
+
+def allocate_first_priority_rows_fair(
+    fp_indices,
+    processed_df,
+    agent_allocations,
+    insurance_carrier_col,
+    appointment_date_col,
+    secondary_insurance_col,
+    remark_col,
+    priority_status_col_name,
+    fp_assigned_count,
+    emit_summary_log=False,
+    log_label="[First Priority Fair]",
+    soft_cap_total_rows=None,
+    soft_cap_balance_start=None,
+):
+    """
+    Assign each listed First Priority row to an eligible First agent with the lowest
+    fp_assigned_count (tie: name). Mutates fp_assigned_count on successful assign.
+    fp_assigned_count should be seeded with existing on-agent FP counts when continuing Step 5.
+
+    When at least two First agents have capacity and at least two candidates exist for a row,
+    a soft cap limits how many rows from *this* fp_indices batch one agent may take before others
+    catch up: ceil(T / N) where T=len(fp_indices) and N=count of First agents with remaining capacity.
+    If that would leave no assignee, fall back to all candidates (carrier rules still apply).
+    """
+    if (
+        not fp_indices
+        or not priority_status_col_name
+        or priority_status_col_name not in processed_df.columns
+        or not insurance_carrier_col
+        or insurance_carrier_col not in processed_df.columns
+    ):
+        return 0
+
+    fp_indices = sorted(fp_indices, key=lambda x: str(x))
+    n_assigned = 0
+
+    balance0 = (
+        dict(soft_cap_balance_start)
+        if soft_cap_balance_start is not None
+        else {
+            id(a): fp_assigned_count.get(id(a), 0) for a in agent_allocations
+        }
+    )
+    available_first_agents = [
+        a
+        for a in agent_allocations
+        if not a.get("has_pb_preference", False)
+        and str(a.get("priority_status", "Second")).strip().upper() == "FIRST"
+        and (a["capacity"] - a["allocated"]) > 0
+    ]
+    n_pool = len(available_first_agents)
+    T_for_cap = (
+        soft_cap_total_rows
+        if soft_cap_total_rows is not None
+        else len(fp_indices)
+    )
+    soft_cap_new_per_agent = (
+        max(1, (T_for_cap + n_pool - 1) // n_pool) if n_pool else T_for_cap + 1
+    )
+
+    def new_fp_since_start(agent):
+        return fp_assigned_count.get(id(agent), 0) - balance0.get(id(agent), 0)
+
+    for idx in fp_indices:
+        row_insurance = str(processed_df.at[idx, insurance_carrier_col]).strip()
+        if not row_insurance:
+            continue
+
+        candidates = []
+        for agent in agent_allocations:
+            if agent.get("has_pb_preference", False):
+                continue
+            if agent.get("priority_status", "Second").upper() != "FIRST":
+                continue
+            if agent["capacity"] - agent["allocated"] <= 0:
+                continue
+            if not can_agent_work_with_priority(agent, "First Priority"):
+                continue
+            should_not_allocate = False
+            if agent.get("insurance_do_not_allocate"):
+                for do_not_allocate_comp in agent["insurance_do_not_allocate"]:
+                    if not do_not_allocate_comp:
+                        continue
+                    if (
+                        row_insurance.lower() in str(do_not_allocate_comp).lower()
+                        or str(do_not_allocate_comp).lower() in row_insurance.lower()
+                        or row_insurance == str(do_not_allocate_comp)
+                    ):
+                        should_not_allocate = True
+                        break
+            if should_not_allocate:
+                continue
+            if not can_agent_work_with_insurance(agent, row_insurance):
+                continue
+            needs_training = False
+            if agent.get("insurance_needs_training"):
+                for training_comp in agent["insurance_needs_training"]:
+                    if (
+                        row_insurance.lower() in str(training_comp).lower()
+                        or str(training_comp).lower() in row_insurance.lower()
+                        or row_insurance == str(training_comp)
+                    ):
+                        needs_training = True
+                        break
+            if needs_training:
+                continue
+            if not can_allocate_row_to_agent(
+                agent,
+                idx,
+                processed_df,
+                secondary_insurance_col,
+                insurance_carrier_col,
+            ):
+                continue
+            if appointment_date_col and appointment_date_col in processed_df.columns:
+                if not can_allocate_row_by_appointment_date_peek(
+                    agent, idx, processed_df, appointment_date_col
+                ):
+                    continue
+
+            candidates.append(agent)
+
+        if not candidates:
+            continue
+
+        pick_from = candidates
+        if len(candidates) > 1 and n_pool >= 2:
+            under_soft_cap = [
+                a
+                for a in candidates
+                if new_fp_since_start(a) < soft_cap_new_per_agent
+            ]
+            if under_soft_cap:
+                pick_from = under_soft_cap
+
+        pick_from.sort(
+            key=lambda a: (
+                fp_assigned_count.get(id(a), 0),
+                str(a.get("name", "")).lower(),
+            )
+        )
+        best = pick_from[0]
+
+        ac = safe_extend_row_indices(
+            best,
+            [idx],
+            processed_df,
+            remark_col,
+            best["name"],
+            appointment_date_col=appointment_date_col,
+            insurance_carrier_col=insurance_carrier_col,
+        )
+        if ac > 0:
+            fp_assigned_count[id(best)] = fp_assigned_count.get(id(best), 0) + 1
+            n_assigned += 1
+
+    if emit_summary_log and n_assigned > 0:
+        cap_note = (
+            f" soft_cap≈{soft_cap_new_per_agent}/agent on this batch (T={T_for_cap}, N={n_pool})"
+            if n_pool >= 2
+            else ""
+        )
+        print(
+            f"⚖️ {log_label} Assigned {n_assigned} First Priority row(s) using balanced selection among First agents{cap_note}"
+        )
+        first_agents = [
+            a
+            for a in agent_allocations
+            if not a.get("has_pb_preference", False)
+            and str(a.get("priority_status", "Second")).strip().upper() == "FIRST"
+        ]
+        first_agents.sort(key=lambda x: str(x.get("name", "")).lower())
+        breakdown = ", ".join(
+            f"{a.get('name', '?')}={fp_assigned_count.get(id(a), 0)}"
+            for a in first_agents
+        )
+        print(
+            f"⚖️ {log_label} Rows per First agent (total First Priority count per agent after pass): {breakdown}"
+        )
+    return n_assigned
+
+
+def allocate_first_priority_fair_balance(
+    processed_df,
+    agent_allocations,
+    insurance_carrier_col,
+    appointment_date_col,
+    secondary_insurance_col,
+    remark_col,
+    priority_status_col_name,
+):
+    """
+    Assign unallocated First Priority rows across First-capability (non-PB) agents as evenly
+    as eligibility allows: each row goes to an eligible agent with the smallest total FP count
+    (tie-break: name). When several agents can take a row, a soft cap ceil(T/N) limits how many
+    rows from this batch one agent may absorb before others catch up (T=unallocated FP count,
+    N=First agents with capacity). All checks mirror Step 5; allocation uses safe_extend_row_indices.
+    """
+    if (
+        not priority_status_col_name
+        or priority_status_col_name not in processed_df.columns
+        or not insurance_carrier_col
+        or insurance_carrier_col not in processed_df.columns
+    ):
+        return 0
+
+    def row_allocated(idx):
+        for ag in agent_allocations:
+            if idx in ag.get("row_indices", []):
+                return True
+        return False
+
+    fp_indices = []
+    for idx in processed_df.index:
+        if row_allocated(idx):
+            continue
+        if should_skip_row_for_allocation(idx, processed_df, remark_col):
+            continue
+        pv = processed_df.at[idx, priority_status_col_name]
+        if pd.isna(pv) or str(pv).strip().upper() != "FIRST PRIORITY":
+            continue
+        if pd.isna(processed_df.at[idx, insurance_carrier_col]):
+            continue
+        fp_indices.append(idx)
+
+    if not fp_indices:
+        return 0
+
+    # Seed from rows already on each agent so later passes stay balanced vs current workload
+    fp_assigned_count = {
+        id(a): _count_first_priority_rows_on_agent(
+            a, processed_df, priority_status_col_name
+        )
+        for a in agent_allocations
+    }
+    n_assigned = allocate_first_priority_rows_fair(
+        fp_indices,
+        processed_df,
+        agent_allocations,
+        insurance_carrier_col,
+        appointment_date_col,
+        secondary_insurance_col,
+        remark_col,
+        priority_status_col_name,
+        fp_assigned_count,
+        emit_summary_log=True,
+        log_label="[First Priority Fair]",
+    )
+    return n_assigned
 
 
 def verify_appointment_date_limit(agent, processed_df, appointment_date_col):
@@ -10092,7 +10683,7 @@ def can_allocate_row_to_agent(
                     break
 
         if secondary_insurance_col and secondary_insurance_col in processed_df.columns:
-            if row_idx < len(processed_df):
+            if row_idx in processed_df.index:
                 if pd.notna(processed_df.at[row_idx, secondary_insurance_col]):
                     secondary_val = str(
                         processed_df.at[row_idx, secondary_insurance_col]
@@ -10104,7 +10695,7 @@ def can_allocate_row_to_agent(
         # NEW: Check if "Single" preference agent already has assigned insurance company
         # If yes, only allow rows matching that insurance company
         if insurance_carrier_col and insurance_carrier_col in processed_df.columns:
-            if row_idx < len(processed_df):
+            if row_idx in processed_df.index:
                 assigned_insurance = agent.get("assigned_insurance")
                 if assigned_insurance:
                     row_insurance = processed_df.at[row_idx, insurance_carrier_col]
@@ -10166,7 +10757,7 @@ def safe_extend_row_indices(
     if appointment_date_col and appointment_date_col in processed_df.columns:
         final_filtered_indices = []
         for idx in filtered_indices:
-            if idx < len(processed_df):
+            if idx in processed_df.index:
                 if can_allocate_row_by_appointment_date(
                     agent,
                     idx,
@@ -10181,7 +10772,7 @@ def safe_extend_row_indices(
     validated_indices = []
     if insurance_carrier_col and insurance_carrier_col in processed_df.columns:
         for idx in filtered_indices:
-            if idx < len(processed_df):
+            if idx in processed_df.index:
                 row_insurance = processed_df.at[idx, insurance_carrier_col]
                 # Final insurance validation before allocation
                 if can_agent_work_with_insurance(agent, row_insurance):
@@ -12425,6 +13016,12 @@ def process_allocation_files_with_dates(
                             f"⚡ [Performance] Created allocated_indices_set with {len(allocated_indices_set)} indices"
                         )
 
+                        priority_status_col_name = None
+                        for col in processed_df.columns:
+                            if str(col).strip().lower() == "priority status":
+                                priority_status_col_name = col
+                                break
+
                         # Step 2.5: Global NTBP Allocation - Allocate all NTBP remark rows globally
                         # Allocate NTBP rows to agents with PB in Allocation Preference column
                         # Use CC column for current capacity
@@ -12450,12 +13047,6 @@ def process_allocation_files_with_dates(
                             ntbp_mask = ntbp_mask & ~not_to_work_mask
 
                             # PRIORITY STATUS FILTER: Filter out rows without Priority Status
-                            priority_status_col_name = None
-                            for col in processed_df.columns:
-                                if col.lower() == "priority status":
-                                    priority_status_col_name = col
-                                    break
-
                             if priority_status_col_name:
                                 priority_status_series = processed_df[
                                     priority_status_col_name
@@ -15980,7 +16571,7 @@ def process_allocation_files_with_dates(
                                         row_indices = priority_data[priority]
                                         # Check which rows are still unallocated
                                         for row_idx in row_indices:
-                                            if row_idx < len(processed_df):
+                                            if row_idx in processed_df.index:
                                                 current_agent = processed_df.at[
                                                     row_idx, "Agent Name"
                                                 ]
@@ -16024,7 +16615,7 @@ def process_allocation_files_with_dates(
                                     ) in allocated_unmatched_rows:
                                         continue
 
-                                    if unmatched_row_idx >= len(processed_df):
+                                    if unmatched_row_idx not in processed_df.index:
                                         continue
 
                                     # Find a senior agent who can handle this unmatched insurance
@@ -16107,7 +16698,7 @@ def process_allocation_files_with_dates(
                                                 ):
                                                     break  # Already found enough rows to reallocate
 
-                                                if senior_row_idx >= len(processed_df):
+                                                if senior_row_idx not in processed_df.index:
                                                     continue
 
                                                 # Skip special rows that shouldn't be reallocated
@@ -16282,18 +16873,74 @@ def process_allocation_files_with_dates(
                                         if reshuffle_successful:
                                             continue
 
-                        # Step 5: Allocate remaining matched insurance companies to capable agents (normal allocation)
-                        # PRIORITY-BASED ALLOCATION: Process priorities globally (First → Second → Third)
-                        # This ensures First Priority rows are allocated FIRST to fill First agents' capacity
-                        # before Second/Third Priority rows are allocated
-                        # SAFETY: timeout checks in while-loops will prevent hangs
+                        # Step 4.9: First Priority — assign as evenly as possible across First-capability agents
+                        # (each row still must pass insurance, training, Single/Sec rules, appointment caps, etc.)
+                        allocate_first_priority_fair_balance(
+                            processed_df,
+                            agent_allocations,
+                            insurance_carrier_col,
+                            appointment_date_col,
+                            secondary_insurance_col,
+                            remark_col,
+                            priority_status_col_name,
+                        )
 
-                        # Process priorities in order: First Priority → Second Priority → Third Priority
+                        # Step 5: Allocate remaining matched insurance companies to capable agents (normal allocation)
+                        # First Priority: same least-loaded fair assignment as Step 4.9 (shared balance across carriers).
+                        # Second/Third: sticky_assign by capacity. SAFETY: timeout checks in while-loops will prevent hangs
+
                         for priority in [
                             "First Priority",
                             "Second Priority",
                             "Third Priority",
                         ]:
+                            # One shared FP balance for all carriers in this Step 5 First sweep (seed from current sheet)
+                            shared_first_priority_balance = None
+                            step5_fp_delta = 0
+                            step5_fp_soft_cap_total = None
+                            step5_fp_soft_cap_balance0 = None
+                            if priority == "First Priority":
+                                shared_first_priority_balance = {
+                                    id(a): _count_first_priority_rows_on_agent(
+                                        a, processed_df, priority_status_col_name
+                                    )
+                                    for a in agent_allocations
+                                }
+                                # Total matched First Priority rows still unallocated (for ceil(T/N) cap across carriers)
+                                _allocated_set = {
+                                    i
+                                    for ag in agent_allocations
+                                    for i in ag.get("row_indices", [])
+                                }
+                                step5_fp_soft_cap_total = 0
+                                for _ic, _pd in matched_data_by_insurance_priority.items():
+                                    if "First Priority" not in _pd:
+                                        continue
+                                    for _idx in _pd["First Priority"]:
+                                        if _idx in _allocated_set:
+                                            continue
+                                        if _idx not in processed_df.index:
+                                            continue
+                                        if should_skip_row_for_allocation(
+                                            _idx, processed_df, remark_col
+                                        ):
+                                            continue
+                                        if not priority_status_col_name:
+                                            continue
+                                        _pv = processed_df.at[
+                                            _idx, priority_status_col_name
+                                        ]
+                                        if pd.isna(_pv):
+                                            continue
+                                        if (
+                                            str(_pv).strip().upper()
+                                            != "FIRST PRIORITY"
+                                        ):
+                                            continue
+                                        step5_fp_soft_cap_total += 1
+                                step5_fp_soft_cap_balance0 = dict(
+                                    shared_first_priority_balance
+                                )
                             # For each priority, loop through ALL insurance carriers
                             for (
                                 insurance_carrier,
@@ -17175,11 +17822,52 @@ def process_allocation_files_with_dates(
                                         # NTC rows should have been allocated in Step 3.5 to NTC preference agents only
                                         # If any NTBP or NTC rows remain unallocated, they will stay unallocated (not assigned to other agents)
                                         if non_special_rows:
-                                            sticky_assign(
-                                                non_special_rows,
-                                                non_pb_agents,
-                                                insurance_carrier,
-                                            )
+                                            if priority == "First Priority":
+                                                step5_fp_delta += (
+                                                    allocate_first_priority_rows_fair(
+                                                        non_special_rows,
+                                                        processed_df,
+                                                        agent_allocations,
+                                                        insurance_carrier_col,
+                                                        appointment_date_col,
+                                                        secondary_insurance_col,
+                                                        remark_col,
+                                                        priority_status_col_name,
+                                                        shared_first_priority_balance,
+                                                        emit_summary_log=False,
+                                                        log_label="[First Priority Fair Step 5]",
+                                                        soft_cap_total_rows=step5_fp_soft_cap_total,
+                                                        soft_cap_balance_start=step5_fp_soft_cap_balance0,
+                                                    )
+                                                )
+                                            else:
+                                                sticky_assign(
+                                                    non_special_rows,
+                                                    non_pb_agents,
+                                                    insurance_carrier,
+                                                )
+                            if (
+                                priority == "First Priority"
+                                and step5_fp_delta > 0
+                                and shared_first_priority_balance is not None
+                            ):
+                                first_agents = [
+                                    a
+                                    for a in agent_allocations
+                                    if not a.get("has_pb_preference", False)
+                                    and str(a.get("priority_status", "Second")).strip().upper()
+                                    == "FIRST"
+                                ]
+                                first_agents.sort(
+                                    key=lambda x: str(x.get("name", "")).lower()
+                                )
+                                breakdown = ", ".join(
+                                    f"{a.get('name', '?')}={shared_first_priority_balance.get(id(a), 0)}"
+                                    for a in first_agents
+                                )
+                                print(
+                                    f"⚖️ [First Priority Fair Step 5] Assigned {step5_fp_delta} row(s) this step; cumulative FP per First agent: {breakdown}"
+                                )
                     else:
                         # Fallback: if no insurance carrier column, use simple capacity-based allocation
                         # IMPORTANT: NTBP rows should ONLY be allocated in Step 2.5 to PB preference agents
@@ -17592,146 +18280,119 @@ def process_allocation_files_with_dates(
                                     # No matching agents - rows remain unallocated
                                     agents_to_use = []
 
-                                # Allocate rows to agents (round-robin)
-                                # Only allocate to agents with matching insurance capabilities
+                                # Allocate rows to agents (round-robin).
+                                # Try every capable agent for each row (First Priority rows were wrongly skipped when the first agent in rotation was Second-only).
                                 if agents_to_use:
                                     agent_idx = 0
+                                    n_agents = len(agents_to_use)
                                     for row_idx in row_indices_list:
-                                        # Find next agent with capacity
-                                        attempts = 0
-                                        max_attempts = len(agents_to_use)
-                                        remaining_capacity = (
-                                            0  # Initialize to avoid undefined variable
-                                        )
-                                        agent_with_capacity = None
+                                        row_priority_status = None
+                                        if priority_status_col_name and pd.notna(
+                                            processed_df.at[
+                                                row_idx, priority_status_col_name
+                                            ]
+                                        ):
+                                            row_priority_status = str(
+                                                processed_df.at[
+                                                    row_idx,
+                                                    priority_status_col_name,
+                                                ]
+                                            ).strip()
 
-                                        while attempts < max_attempts:
-                                            if agent_idx >= len(agents_to_use):
-                                                agent_idx = 0
-
-                                            agent = agents_to_use[agent_idx]
-                                            remaining_capacity = (
-                                                agent["capacity"] - agent["allocated"]
-                                            )
-
-                                            if remaining_capacity > 0:
-                                                agent_with_capacity = agent
-                                                break  # Found agent with capacity
-
-                                            # Move to next agent
-                                            agent_idx += 1
-                                            attempts += 1
-
-                                        # If no agent with capacity found, skip this row
                                         if (
-                                            remaining_capacity <= 0
-                                            or agent_with_capacity is None
+                                            not row_priority_status
+                                            or row_priority_status == ""
                                         ):
                                             continue
 
-                                        if remaining_capacity > 0:
-                                            agent = agent_with_capacity  # Use the agent we found
-
-                                            # PRIORITY STATUS CHECK: First filter - check if agent can work with this priority
-                                            row_priority_status = None
-                                            if priority_status_col_name and pd.notna(
-                                                processed_df.at[
-                                                    row_idx, priority_status_col_name
-                                                ]
-                                            ):
-                                                row_priority_status = str(
+                                        if remark_col and pd.notna(
+                                            processed_df.at[row_idx, remark_col]
+                                        ):
+                                            remark_check = (
+                                                str(
                                                     processed_df.at[
-                                                        row_idx,
-                                                        priority_status_col_name,
+                                                        row_idx, remark_col
                                                     ]
-                                                ).strip()
-
-                                            # Skip row if no Priority Status (should have been filtered earlier, but double-check)
+                                                )
+                                                .strip()
+                                                .upper()
+                                            )
                                             if (
-                                                not row_priority_status
-                                                or row_priority_status == ""
+                                                "NOT TO WORK" in remark_check
+                                                or remark_check == "NOT TO WORK"
                                             ):
                                                 continue
 
-                                            # Check if agent can work with this priority
+                                        if should_skip_row_for_allocation(
+                                            row_idx, processed_df, remark_col
+                                        ):
+                                            continue
+
+                                        for _ in range(n_agents):
+                                            agent = agents_to_use[agent_idx % n_agents]
+                                            if agent["capacity"] - agent["allocated"] <= 0:
+                                                agent_idx += 1
+                                                continue
                                             if not can_agent_work_with_priority(
                                                 agent, row_priority_status
                                             ):
+                                                agent_idx += 1
                                                 continue
 
-                                            # Safety check: Verify this is not a "Not to work" row before allocating
-                                            if remark_col and pd.notna(
-                                                processed_df.at[row_idx, remark_col]
+                                            row_insurance = None
+                                            if (
+                                                insurance_carrier_col
+                                                and insurance_carrier_col
+                                                in processed_df.columns
                                             ):
-                                                remark_check = (
-                                                    str(
-                                                        processed_df.at[
-                                                            row_idx, remark_col
-                                                        ]
-                                                    )
-                                                    .strip()
-                                                    .upper()
-                                                )
-                                                if (
-                                                    "NOT TO WORK" in remark_check
-                                                    or remark_check == "NOT TO WORK"
-                                                ):
-                                                    continue  # Skip this row
+                                                row_insurance = processed_df.at[
+                                                    row_idx, insurance_carrier_col
+                                                ]
 
-                                            # Safety check: Verify this is not a "Not to work" row before allocating
-                                            if not should_skip_row_for_allocation(
-                                                row_idx, processed_df, remark_col
+                                            if row_insurance is not None and not can_agent_work_with_insurance(
+                                                agent, row_insurance
                                             ):
-                                                # ✅ FINAL VALIDATION: Check insurance compatibility before allocation
-                                                row_insurance = None
-                                                if (
-                                                    insurance_carrier_col
-                                                    and insurance_carrier_col
-                                                    in processed_df.columns
+                                                agent_idx += 1
+                                                continue
+
+                                            if (
+                                                appointment_date_col
+                                                and appointment_date_col
+                                                in processed_df.columns
+                                            ):
+                                                if not can_allocate_row_by_appointment_date_peek(
+                                                    agent,
+                                                    row_idx,
+                                                    processed_df,
+                                                    appointment_date_col,
                                                 ):
-                                                    row_insurance = processed_df.at[
-                                                        row_idx, insurance_carrier_col
-                                                    ]
-
-                                                # Only allocate if insurance matches (or if no insurance column for backward compatibility)
-                                                can_allocate = True
-                                                if row_insurance is not None:
-                                                    can_allocate = (
-                                                        can_agent_work_with_insurance(
-                                                            agent, row_insurance
-                                                        )
-                                                    )
-
-                                                # Also check appointment date limit (max 20 rows per appointment date per agent)
-                                                if can_allocate:
-                                                    if (
-                                                        appointment_date_col
-                                                        and appointment_date_col
-                                                        in processed_df.columns
-                                                    ):
-                                                        can_allocate = can_allocate_row_by_appointment_date(
-                                                            agent,
-                                                            row_idx,
-                                                            processed_df,
-                                                            appointment_date_col,
-                                                        )
-
-                                                if can_allocate:
-                                                    agent["row_indices"].append(row_idx)
-                                                    agent["allocated"] += 1
-                                                    processed_df.at[
-                                                        row_idx, "Agent Name"
-                                                    ] = agent["name"]
                                                     agent_idx += 1
-                                                else:
-                                                    # Insurance doesn't match or appointment date limit reached - skip this row
                                                     continue
-                                            else:
-                                                # Skip this row if it's "Not to work", but continue to next row
-                                                continue
-                                        # Note: We check capacity each iteration, so agents at capacity are automatically skipped
-                                        # Move to next agent for next row
-                                        agent_idx += 1
+
+                                            ac = safe_extend_row_indices(
+                                                agent,
+                                                [row_idx],
+                                                processed_df,
+                                                remark_col,
+                                                agent["name"],
+                                                appointment_date_col=appointment_date_col,
+                                                insurance_carrier_col=insurance_carrier_col,
+                                            )
+                                            if ac > 0:
+                                                agent_idx += 1
+                                                break
+                                            agent_idx += 1
+
+                        # Step 6.5: any First Priority rows still unallocated after Step 6 (fair balance again)
+                        allocate_first_priority_fair_balance(
+                            processed_df,
+                            agent_allocations,
+                            insurance_carrier_col,
+                            appointment_date_col,
+                            secondary_insurance_col,
+                            remark_col,
+                            priority_status_col_name,
+                        )
 
                     # Soft stickiness rule: prefer keeping same insurance per agent, allow adding new carrier only after
                     # existing carrier rows are exhausted. Actual assignment handled in Step 5 logic.
@@ -17743,7 +18404,7 @@ def process_allocation_files_with_dates(
                                 continue
                             carrier_groups = {}
                             for idx in indices:
-                                if idx < len(processed_df):
+                                if idx in processed_df.index:
                                     carrier = processed_df.at[
                                         idx, insurance_carrier_col
                                     ]
@@ -17777,7 +18438,7 @@ def process_allocation_files_with_dates(
                                 # This agent should NOT have NTBP rows
                                 rows_to_remove = []
                                 for row_idx in agent.get("row_indices", []):
-                                    if row_idx < len(processed_df):
+                                    if row_idx in processed_df.index:
                                         # Check if this row has NTBP remark
                                         if pd.notna(
                                             processed_df.at[row_idx, remark_col]
@@ -17864,7 +18525,7 @@ def process_allocation_files_with_dates(
                                 # This agent should NOT have NTC rows
                                 rows_to_remove = []
                                 for row_idx in agent.get("row_indices", []):
-                                    if row_idx < len(processed_df):
+                                    if row_idx in processed_df.index:
                                         # Check if this row has NTC remark
                                         if pd.notna(
                                             processed_df.at[row_idx, remark_col]
@@ -17919,7 +18580,7 @@ def process_allocation_files_with_dates(
                             unique_valid_indices = [
                                 idx
                                 for idx in set(row_indices)
-                                if idx < len(processed_df)
+                                if idx in processed_df.index
                             ]
 
                             # CRITICAL FINAL CHECK: Remove secondary insurance rows from "Single" preference agents
@@ -18033,9 +18694,9 @@ def process_allocation_files_with_dates(
                         agent_supervisor = agent.get("supervisor", "")
                         row_indices = agent.get("row_indices", [])
                         if row_indices:
-                            # Filter to only valid indices within the dataframe
+                            # Filter to only valid row labels present in the dataframe
                             valid_indices = [
-                                idx for idx in row_indices if idx < len(processed_df)
+                                idx for idx in row_indices if idx in processed_df.index
                             ]
                             if valid_indices:
                                 # Set agent name for all rows allocated to this agent
@@ -19245,6 +19906,103 @@ def apply_first_priority_full_row_red_openpyxl(wb, sheet_name):
         print(f"Error applying First Priority row red font: {str(e)}", flush=True)
 
 
+def _apply_imagen_openpyxl_worksheet(ws, column_headers):
+    """
+    Same header/grid styling as excel-comparison-tool `_apply_imagen_openpyxl_worksheet`:
+    row 1 — fill #92d050, bold, centered, wrap; all used cells — thin border;
+    columns whose header looks like date/time — rows 2+ use text format @.
+    """
+    if not column_headers:
+        return
+    from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+
+    ncols = len(column_headers)
+    header_fill = PatternFill(
+        start_color="92d050", end_color="92d050", fill_type="solid"
+    )
+    header_font = Font(bold=True)
+    header_alignment = Alignment(
+        horizontal="center", vertical="center", wrap_text=True
+    )
+    for col_idx in range(1, ncols + 1):
+        cell = ws.cell(row=1, column=col_idx)
+        cell.fill = header_fill
+        cell.font = header_font
+        cell.alignment = header_alignment
+
+    thin_border = Border(
+        left=Side(style="thin"),
+        right=Side(style="thin"),
+        top=Side(style="thin"),
+        bottom=Side(style="thin"),
+    )
+    max_row = ws.max_row or 1
+    for row in range(1, max_row + 1):
+        for col_idx in range(1, ncols + 1):
+            ws.cell(row=row, column=col_idx).border = thin_border
+
+    for idx, col in enumerate(column_headers, 1):
+        col_lower = str(col).lower().strip().replace(" ", "").replace("_", "")
+        if "date" not in col_lower and "time" not in col_lower:
+            continue
+        for row in range(2, max_row + 1):
+            cell = ws.cell(row=row, column=idx)
+            if cell.value:
+                cell.number_format = "@"
+
+
+def apply_auto_column_widths_openpyxl(ws):
+    """Auto-fit column widths (excel-comparison-tool style): min(max_len + 2, 50)."""
+    for column in ws.columns:
+        max_length = 0
+        column_letter = column[0].column_letter
+        for cell in column:
+            try:
+                if cell.value is not None and len(str(cell.value)) > max_length:
+                    max_length = len(str(cell.value))
+            except Exception:
+                pass
+        adjusted_width = min(max_length + 2, 50)
+        if adjusted_width > 0:
+            ws.column_dimensions[column_letter].width = adjusted_width
+
+
+def apply_comparison_tool_excel_output_styling(wb):
+    """Apply excel-comparison-tool header + borders + date text + column widths to every sheet."""
+    for sheet_name in wb.sheetnames:
+        ws = wb[sheet_name]
+        if ws.max_row < 1 or ws.max_column < 1:
+            continue
+        headers = []
+        for c in range(1, ws.max_column + 1):
+            v = ws.cell(row=1, column=c).value
+            headers.append("" if v is None else str(v))
+        _apply_imagen_openpyxl_worksheet(ws, headers)
+        apply_auto_column_widths_openpyxl(ws)
+
+
+def apply_comparison_styling_to_excel_buffer(excel_buffer):
+    """
+    Load an xlsx from BytesIO, apply comparison-tool header/grid/date/width styling
+    to every sheet, return a new BytesIO (for consolidation + single-file downloads).
+    """
+    try:
+        excel_buffer.seek(0)
+        from openpyxl import load_workbook
+
+        wb = load_workbook(excel_buffer)
+        apply_comparison_tool_excel_output_styling(wb)
+        out = io.BytesIO()
+        wb.save(out)
+        wb.close()
+        out.seek(0)
+        return out
+    except Exception as e:
+        print(f"apply_comparison_styling_to_excel_buffer: {e}", flush=True)
+        excel_buffer.seek(0)
+        return excel_buffer
+
+
 def format_excel_with_priority_status(excel_path, sheet_name):
     """
     Format Excel file: rows with Priority Status \"First Priority\" get red font (FF0000)
@@ -19261,7 +20019,9 @@ def format_excel_with_priority_status(excel_path, sheet_name):
         if sheet_name not in wb.sheetnames:
             return
         apply_first_priority_full_row_red_openpyxl(wb, sheet_name)
+        apply_comparison_tool_excel_output_styling(wb)
         wb.save(excel_path)
+        wb.close()
     except Exception as e:
         print(f"Error formatting Excel file: {str(e)}")
         # Continue even if formatting fails
@@ -19327,12 +20087,7 @@ def send_email_to_agent():
             with pd.ExcelWriter(temp_path, engine="openpyxl") as writer:
                 agent_rows.to_excel(writer, sheet_name=sheet_name, index=False)
 
-            from openpyxl import load_workbook
-
-            wb = load_workbook(temp_path)
-            apply_first_priority_full_row_red_openpyxl(wb, sheet_name)
-            wb.save(temp_path)
-            wb.close()
+            format_excel_with_priority_status(temp_path, sheet_name)
 
             # Read the Excel file as bytes
             with open(temp_path, "rb") as f:
@@ -19464,12 +20219,7 @@ def send_email_to_all_agents():
                     with pd.ExcelWriter(temp_path, engine="openpyxl") as writer:
                         agent_rows.to_excel(writer, sheet_name=sheet_name, index=False)
 
-                    from openpyxl import load_workbook
-
-                    wb = load_workbook(temp_path)
-                    apply_first_priority_full_row_red_openpyxl(wb, sheet_name)
-                    wb.save(temp_path)
-                    wb.close()
+                    format_excel_with_priority_status(temp_path, sheet_name)
 
                     # Read the Excel file as bytes
                     with open(temp_path, "rb") as f:
@@ -20160,6 +20910,7 @@ def download_agent_allocation_excel():
         wb = load_workbook(excel_buffer)
         sheet_name = f"{agent_name}_Allocation"
         apply_first_priority_full_row_red_openpyxl(wb, sheet_name)
+        apply_comparison_tool_excel_output_styling(wb)
         out_buffer = io.BytesIO()
         wb.save(out_buffer)
         wb.close()
@@ -22287,7 +23038,8 @@ def download_result():
                         # Store in a way that's accessible during formatting
                         agent_insurance_agent_names = sorted_agent_names.copy()
 
-                # Create Agent Priority by Date sheet (per agent: priority level × appointment date × row count)
+                # Create Agent Priority by Date sheet: First Priority rows only — one row per agent;
+                # columns = each appointment date + Total
                 if processed_df is not None:
                     ap_agent_col = None
                     ap_appt_col = None
@@ -22301,23 +23053,8 @@ def download_result():
                         if "priority" in cl and "status" in cl:
                             ap_ps_col = col
                     if ap_agent_col and ap_appt_col and ap_ps_col:
-                        allowed_ps = {
-                            "FIRST PRIORITY",
-                            "SECOND PRIORITY",
-                            "THIRD PRIORITY",
-                        }
-                        priority_rank = {
-                            "FIRST PRIORITY": 0,
-                            "SECOND PRIORITY": 1,
-                            "THIRD PRIORITY": 2,
-                        }
-                        ps_canonical = {
-                            "FIRST PRIORITY": "First Priority",
-                            "SECOND PRIORITY": "Second Priority",
-                            "THIRD PRIORITY": "Third Priority",
-                        }
-                        # key: (agent_name, priority_display, date_iso) -> count
-                        apbd_counts = {}
+                        # (agent, date_iso) -> count of First Priority rows only
+                        apbd_agent_date = {}
                         for _idx, row in processed_df.iterrows():
                             agent_val = row.get(ap_agent_col)
                             if pd.isna(agent_val) or not str(agent_val).strip():
@@ -22334,9 +23071,8 @@ def download_result():
                             if pd.isna(ps_val) or not str(ps_val).strip():
                                 continue
                             psu = str(ps_val).strip().upper()
-                            if psu not in allowed_ps:
+                            if psu != "FIRST PRIORITY":
                                 continue
-                            ps_display = ps_canonical.get(psu, str(ps_val).strip())
                             appt_val = row.get(ap_appt_col)
                             if pd.isna(appt_val):
                                 continue
@@ -22354,44 +23090,40 @@ def download_result():
                                 except (TypeError, ValueError, AttributeError):
                                     continue
                             date_iso = date_obj.strftime("%Y-%m-%d")
-                            k = (agent_str, ps_display, date_iso)
-                            apbd_counts[k] = apbd_counts.get(k, 0) + 1
+                            k = (agent_str, date_iso)
+                            apbd_agent_date[k] = apbd_agent_date.get(k, 0) + 1
 
-                        def _apbd_sort_key(item):
-                            (an, ps_disp, date_iso), _cnt = item
-                            pu = ps_disp.strip().upper()
-                            return (
-                                an.lower(),
-                                priority_rank.get(pu, 9),
-                                date_iso,
-                            )
-
+                        # Wide layout: one row per agent, one column per date, last column = row total
+                        all_agents_apbd = sorted(
+                            {a for (a, _d) in apbd_agent_date.keys()},
+                            key=lambda x: str(x).lower(),
+                        )
+                        all_dates_iso = sorted(
+                            {d for (_a, d) in apbd_agent_date.keys()}
+                        )
+                        date_headers = [
+                            datetime.strptime(d, "%Y-%m-%d").strftime("%m/%d/%Y")
+                            for d in all_dates_iso
+                        ]
+                        cols_apbd = ["Agent Name"] + date_headers + [
+                            "Total First Priority"
+                        ]
                         rows_apbd = []
-                        for (an, ps_disp, date_iso), cnt in sorted(
-                            apbd_counts.items(), key=_apbd_sort_key
-                        ):
-                            date_disp = datetime.strptime(
-                                date_iso, "%Y-%m-%d"
-                            ).strftime("%m/%d/%Y")
-                            rows_apbd.append(
-                                {
-                                    "Agent Name": an,
-                                    "Priority Status": ps_disp,
-                                    "Appointment Date": date_disp,
-                                    "Assigned Count": cnt,
-                                }
-                            )
+                        for an in all_agents_apbd:
+                            row_out = [an]
+                            row_total = 0
+                            for d_iso in all_dates_iso:
+                                c = apbd_agent_date.get((an, d_iso), 0)
+                                row_out.append(c)
+                                row_total += c
+                            row_out.append(row_total)
+                            rows_apbd.append(row_out)
                         if not rows_apbd:
-                            agent_priority_by_date_df = pd.DataFrame(
-                                columns=[
-                                    "Agent Name",
-                                    "Priority Status",
-                                    "Appointment Date",
-                                    "Assigned Count",
-                                ]
-                            )
+                            agent_priority_by_date_df = pd.DataFrame(columns=cols_apbd)
                         else:
-                            agent_priority_by_date_df = pd.DataFrame(rows_apbd)
+                            agent_priority_by_date_df = pd.DataFrame(
+                                rows_apbd, columns=cols_apbd
+                            )
                         agent_priority_by_date_df.to_excel(
                             writer,
                             sheet_name="Agent Priority by Date",
@@ -22795,14 +23527,6 @@ def download_result():
                                     bold=True
                                 )
 
-            # Format Zero Allocation Agents sheet
-            if "Zero Allocation Agents" in wb.sheetnames:
-                ws = wb["Zero Allocation Agents"]
-                # Make header row bold
-                if ws.max_row > 0:
-                    for col_idx in range(1, ws.max_column + 1):
-                        ws.cell(row=1, column=col_idx).font = Font(bold=True)
-
             # Format Priority Appointment Pending sheet
             if "Priority Appointment Pending" in wb.sheetnames:
                 ws = wb["Priority Appointment Pending"]
@@ -22823,6 +23547,8 @@ def download_result():
             # Imagen Allocation download: red font on every cell in rows where Priority Status is First Priority
             for sn in wb.sheetnames:
                 apply_first_priority_full_row_red_openpyxl(wb, sn)
+
+            apply_comparison_tool_excel_output_styling(wb)
 
             wb.save(temp_path)
             wb.close()
@@ -23281,6 +24007,13 @@ def download_ev_allocation():
                 ev_allocation_data.to_excel(
                     writer, sheet_name="EV Allocation", index=False
                 )
+
+            from openpyxl import load_workbook
+
+            wb = load_workbook(temp_path)
+            apply_comparison_tool_excel_output_styling(wb)
+            wb.save(temp_path)
+            wb.close()
 
             # Send file
             return send_file(
@@ -23796,6 +24529,13 @@ def download_dental_bv_allocation():
                 dental_bv_allocation_data.to_excel(
                     writer, sheet_name="Dental BV Allocation", index=False
                 )
+
+            from openpyxl import load_workbook
+
+            wb = load_workbook(temp_path)
+            apply_comparison_tool_excel_output_styling(wb)
+            wb.save(temp_path)
+            wb.close()
 
             return send_file(
                 temp_path,
@@ -24593,6 +25333,13 @@ def download_imagen_qc_allocation():
             with pd.ExcelWriter(temp_path, engine="openpyxl") as writer:
                 export_df.to_excel(writer, sheet_name="QC Allocation", index=False)
 
+            from openpyxl import load_workbook
+
+            wb = load_workbook(temp_path)
+            apply_comparison_tool_excel_output_styling(wb)
+            wb.save(temp_path)
+            wb.close()
+
             return send_file(
                 temp_path,
                 as_attachment=True,
@@ -24725,6 +25472,8 @@ def download_trackers():
                                     ws.cell(row=row_idx, column=col_idx).font = Font(
                                         bold=True
                                     )
+
+            apply_comparison_tool_excel_output_styling(wb)
 
             wb.save(temp_path)
             wb.close()
@@ -24893,6 +25642,8 @@ def download_imagen_qc_trackers():
                                     ws.cell(row=row_idx, column=col_idx).font = Font(
                                         bold=True
                                     )
+
+            apply_comparison_tool_excel_output_styling(wb)
 
             wb.save(temp_path)
             wb.close()
@@ -27377,6 +28128,7 @@ def consolidate_agent_files():
                 simple_df.to_excel(writer, sheet_name="All Agent Data", index=False)
 
         excel_buffer.seek(0)
+        excel_buffer = apply_comparison_styling_to_excel_buffer(excel_buffer)
 
         # Mark files as consolidated
         for work_file in work_files:
@@ -27465,6 +28217,7 @@ def download_agent_work_file(file_id):
                 )
 
         excel_buffer.seek(0)
+        excel_buffer = apply_comparison_styling_to_excel_buffer(excel_buffer)
 
         # Create filename with agent name and original filename
         agent_name = work_file.agent.name.replace(" ", "_")
@@ -27640,6 +28393,7 @@ def consolidate_files_helper_to_buffer(
                 apply_nh_consolidated_workbook_formatting(writer)
 
         excel_buffer.seek(0)
+        excel_buffer = apply_comparison_styling_to_excel_buffer(excel_buffer)
 
         # Mark files as consolidated if requested
         if mark_consolidated:
@@ -27731,6 +28485,8 @@ def download_file_helper(file_model, file_id, file_type_name):
                 )
 
         excel_buffer.seek(0)
+        excel_buffer = apply_comparison_styling_to_excel_buffer(excel_buffer)
+
         agent_name = work_file.agent.name.replace(" ", "_")
         original_filename = (
             work_file.filename.rsplit(".", 1)[0]
@@ -28419,12 +29175,12 @@ def get_agent_allocation():
         # Use row_indices as primary source (most reliable) since they track actual allocations
         # row_indices are the source of truth - they contain the actual rows allocated to this agent
         if row_indices and len(row_indices) > 0:
-            # Filter to only valid indices within the dataframe
-            valid_indices = [idx for idx in row_indices if idx < len(processed_df)]
+            # Filter to only valid row labels present in the dataframe
+            valid_indices = [idx for idx in row_indices if idx in processed_df.index]
 
             if valid_indices:
-                # Get rows by indices (this is the source of truth)
-                agent_df = processed_df.iloc[valid_indices].copy()
+                # Get rows by index labels (this is the source of truth)
+                agent_df = processed_df.loc[valid_indices].copy()
 
                 # Then verify/filter by Agent Name column if it exists (for data integrity check)
                 if "Agent Name" in agent_df.columns:
@@ -28588,7 +29344,7 @@ def download_agent_file():
                 # Verify row_indices match Agent Name column
                 valid_indices = []
                 for idx in row_indices:
-                    if idx < len(processed_df):
+                    if idx in processed_df.index:
                         row_agent_name = processed_df.at[idx, "Agent Name"]
                         # Check if agent name matches (handle NaN/empty values)
                         if (
@@ -28598,20 +29354,20 @@ def download_agent_file():
                             valid_indices.append(idx)
 
                 if valid_indices:
-                    agent_df = processed_df.iloc[valid_indices].copy()
+                    agent_df = processed_df.loc[valid_indices].copy()
         else:
             # If Agent Name column doesn't exist, use row_indices
-            if (
-                row_indices
-                and len(row_indices) > 0
-                and len(processed_df) > max(row_indices)
-            ):
-                agent_df = processed_df.iloc[row_indices].copy()
-            # Fallback: if row_indices not available, use first N rows
-            if len(processed_df) >= agent_rows:
-                agent_df = processed_df.head(agent_rows).copy()
-            else:
-                agent_df = processed_df.copy()
+            agent_df = pd.DataFrame()
+            if row_indices and len(row_indices) > 0:
+                labels = [i for i in row_indices if i in processed_df.index]
+                if labels:
+                    agent_df = processed_df.loc[labels].copy()
+            if agent_df.empty:
+                # Fallback: if row_indices not available, use first N rows
+                if len(processed_df) >= agent_rows:
+                    agent_df = processed_df.head(agent_rows).copy()
+                else:
+                    agent_df = processed_df.copy()
 
         # Ensure Agent Name column is set correctly for all rows
         agent_df["Agent Name"] = agent_name
@@ -32598,6 +33354,7 @@ def download_nh_allocation():
 
             wb = load_workbook(temp_path)
             apply_nh_style_priority_row_red_highlights_openpyxl(wb, "NH_Allocation")
+            apply_comparison_tool_excel_output_styling(wb)
             wb.save(temp_path)
             wb.close()
 

@@ -24,6 +24,7 @@ from datetime import datetime, timedelta, timezone
 from werkzeug.utils import secure_filename
 from werkzeug.security import generate_password_hash, check_password_hash
 import hashlib
+import html
 import tempfile
 import io
 import uuid
@@ -1069,8 +1070,23 @@ class NightShiftFile(db.Model):
                 return converted_data
             elif isinstance(data, list):
                 return pd.DataFrame(data)
-                return data
+            return data
         return None
+
+
+class AllocationOutboundSend(db.Model):
+    """Successful allocation/QC emails (Resend); used vs agent uploads for management digest."""
+
+    __tablename__ = "allocation_outbound_sends"
+
+    id = db.Column(db.Integer, primary_key=True)
+    process_key = db.Column(db.String(64), nullable=False, index=True)
+    person_name = db.Column(db.String(200), nullable=False)
+    recipient_email = db.Column(db.String(200), nullable=False)
+    agent_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=True, index=True)
+    sent_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow, index=True)
+
+    agent = db.relationship("User", backref="allocation_outbound_sends")
 
 
 # Global variables to store session data (fallback for backward compatibility)
@@ -2061,6 +2077,271 @@ def send_email_with_resend(
 
     except Exception as e:
         return False, f"Error sending email: {str(e)}"
+
+
+from sqlalchemy import func as sa_func
+
+OUTBOUND_ALLOCATION_PROCESS_LABEL = {
+    # Legacy sends (before per-menu channel); still compared to main agent work file
+    "email_allocation": "Email allocation (legacy — main agent work file)",
+    "main_approval": "Main allocation (approval email — main agent work file)",
+    "auditor_email_allocation": "Imagen QC allocation — Auditor (QCP upload)",
+}
+
+# Email Agents tab: which agent-menu upload must follow this send (slug -> ORM model, digest label)
+EMAIL_AGENT_ALLOCATION_CHANNELS = {
+    "imagen_day_shift": (DayShiftFile, "Imagen allocation — Day Shift"),
+    "imagen_night_shift": (NightShiftFile, "Imagen allocation — Night Shift"),
+    "imagen_ntbp": (NTBPFile, "Imagen allocation — NTBP"),
+    "imagen_daily_consolidate": (
+        DailyConsolidateFile,
+        "Imagen allocation — Daily Consolidate",
+    ),
+    "ev": (EVAgentFile, "EV allocation — EV"),
+    "dental_bv": (DentalBVAgentFile, "Dental BV allocation — Dental BV"),
+    "nh": (NHFile, "NH allocation — NH"),
+}
+
+_last_management_outbound_digest_ist_date = None
+
+
+def _ist_today_date():
+    ist_tz = timezone(timedelta(hours=5, minutes=30))
+    return datetime.now(ist_tz).date()
+
+
+def normalize_email_agent_allocation_channel(raw):
+    """Validate allocation_channel from Email Agents tab JSON; default Imagen Day Shift."""
+    if raw is None or (isinstance(raw, str) and not str(raw).strip()):
+        return "imagen_day_shift"
+    s = str(raw).strip().lower().replace("-", "_")
+    if s not in EMAIL_AGENT_ALLOCATION_CHANNELS:
+        allowed = ", ".join(sorted(EMAIL_AGENT_ALLOCATION_CHANNELS.keys()))
+        raise ValueError(f"Invalid allocation_channel. Use one of: {allowed}")
+    return s
+
+
+def outbound_process_label(process_key):
+    if not process_key:
+        return ""
+    if process_key.startswith("email_agent_"):
+        slug = process_key[len("email_agent_") :]
+        spec = EMAIL_AGENT_ALLOCATION_CHANNELS.get(slug)
+        if spec:
+            return spec[1]
+    return OUTBOUND_ALLOCATION_PROCESS_LABEL.get(process_key, process_key)
+
+
+def _outbound_upload_models():
+    """process_key -> model whose upload_date must be >= send time."""
+    m = {
+        "email_allocation": AgentWorkFile,
+        "main_approval": AgentWorkFile,
+        "auditor_email_allocation": QCPFile,
+    }
+    for slug, (model, _label) in EMAIL_AGENT_ALLOCATION_CHANNELS.items():
+        m[f"email_agent_{slug}"] = model
+    return m
+
+
+def resolve_user_id_for_outbound_tracking(
+    recipient_email, person_name, agent_id_hint=None
+):
+    """Match portal user for comparing uploads (email first, then exact name, then hint id)."""
+    if agent_id_hint is not None:
+        try:
+            uid = int(agent_id_hint)
+        except (TypeError, ValueError):
+            uid = None
+        else:
+            if User.query.filter_by(id=uid, is_active=True).first():
+                return uid
+    em = (recipient_email or "").strip().lower()
+    if em:
+        u = (
+            User.query.filter(sa_func.lower(User.email) == em)
+            .filter(User.is_active.is_(True))
+            .first()
+        )
+        if u:
+            return u.id
+    pn = " ".join((person_name or "").split()).strip()
+    if pn:
+        u = (
+            User.query.filter(sa_func.lower(User.name) == pn.lower())
+            .filter(User.is_active.is_(True))
+            .first()
+        )
+        if u:
+            return u.id
+    return None
+
+
+def record_allocation_outbound_send(
+    process_key, person_name, recipient_email, agent_id_hint=None, commit=True
+):
+    """Persist a successful Resend allocation/QC email for upload-vs-send reporting."""
+    if process_key not in _outbound_upload_models():
+        return
+    uid = resolve_user_id_for_outbound_tracking(
+        recipient_email, person_name, agent_id_hint
+    )
+    rec = AllocationOutboundSend(
+        process_key=process_key,
+        person_name=(person_name or "").strip() or "?",
+        recipient_email=(recipient_email or "").strip() or "?",
+        agent_id=uid,
+        sent_at=datetime.utcnow(),
+    )
+    db.session.add(rec)
+    if commit:
+        try:
+            db.session.commit()
+        except Exception:
+            db.session.rollback()
+            raise
+
+
+def _has_upload_after_send(file_model, agent_id, sent_at):
+    if not agent_id or not sent_at:
+        return False
+    return (
+        file_model.query.filter(
+            file_model.agent_id == agent_id, file_model.upload_date >= sent_at
+        ).first()
+        is not None
+    )
+
+
+def compute_pending_outbound_uploads(max_age_hours=None):
+    """
+    Rows where we sent an allocation email but no matching upload exists with
+    upload_date >= sent_at (same user / portal account).
+    """
+    if max_age_hours is None:
+        max_age_hours = int(os.environ.get("OUTBOUND_UPLOAD_DIGEST_LOOKBACK_HOURS", "96"))
+    cutoff = datetime.utcnow() - timedelta(hours=max_age_hours)
+    models = _outbound_upload_models()
+    pending = []
+    for send_row in (
+        AllocationOutboundSend.query.filter(AllocationOutboundSend.sent_at >= cutoff)
+        .order_by(AllocationOutboundSend.process_key, AllocationOutboundSend.sent_at)
+        .all()
+    ):
+        file_model = models.get(send_row.process_key)
+        if not file_model:
+            continue
+        uid = send_row.agent_id or resolve_user_id_for_outbound_tracking(
+            send_row.recipient_email, send_row.person_name
+        )
+        if not uid:
+            pending.append(
+                {
+                    "process_key": send_row.process_key,
+                    "process_label": outbound_process_label(send_row.process_key),
+                    "person_name": send_row.person_name,
+                    "recipient_email": send_row.recipient_email,
+                    "sent_at": send_row.sent_at,
+                    "note": "No portal user matched (email/name); upload status unknown",
+                }
+            )
+            continue
+        if _has_upload_after_send(file_model, uid, send_row.sent_at):
+            continue
+        pending.append(
+            {
+                "process_key": send_row.process_key,
+                "process_label": outbound_process_label(send_row.process_key),
+                "person_name": send_row.person_name,
+                "recipient_email": send_row.recipient_email,
+                "sent_at": send_row.sent_at,
+                "note": None,
+            }
+        )
+    return pending
+
+
+def outbound_digest_recipient_for_process(process_key):
+    """Route pending-upload digest rows to existing consolidation recipient groups."""
+    if process_key and process_key.startswith("email_agent_"):
+        slug = process_key[len("email_agent_") :]
+        if slug == "ev":
+            return os.environ.get("EV_CONSOLIDATION_EMAIL", "ev.tracker.mnc@gmail.com")
+        if slug == "dental_bv":
+            return os.environ.get(
+                "DENTAL_BV_CONSOLIDATION_EMAIL", "dbv.tracker.mnc@gmail.com"
+            )
+        if slug == "nh":
+            return os.environ.get("NH_CONSOLIDATION_EMAIL", "nhbv.tracker.mnc@gmail.com")
+    return os.environ.get("CONSOLIDATION_EMAIL", "amirmursal@gmail.com")
+
+
+def maybe_send_management_outbound_upload_digest():
+    """
+    One email per IST day using existing consolidation recipients:
+    - Imagen/main/auditor pending rows -> CONSOLIDATION_EMAIL
+    - EV pending rows -> EV_CONSOLIDATION_EMAIL
+    - Dental BV pending rows -> DENTAL_BV_CONSOLIDATION_EMAIL
+    - NH pending rows -> NH_CONSOLIDATION_EMAIL
+    """
+    global _last_management_outbound_digest_ist_date
+    today_ist = _ist_today_date()
+    if _last_management_outbound_digest_ist_date == today_ist:
+        return False, "digest_already_sent_today"
+
+    pending = compute_pending_outbound_uploads()
+    date_str = today_ist.isoformat()
+
+    if not pending:
+        _last_management_outbound_digest_ist_date = today_ist
+        return True, "no_pending_uploads"
+
+    recipient_rows = {}
+    for row in pending:
+        to_email = outbound_digest_recipient_for_process(row.get("process_key"))
+        recipient_rows.setdefault(to_email, []).append(row)
+
+    failures = []
+    for to_email, rows in recipient_rows.items():
+        rows_html = "".join(
+            "<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>".format(
+                html.escape(p["process_label"]),
+                html.escape(p["person_name"] or ""),
+                html.escape(p["recipient_email"] or ""),
+                p["sent_at"].strftime("%Y-%m-%d %H:%M UTC") if p["sent_at"] else "",
+                html.escape(p["note"] or "No upload after this send"),
+            )
+            for p in rows
+        )
+        body_html = f"""
+        <p>Allocation emails were sent, but the following recipients have <strong>no matching
+        file upload</strong> in the portal after the send time (see note column).</p>
+        <table border="1" cellpadding="6" cellspacing="0" style="border-collapse:collapse;font-family:sans-serif;font-size:13px;">
+        <thead><tr><th>Process</th><th>Name</th><th>Email</th><th>Sent (UTC)</th><th>Note</th></tr></thead>
+        <tbody>{rows_html}</tbody>
+        </table>
+        <p style="font-size:12px;color:#555;">Tracked sends: <strong>Email Agents</strong> tab
+        (pick Imagen Day/Night/NTBP/Daily Consolidate, EV, Dental BV, or NH — matches that agent menu upload),
+        <strong>main allocation</strong> approval emails (main agent work file),
+        <strong>Email Auditors</strong> tab (QCP upload).</p>
+        """
+        subject = f"Pending allocation uploads — {date_str} (IST)"
+        ok, msg = send_email_with_resend(
+            to_email=to_email,
+            subject=subject,
+            html_content=body_html,
+            text_content="See HTML part for the pending-upload table.",
+        )
+        if ok:
+            print(f"✅ Pending-upload digest sent to {to_email} ({len(rows)} row(s))")
+        else:
+            failures.append(f"{to_email}: {msg}")
+            print(f"❌ Pending-upload digest failed for {to_email}: {msg}")
+
+    if failures:
+        return False, "; ".join(failures)
+    _last_management_outbound_digest_ist_date = today_ist
+    return True, f"sent_to_{len(recipient_rows)}_recipient_group(s)"
 
 
 # Login Template
@@ -4124,6 +4405,27 @@ HTML_TEMPLATE = """
 
                     <!-- ========== AGENT ALLOCATION TAB ========== -->
                     <div id="email-agent-tab-content">
+                    <div class="section" style="margin-bottom: 20px; padding: 14px 18px; background: #fffbea; border: 1px solid #e6d89c; border-radius: 8px;">
+                        <label for="email-allocation-channel" style="font-weight: 600; display: block; margin-bottom: 8px;">
+                            This allocation email is for <span style="color:#856404;">(matches agent upload menu)</span>
+                        </label>
+                        <select id="email-allocation-channel" style="max-width: min(520px, 100%); padding: 8px 12px; font-size: 14px; border-radius: 6px; border: 1px solid #ccc;">
+                            <optgroup label="Imagen allocation">
+                                <option value="imagen_day_shift">Day Shift</option>
+                                <option value="imagen_night_shift">Night Shift</option>
+                                <option value="imagen_ntbp">NTBP</option>
+                                <option value="imagen_daily_consolidate">Daily Consolidate</option>
+                            </optgroup>
+                            <optgroup label="Other allocations">
+                                <option value="ev">EV allocation → EV</option>
+                                <option value="dental_bv">Dental BV allocation → Dental BV</option>
+                                <option value="nh">NH allocation → NH</option>
+                            </optgroup>
+                        </select>
+                        <p style="margin: 10px 0 0 0; font-size: 12px; color: #666;">
+                            Imagen QC / Auditor emails use the <strong>Email Auditors</strong> tab (tracked separately).
+                        </p>
+                    </div>
                     <!-- File Upload Status Messages -->
                     <div id="email-upload-status" style="margin-bottom: 20px;">
                         {% with messages = get_flashed_messages(with_categories=true) %}
@@ -5914,6 +6216,38 @@ HTML_TEMPLATE = """
             }, 3000);
         }
         
+        var EMAIL_ALLOC_CHANNEL_STORAGE = 'emailAllocationOutboundChannel';
+        function getEmailAllocationChannel() {
+            var sel = document.getElementById('email-allocation-channel');
+            if (!sel) return 'imagen_day_shift';
+            return sel.value || 'imagen_day_shift';
+        }
+        function initEmailAllocationChannelSelect() {
+            var sel = document.getElementById('email-allocation-channel');
+            if (!sel) return;
+            try {
+                var saved = localStorage.getItem(EMAIL_ALLOC_CHANNEL_STORAGE);
+                if (saved) {
+                    for (var i = 0; i < sel.options.length; i++) {
+                        if (sel.options[i].value === saved) {
+                            sel.selectedIndex = i;
+                            break;
+                        }
+                    }
+                }
+            } catch (e) {}
+            sel.addEventListener('change', function() {
+                try {
+                    localStorage.setItem(EMAIL_ALLOC_CHANNEL_STORAGE, sel.value);
+                } catch (e) {}
+            });
+        }
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', initEmailAllocationChannelSelect);
+        } else {
+            initEmailAllocationChannelSelect();
+        }
+
         // Send email to individual agent
         function sendEmailToAgent(agentName, emailId, buttonElement) {
             const statusDiv = document.getElementById('email-send-status');
@@ -5933,7 +6267,8 @@ HTML_TEMPLATE = """
                 },
                 body: JSON.stringify({ 
                     agent_name: agentName,
-                    email_id: emailId
+                    email_id: emailId,
+                    allocation_channel: getEmailAllocationChannel()
                 })
             })
             .then(response => response.json())
@@ -5999,7 +6334,10 @@ HTML_TEMPLATE = """
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
-                }
+                },
+                body: JSON.stringify({
+                    allocation_channel: getEmailAllocationChannel()
+                })
             })
             .then(response => response.json())
             .then(data => {
@@ -20079,7 +20417,7 @@ def send_email_to_agent():
         global email_allocation_data, email_allocation_filename
         global email_sent_agents
 
-        data = request.get_json()
+        data = request.get_json(silent=True) or {}
         agent_name = data.get("agent_name")
         email_id = data.get("email_id")
 
@@ -20088,6 +20426,14 @@ def send_email_to_agent():
 
         if not email_id:
             return jsonify({"success": False, "error": "Email ID is required"})
+
+        try:
+            channel = normalize_email_agent_allocation_channel(
+                data.get("allocation_channel")
+            )
+        except ValueError as e:
+            return jsonify({"success": False, "error": str(e)})
+        outbound_process_key = f"email_agent_{channel}"
 
         if email_allocation_data is None:
             return jsonify({"success": False, "error": "Allocation file not uploaded"})
@@ -20161,6 +20507,12 @@ def send_email_to_agent():
             if success:
                 # Track that email has been sent to this agent
                 email_sent_agents.add(agent_name)
+                record_allocation_outbound_send(
+                    outbound_process_key,
+                    agent_name,
+                    email_id,
+                    agent_id_hint=None,
+                )
                 return jsonify(
                     {
                         "success": True,
@@ -20186,6 +20538,15 @@ def send_email_to_all_agents():
     try:
         global email_allocation_data, email_allocation_filename
         global email_allocation_agents_list, email_sent_agents
+
+        data = request.get_json(silent=True) or {}
+        try:
+            channel = normalize_email_agent_allocation_channel(
+                data.get("allocation_channel")
+            )
+        except ValueError as e:
+            return jsonify({"success": False, "error": str(e)})
+        outbound_process_key = f"email_agent_{channel}"
 
         if email_allocation_data is None:
             return jsonify({"success": False, "error": "Allocation file not uploaded"})
@@ -20290,6 +20651,12 @@ def send_email_to_all_agents():
                     if success:
                         # Track that email has been sent to this agent
                         email_sent_agents.add(agent_name)
+                        record_allocation_outbound_send(
+                            outbound_process_key,
+                            agent_name,
+                            email_id,
+                            agent_id_hint=None,
+                        )
                         results["success"].append(
                             {"agent_name": agent_name, "email": email_id}
                         )
@@ -20677,6 +21044,12 @@ def send_email_to_auditor():
 
             if success:
                 auditor_email_sent.add(auditor_name)
+                record_allocation_outbound_send(
+                    "auditor_email_allocation",
+                    auditor_name,
+                    email_id,
+                    agent_id_hint=None,
+                )
                 return jsonify({"success": True, "message": f"Email sent to {auditor_name}"})
             else:
                 return jsonify({"success": False, "error": message})
@@ -20771,6 +21144,12 @@ def send_email_to_all_auditors():
 
                     if success:
                         auditor_email_sent.add(auditor_name)
+                        record_allocation_outbound_send(
+                            "auditor_email_allocation",
+                            auditor_name,
+                            email_id,
+                            agent_id_hint=None,
+                        )
                         results["success"].append({"auditor_name": auditor_name, "email": email_id})
                     else:
                         results["failed"].append({"auditor_name": auditor_name, "reason": message})
@@ -29650,6 +30029,12 @@ Allocation Management System
         )
 
         if success:
+            record_allocation_outbound_send(
+                "main_approval",
+                agent_info.get("name") or agent_name or "",
+                agent_email,
+                agent_id_hint=agent_info.get("id"),
+            )
             return jsonify(
                 {"success": True, "message": f"Approval email sent to {agent_email}"}
             )
@@ -29799,6 +30184,12 @@ Allocation Management System
                 )
 
                 if success:
+                    record_allocation_outbound_send(
+                        "main_approval",
+                        agent_name,
+                        agent_email,
+                        agent_id_hint=agent.get("id"),
+                    )
                     successful_sends.append(f"{agent_name} ({agent_email})")
                 else:
                     failed_sends.append(f"{agent_name}: {message}")
@@ -30515,6 +30906,13 @@ def daily_consolidate_all_subtabs_and_email():
 
     try:
         with app.app_context():
+            try:
+                maybe_send_management_outbound_upload_digest()
+            except Exception as digest_exc:
+                print(
+                    f"⚠️ Management upload digest failed (non-fatal): {digest_exc}"
+                )
+
             consolidation_email = os.environ.get(
                 "CONSOLIDATION_EMAIL", "amirmursal@gmail.com"
             )

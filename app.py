@@ -27199,14 +27199,14 @@ def validate_office_name_not_blank(file_data):
 def validate_appointment_date_format(file_data):
     """
     Validate that 'Appointment Date' column exists, has no blank values,
-    and all values are in exact MM/DD/YYYY format across all sheets.
+    and all values are exactly MM/DD/YYYY (two-digit month and day, slashes only)
+    across all sheets. No ISO dash dates, no times, no other formats.
     Returns (is_valid, error_message).
     Identifies rows by Patient ID > Patient Name > Excel row number (fallback).
     """
     import re
 
     date_pattern_mmddyyyy = re.compile(r"^\d{2}/\d{2}/\d{4}$")
-    date_pattern_iso = re.compile(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$")
 
     if not file_data:
         return False, "No data found in file"
@@ -27259,23 +27259,16 @@ def validate_appointment_date_format(file_data):
                 reason = "blank"
             else:
                 val_str = str(val).strip()
-                # Check MM/DD/YYYY format
                 if date_pattern_mmddyyyy.match(val_str):
                     try:
                         month, day, year = val_str.split("/")
                         datetime(int(year), int(month), int(day))
                     except (ValueError, TypeError):
                         reason = f"invalid date '{val_str}'"
-                # Check YYYY-MM-DD HH:MM:SS format
-                elif date_pattern_iso.match(val_str):
-                    try:
-                        date_part = val_str.split(" ")[0]
-                        year, month, day = date_part.split("-")
-                        datetime(int(year), int(month), int(day))
-                    except (ValueError, TypeError):
-                        reason = f"invalid date '{val_str}'"
                 else:
-                    reason = f"invalid format '{val_str}'"
+                    reason = (
+                        f"must be exactly MM/DD/YYYY (e.g. 04/25/2026), got '{val_str}'"
+                    )
 
             if reason:
                 # Determine identifier for this row
@@ -27312,7 +27305,11 @@ def validate_appointment_date_format(file_data):
         ids_str = ", ".join(identifiers)
         parts.append(f"[{sheet_name}] → {ids_str}")
 
-    error_msg = "Appointment Date must be in MM/DD/YYYY format: " + " | ".join(parts)
+    error_msg = (
+        "Appointment Date must be exactly MM/DD/YYYY (slashes only, two-digit month "
+        "and day; no dashes or timestamps): "
+        + " | ".join(parts)
+    )
     return False, error_msg
 
 
@@ -27601,14 +27598,14 @@ def validate_dental_primary_ins_carr(file_data):
 def validate_received_date_format(file_data):
     """
     Validate that 'Received date' column exists, is not blank, and all values
-    are in MM/DD/YYYY or YYYY-MM-DD HH:MM:SS format across all sheets.
+    are exactly MM/DD/YYYY (two-digit month and day, slashes only) across all sheets.
+    No ISO dash dates, no times, no other formats.
     Returns (is_valid, error_message).
     Identifies rows by Patient ID > Patient Name > Excel row number (fallback).
     """
     import re
 
     date_pattern_mmddyyyy = re.compile(r"^\d{2}/\d{2}/\d{4}$")
-    date_pattern_iso = re.compile(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$")
 
     if not file_data:
         return False, "No data found in file"
@@ -27664,15 +27661,10 @@ def validate_received_date_format(file_data):
                         datetime(int(year), int(month), int(day))
                     except (ValueError, TypeError):
                         reason = f"invalid date '{val_str}'"
-                elif date_pattern_iso.match(val_str):
-                    try:
-                        date_part = val_str.split(" ")[0]
-                        year, month, day = date_part.split("-")
-                        datetime(int(year), int(month), int(day))
-                    except (ValueError, TypeError):
-                        reason = f"invalid date '{val_str}'"
                 else:
-                    reason = f"invalid format '{val_str}'"
+                    reason = (
+                        f"must be exactly MM/DD/YYYY (e.g. 04/25/2026), got '{val_str}'"
+                    )
 
             if reason:
                 identifier = None
@@ -27706,7 +27698,11 @@ def validate_received_date_format(file_data):
         ids_str = ", ".join(identifiers)
         parts.append(f"[{sheet_name}] → {ids_str}")
 
-    error_msg = "Received date must be in MM/DD/YYYY format: " + " | ".join(parts)
+    error_msg = (
+        "Received date must be exactly MM/DD/YYYY (slashes only, two-digit month "
+        "and day; no dashes or timestamps): "
+        + " | ".join(parts)
+    )
     return False, error_msg
 
 

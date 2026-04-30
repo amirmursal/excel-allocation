@@ -28352,24 +28352,25 @@ def calculate_summary_from_deduplicated_data(combined_df):
 
 def deduplicate_consolidated_data(combined_df):
     """
-    Deduplicate consolidated agent data based on Patient ID + Dental Primary Ins Carr.
+    Pass-through for consolidated agent data (no row removal).
 
-    Logic:
-    - Group rows by Patient ID + Dental Primary Ins Carr
-    - If any row in a group has priority remark ("updated", "QCP", "ASST"), keep ONLY those priority rows
-    - If no row has priority remark, keep all rows (including empty remarks)
-    - If multiple rows have priority remarks, keep all of them
+    Previously, rows sharing Patient ID + Dental Primary Ins Carr were reduced when any row
+    in that group had remark updated / QCP / ASST (non-priority rows were dropped). That
+    made consolidated ``All Agent Data`` row counts lower than the sum of per-agent
+    downloads. Priority-based removal is disabled; all rows are kept.
+
+    If Patient ID, Dental Primary Ins Carr, or Remark/Remarks columns are missing, the
+    dataframe is returned unchanged (same as before).
 
     Args:
         combined_df: DataFrame with all agent data combined
 
     Returns:
-        DataFrame with deduplicated rows
+        DataFrame with the same rows (shallow copy when dedupe columns exist)
     """
     if combined_df.empty:
         return combined_df
 
-    # Find required columns (case-insensitive)
     patient_id_col = None
     insurance_col = None
     remark_col = None
@@ -28380,59 +28381,13 @@ def deduplicate_consolidated_data(combined_df):
             patient_id_col = col
         elif col_lower == "dental primary ins carr":
             insurance_col = col
-        elif col_lower in ["remark", "remarks"]:
+        elif col_lower in ("remark", "remarks"):
             remark_col = col
 
-    # If required columns not found, return original dataframe
     if not patient_id_col or not insurance_col or not remark_col:
         return combined_df
 
-    # Priority remark values (case-insensitive)
-    priority_remarks = {"updated", "qcp", "asst"}
-
-    # Create a copy to avoid modifying original
-    df = combined_df.copy()
-
-    # Normalize remark column for comparison (handle NaN/empty)
-    df["_remark_normalized"] = df[remark_col].astype(str).str.strip().str.lower()
-    df["_remark_normalized"] = df["_remark_normalized"].replace(
-        ["nan", "none", ""], None
-    )
-
-    # Create grouping key
-    df["_group_key"] = (
-        df[patient_id_col].astype(str) + "|||" + df[insurance_col].astype(str)
-    )
-
-    # List to store indices to keep
-    indices_to_keep = []
-
-    # Process each group
-    for group_key, group_df in df.groupby("_group_key"):
-        group_indices = group_df.index.tolist()
-
-        # Check if any row has priority remark
-        has_priority = False
-        priority_indices = []
-
-        for idx in group_indices:
-            remark_val = df.loc[idx, "_remark_normalized"]
-            if remark_val and remark_val in priority_remarks:
-                has_priority = True
-                priority_indices.append(idx)
-
-        if has_priority:
-            # Keep only rows with priority remarks
-            indices_to_keep.extend(priority_indices)
-        else:
-            # Keep all rows (no priority remarks found)
-            indices_to_keep.extend(group_indices)
-
-    # Clean up temporary columns
-    df = df.drop(columns=["_remark_normalized", "_group_key"])
-
-    # Return deduplicated dataframe
-    return df.loc[indices_to_keep].reset_index(drop=True)
+    return combined_df.copy()
 
 
 @app.route("/consolidate_agent_files", methods=["POST"])

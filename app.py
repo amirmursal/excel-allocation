@@ -6098,7 +6098,7 @@ HTML_TEMPLATE = """
                 headers: {
                     'Content-Type': 'application/json',
                 },
-                body: JSON.stringify({ agent_name: agentName })
+                body: JSON.stringify({ agent_name: agentName, allocation_channel: getEmailAllocationChannel() })
             })
             .then(response => response.json())
             .then(data => {
@@ -6163,7 +6163,7 @@ HTML_TEMPLATE = """
                 headers: {
                     'Content-Type': 'application/json',
                 },
-                body: JSON.stringify({ agent_name: currentViewingAgent })
+                body: JSON.stringify({ agent_name: currentViewingAgent, allocation_channel: getEmailAllocationChannel() })
             })
             .then(response => {
                 if (response.ok) {
@@ -20210,7 +20210,7 @@ def apply_nh_style_priority_row_red_highlights_openpyxl(wb, sheet_name):
             if val is None:
                 continue
             v = str(val).strip().lower()
-            if v == "appointment":
+            if v in ("appointment", "appointment date"):
                 appointment_col_idx = col_idx
             if v == "source":
                 source_col_idx = col_idx
@@ -20244,6 +20244,50 @@ def apply_nh_style_priority_row_red_highlights_openpyxl(wb, sheet_name):
                     ws.cell(row=row_idx, column=col_idx).font = red_font
     except Exception as e:
         print(f"Error applying NH-style priority row highlights: {str(e)}", flush=True)
+
+
+def is_nh_priority_style_row(row):
+    """
+    True when a pandas row should use NH red-row rules (same logic as
+    apply_nh_style_priority_row_red_highlights_openpyxl).
+    """
+    from datetime import date as date_type
+
+    today = date_type.today()
+    end_date = today + timedelta(days=3)
+    appt_col = src_col = pri_col = None
+    for col in row.index:
+        v = str(col).strip().lower()
+        if v in ("appointment", "appointment date"):
+            appt_col = col
+        elif "priority" in v and "status" in v:
+            pri_col = col
+        elif v == "source":
+            src_col = col
+    if pri_col is not None:
+        pv = row.get(pri_col)
+        if pd.notna(pv):
+            psu = str(pv).strip().upper()
+            if psu in ("FIRST PRIORITY", "SECOND PRIORITY"):
+                return True
+    if appt_col is not None:
+        cell_val = row.get(appt_col)
+        if cell_val is not None and not pd.isna(cell_val):
+            s = str(cell_val).strip()
+            if s and s.upper() != "N/A":
+                dt = parse_excel_date(cell_val)
+                if dt is not None:
+                    try:
+                        if dt < today or (today <= dt <= end_date):
+                            return True
+                    except (TypeError, ValueError):
+                        pass
+    if src_col is not None:
+        sv = row.get(src_col)
+        if sv is not None and not pd.isna(sv):
+            if str(sv).strip().lower() in ("email", "mail"):
+                return True
+    return False
 
 
 def apply_first_priority_full_row_red_openpyxl(wb, sheet_name):
@@ -20379,14 +20423,20 @@ def apply_comparison_styling_to_excel_buffer(excel_buffer):
         return excel_buffer
 
 
-def format_excel_with_priority_status(excel_path, sheet_name):
+def format_excel_with_priority_status(excel_path, sheet_name, nh_email_style=False):
     """
-    Format Excel file: rows with Priority Status \"First Priority\" get red font (FF0000)
-    on all cells in that row (Imagen / QC allocation exports and auditor email attachments).
+    Format Excel file with red font (FF0000) for priority rows.
+
+    - Default (nh_email_style=False): rows whose Priority Status is First Priority only
+      (Imagen / general email allocation and auditor attachments).
+    - NH email allocation (nh_email_style=True): same rules as NH allocation download /
+      ``apply_nh_style_priority_row_red_highlights_openpyxl`` — First/Second Priority status,
+      appointment window, or Source email/mail.
 
     Args:
         excel_path: Path to the Excel file
         sheet_name: Name of the sheet to format
+        nh_email_style: When True, use NH priority row highlighting (Email Allocations → NH).
     """
     try:
         from openpyxl import load_workbook
@@ -20394,7 +20444,10 @@ def format_excel_with_priority_status(excel_path, sheet_name):
         wb = load_workbook(excel_path)
         if sheet_name not in wb.sheetnames:
             return
-        apply_first_priority_full_row_red_openpyxl(wb, sheet_name)
+        if nh_email_style:
+            apply_nh_style_priority_row_red_highlights_openpyxl(wb, sheet_name)
+        else:
+            apply_first_priority_full_row_red_openpyxl(wb, sheet_name)
         apply_comparison_tool_excel_output_styling(wb)
         wb.save(excel_path)
         wb.close()
@@ -20471,7 +20524,9 @@ def send_email_to_agent():
             with pd.ExcelWriter(temp_path, engine="openpyxl") as writer:
                 agent_rows.to_excel(writer, sheet_name=sheet_name, index=False)
 
-            format_excel_with_priority_status(temp_path, sheet_name)
+            format_excel_with_priority_status(
+                temp_path, sheet_name, nh_email_style=(channel == "nh")
+            )
 
             # Read the Excel file as bytes
             with open(temp_path, "rb") as f:
@@ -20618,7 +20673,9 @@ def send_email_to_all_agents():
                     with pd.ExcelWriter(temp_path, engine="openpyxl") as writer:
                         agent_rows.to_excel(writer, sheet_name=sheet_name, index=False)
 
-                    format_excel_with_priority_status(temp_path, sheet_name)
+                    format_excel_with_priority_status(
+                        temp_path, sheet_name, nh_email_style=(channel == "nh")
+                    )
 
                     # Read the Excel file as bytes
                     with open(temp_path, "rb") as f:
@@ -21184,6 +21241,13 @@ def get_agent_allocation_data():
         if not agent_name:
             return jsonify({"success": False, "error": "Agent name is required"})
 
+        try:
+            allocation_channel = normalize_email_agent_allocation_channel(
+                data.get("allocation_channel")
+            )
+        except ValueError as e:
+            return jsonify({"success": False, "error": str(e)})
+
         if email_allocation_data is None:
             return jsonify({"success": False, "error": "Allocation file not uploaded"})
 
@@ -21220,8 +21284,10 @@ def get_agent_allocation_data():
                 priority_status_col = col
                 break
 
-        def is_first_priority_row(row):
-            """Email Allocation modal: highlight rows where Priority Status is First Priority only."""
+        def row_should_highlight_red(row):
+            """Modal red row: NH uses full NH rules; other channels First Priority only."""
+            if allocation_channel == "nh":
+                return is_nh_priority_style_row(row)
             if priority_status_col is None:
                 return False
             pv = row.get(priority_status_col)
@@ -21240,7 +21306,7 @@ def get_agent_allocation_data():
                     row_dict[col] = ""
                 else:
                     row_dict[col] = str(value)
-            row_dict["_priority"] = is_first_priority_row(row)
+            row_dict["_priority"] = row_should_highlight_red(row)
             rows.append(row_dict)
 
         return jsonify(
@@ -21271,6 +21337,13 @@ def download_agent_allocation_excel():
 
         if not agent_name:
             return jsonify({"success": False, "error": "Agent name is required"}), 400
+
+        try:
+            allocation_channel = normalize_email_agent_allocation_channel(
+                data.get("allocation_channel")
+            )
+        except ValueError as e:
+            return jsonify({"success": False, "error": str(e)}), 400
 
         if email_allocation_data is None:
             return (
@@ -21326,7 +21399,10 @@ def download_agent_allocation_excel():
 
         wb = load_workbook(excel_buffer)
         sheet_name = f"{agent_name}_Allocation"
-        apply_first_priority_full_row_red_openpyxl(wb, sheet_name)
+        if allocation_channel == "nh":
+            apply_nh_style_priority_row_red_highlights_openpyxl(wb, sheet_name)
+        else:
+            apply_first_priority_full_row_red_openpyxl(wb, sheet_name)
         apply_comparison_tool_excel_output_styling(wb)
         out_buffer = io.BytesIO()
         wb.save(out_buffer)
@@ -31830,6 +31906,18 @@ def process_nh_allocation():
             except (KeyError, TypeError):
                 return False
 
+        def _nh_row_remark_is_workable(idx):
+            """True when Remark is exactly 'workable' (case-insensitive). Used for Asaad's Dr. Startaloo quota."""
+            if a_remark is None:
+                return False
+            try:
+                val = alloc_df.at[idx, a_remark]
+            except (KeyError, TypeError):
+                return False
+            if pd.isna(val):
+                return False
+            return str(val).strip().lower() == "workable"
+
         def _nh_set_remark_workable_if_rule1_caller_assigned(idx):
             """After assigning a Rule 1 row (NTC / 'allocate to …') to a caller, set Remark to 'workable'."""
             if a_remark is None:
@@ -32527,6 +32615,7 @@ def process_nh_allocation():
             )
 
         def _nh_asaad_shaikh_startaloo_assigned_count():
+            """Count Dr. Startaloo rows assigned to Asaad with Remark workable (quota = 2)."""
             a = _nh_asaad_agent_effective()
             if a is None:
                 return 0
@@ -32542,18 +32631,20 @@ def process_nh_allocation():
                     ro = alloc_df.at[i, a_office]
                 except (KeyError, TypeError):
                     continue
-                if _nh_row_office_is_dr_startaloo(ro):
+                if _nh_row_office_is_dr_startaloo(ro) and _nh_row_remark_is_workable(i):
                     n += 1
             return n
 
-        def _nh_asaad_shaikh_office_allowed(row_office_val):
-            """NADG/NAGD-prefixed offices (incl. WIP) or Dr. Startaloo (max 2 Startaloo rows for Asaad)."""
+        def _nh_asaad_shaikh_office_allowed(row_office_val, row_idx=None):
+            """NADG/NAGD-prefixed offices (incl. WIP) or Dr. Startaloo (max 2 workable-remark Startaloo rows for Asaad)."""
             k = nh_office_key(row_office_val)
             if k.startswith("nadg") or k.startswith("nagd"):
                 return True
             if not _nh_row_office_is_dr_startaloo(row_office_val):
                 return False
             if _nh_asaad_agent_effective() is None:
+                return False
+            if row_idx is None or not _nh_row_remark_is_workable(row_idx):
                 return False
             return _nh_asaad_shaikh_startaloo_assigned_count() < 2
 
@@ -32618,7 +32709,7 @@ def process_nh_allocation():
                 return a["assigned"] < a["tfd"]
             return False
 
-        def _nh_skip_agent_caller_row_for_blocked_office(agent, row_office_val):
+        def _nh_skip_agent_caller_row_for_blocked_office(agent, row_office_val, row_idx=None):
             """Caller-only rows skip matches_office; honor office blocks / Siddhantraj allowlist."""
             if _nh_siddhantraj_rokade(agent) and not _nh_siddhantraj_rokade_office_allowed(
                 row_office_val
@@ -32628,7 +32719,7 @@ def process_nh_allocation():
             if (
                 _ae_asaad is not None
                 and agent is _ae_asaad
-                and not _nh_asaad_shaikh_office_allowed(row_office_val)
+                and not _nh_asaad_shaikh_office_allowed(row_office_val, row_idx)
             ):
                 return True
             if _nh_danish_varshani(agent) and not _nh_danish_varshani_office_allowed(
@@ -32727,7 +32818,7 @@ def process_nh_allocation():
                 and _nh_vinayak_nazir_office_blocked(row_office_val)
             )
 
-        def matches_office(agent, row_office_val):
+        def matches_office(agent, row_office_val, row_idx=None):
             row_office = str(row_office_val).strip().lower() if pd.notna(row_office_val) else ""
             if not row_office or row_office == "nan":
                 return False
@@ -32819,10 +32910,10 @@ def process_nh_allocation():
             # Siddhantraj Rokade: only NADG-Cloud9 or Dr. Hickory (Evenly Location); insurance = staff preference
             if _nh_siddhantraj_rokade(agent):
                 return _nh_siddhantraj_rokade_office_allowed(row_office_val)
-            # Asaad Shaikh (incl. name match without Shaikh): NADG/NAGD + Dr. Startaloo (max 2); any insurance
+            # Asaad Shaikh (incl. name match without Shaikh): NADG/NAGD + Dr. Startaloo (max 2 workable); any insurance
             _ae_asaad_mo = _nh_asaad_agent_effective()
             if _ae_asaad_mo is not None and agent is _ae_asaad_mo:
-                return _nh_asaad_shaikh_office_allowed(row_office_val)
+                return _nh_asaad_shaikh_office_allowed(row_office_val, row_idx)
             # Danish Varshani: Dr. Hickory (Evenly Location) or Dr. Irani only; any insurance
             if _nh_danish_varshani(agent):
                 return _nh_danish_varshani_office_allowed(row_office_val)
@@ -32927,13 +33018,15 @@ def process_nh_allocation():
 
         def _nh_try_assign_compulsory_dr_startaloo_to_asaad(idx):
             """
-            Business rule: exactly 2 Dr. Startaloo-office rows for Asaad. Skips office/insurance
-            / priority checks that can block normal matching; only TFD + remark + office + not caller.
+            Business rule: exactly 2 Dr. Startaloo-office rows with Remark workable for Asaad.
+            Skips office/insurance / priority checks that can block normal matching; only TFD + office + not caller.
             """
             aa = _nh_asaad_agent_effective()
             if aa is None:
                 return False
             if _nh_asaad_shaikh_startaloo_assigned_count() >= 2:
+                return False
+            if not _nh_row_remark_is_workable(idx):
                 return False
             try:
                 roff = alloc_df.at[idx, a_office]
@@ -32994,7 +33087,7 @@ def process_nh_allocation():
                 ag = caller_agents[(caller_only_rr + step) % n_caller_only]
                 if ag["tfd"] > 0 and ag["assigned"] >= ag["tfd"]:
                     continue
-                if _nh_skip_agent_caller_row_for_blocked_office(ag, row[a_office]):
+                if _nh_skip_agent_caller_row_for_blocked_office(ag, row[a_office], idx):
                     continue
                 if _nh_faisal_shaikh(ag) and not _nh_faisal_shaikh_office_allowed(
                     row[a_office]
@@ -33008,7 +33101,7 @@ def process_nh_allocation():
                 caller_only_rr = (caller_only_rr + step + 1) % n_caller_only
                 break
 
-        # --- Pass 0a: Asaad Shaikh — compulsory 2 Dr. Startaloo office rows (before web pool / Aarti / Pass 0d / Richa) ---
+        # --- Pass 0a: Asaad Shaikh — compulsory 2 Dr. Startaloo + workable remark (before web pool / Aarti / Pass 0d / Richa) ---
         for _nh_p0a_idx in alloc_df.index:
             if _nh_asaad_shaikh_startaloo_assigned_count() >= 2:
                 break
@@ -33075,7 +33168,7 @@ def process_nh_allocation():
                     continue
                 if agent["tfd"] > 0 and agent["assigned"] >= agent["tfd"]:
                     continue
-                if not matches_office(agent, row[a_office]):
+                if not matches_office(agent, row[a_office], idx):
                     continue
                 if not matches_insurance(
                     agent, nh_alloc_insurance_for_match(idx), row[a_office]
@@ -33105,7 +33198,7 @@ def process_nh_allocation():
                     continue
                 if aarti_agent["tfd"] > 0 and aarti_agent["assigned"] >= aarti_agent["tfd"]:
                     continue
-                if not matches_office(aarti_agent, row[a_office]):
+                if not matches_office(aarti_agent, row[a_office], idx):
                     continue
                 if not nh_alisha_triple_may_take_row(idx, aarti_agent):
                     continue
@@ -33130,7 +33223,7 @@ def process_nh_allocation():
                     continue
                 if aarti_agent["tfd"] > 0 and aarti_agent["assigned"] >= aarti_agent["tfd"]:
                     continue
-                if not matches_office(aarti_agent, row[a_office]):
+                if not matches_office(aarti_agent, row[a_office], idx):
                     continue
                 if not matches_insurance(
                     aarti_agent, nh_alloc_insurance_for_match(idx), row[a_office]
@@ -33163,7 +33256,7 @@ def process_nh_allocation():
                 ag = web_category_agents[(web_pool_rr + step) % n_web_pool]
                 if ag["tfd"] > 0 and ag["assigned"] >= ag["tfd"]:
                     continue
-                if not matches_office(ag, row[a_office]):
+                if not matches_office(ag, row[a_office], idx):
                     continue
                 if not matches_insurance(
                     ag, nh_alloc_insurance_for_match(idx), row[a_office]
@@ -33194,7 +33287,7 @@ def process_nh_allocation():
                     continue
                 if aarti_agent["tfd"] > 0 and aarti_agent["assigned"] >= aarti_agent["tfd"]:
                     continue
-                if not matches_office(aarti_agent, row[a_office]):
+                if not matches_office(aarti_agent, row[a_office], idx):
                     continue
                 if not matches_insurance(
                     aarti_agent, nh_alloc_insurance_for_match(idx), row[a_office]
@@ -33229,7 +33322,7 @@ def process_nh_allocation():
                 continue
             if target["tfd"] > 0 and target["assigned"] >= target["tfd"]:
                 continue
-            if not matches_office(target, row[a_office]):
+            if not matches_office(target, row[a_office], idx):
                 continue
             if not matches_insurance(
                 target, nh_alloc_insurance_for_match(idx), row[a_office]
@@ -33274,7 +33367,7 @@ def process_nh_allocation():
                     continue
                 if ag["tfd"] > 0 and ag["assigned"] >= ag["tfd"]:
                     continue
-                if not matches_office(ag, row[a_office]):
+                if not matches_office(ag, row[a_office], idx):
                     continue
                 if not matches_insurance(
                     ag, nh_alloc_insurance_for_match(idx), row[a_office]
@@ -33400,7 +33493,7 @@ def process_nh_allocation():
                 alloc_df.at[idx, a_agent_name] = richa_agent["name"]
                 richa_agent["assigned"] += 1
 
-        # Startaloo remainder: Ketan first (few / overflow), then Asaad; office + insurance + TFD (Asaad max 2 Dr. Startaloo overall)
+        # Startaloo remainder: Ketan first (few / overflow), then Asaad; office + insurance + TFD (Asaad max 2 workable Dr. Startaloo)
         startaloo_remainder = [
             i
             for i in alloc_df.index
@@ -33425,7 +33518,7 @@ def process_nh_allocation():
                     continue
                 if agent["tfd"] > 0 and agent["assigned"] >= agent["tfd"]:
                     continue
-                if not matches_office(agent, row[a_office]):
+                if not matches_office(agent, row[a_office], i):
                     continue
                 if not matches_insurance(
                     agent, nh_alloc_insurance_for_match(i), row[a_office]
@@ -33503,7 +33596,7 @@ def process_nh_allocation():
             for agent in caller_agents:
                 if agent["tfd"] > 0 and agent["assigned"] >= agent["tfd"]:
                     continue
-                if _nh_skip_agent_caller_row_for_blocked_office(agent, row[a_office]):
+                if _nh_skip_agent_caller_row_for_blocked_office(agent, row[a_office], idx):
                     continue
                 if _nh_faisal_shaikh(agent) and not _nh_faisal_shaikh_office_allowed(
                     row[a_office]
@@ -33559,7 +33652,7 @@ def process_nh_allocation():
                 agent = nadg_agents[(nadg_rr + step) % n_nadg]
                 if agent["assigned"] >= agent["tfd"] and agent["tfd"] > 0:
                     continue
-                if not matches_office(agent, row[a_office]):
+                if not matches_office(agent, row[a_office], idx):
                     continue
                 if not matches_insurance(
                     agent, nh_alloc_insurance_for_match(idx), row[a_office]
@@ -33585,7 +33678,7 @@ def process_nh_allocation():
                 if agent["assigned"] >= agent["tfd"] and agent["tfd"] > 0:
                     continue
                 if is_nh_caller_only_row(row):
-                    if _nh_skip_agent_caller_row_for_blocked_office(agent, row[a_office]):
+                    if _nh_skip_agent_caller_row_for_blocked_office(agent, row[a_office], idx):
                         continue
                     if _nh_faisal_shaikh(agent) and not _nh_faisal_shaikh_office_allowed(
                         row[a_office]
@@ -33597,7 +33690,7 @@ def process_nh_allocation():
                     agent["assigned"] += 1
                     _nh_set_remark_workable_if_rule1_caller_assigned(idx)
                     break
-                if not matches_office(agent, row[a_office]):
+                if not matches_office(agent, row[a_office], idx):
                     continue
                 if not matches_insurance(
                     agent, nh_alloc_insurance_for_match(idx), row[a_office]
@@ -33623,7 +33716,7 @@ def process_nh_allocation():
             if is_nh_caller_only_row(row) and not agent.get("is_caller"):
                 return False
             if is_nh_caller_only_row(row) and agent.get("is_caller"):
-                if _nh_skip_agent_caller_row_for_blocked_office(agent, row[a_office]):
+                if _nh_skip_agent_caller_row_for_blocked_office(agent, row[a_office], idx):
                     return False
                 if _nh_faisal_shaikh(agent) and not _nh_faisal_shaikh_office_allowed(
                     row[a_office]
@@ -33635,7 +33728,7 @@ def process_nh_allocation():
                 agent["assigned"] += 1
                 _nh_set_remark_workable_if_rule1_caller_assigned(idx)
                 return True
-            if not matches_office(agent, row[a_office]):
+            if not matches_office(agent, row[a_office], idx):
                 return False
             if not matches_insurance(
                 agent, nh_alloc_insurance_for_match(idx), row[a_office]

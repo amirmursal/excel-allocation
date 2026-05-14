@@ -28621,6 +28621,7 @@ def calculate_summary_from_deduplicated_data(combined_df):
     # Find required columns (case-insensitive)
     agent_name_col = None
     remark_col = None
+    uploaded_at_col = "__uploaded_at__" if "__uploaded_at__" in combined_df.columns else None
 
     for col in combined_df.columns:
         col_lower = col.lower().strip()
@@ -28659,6 +28660,20 @@ def calculate_summary_from_deduplicated_data(combined_df):
                 non_empty_remarks_str[non_empty_remarks_str != "workable"]
             )
 
+        # Last uploaded time for this agent group (if metadata exists)
+        last_uploaded_time = ""
+        if uploaded_at_col is not None:
+            try:
+                parsed_uploads = pd.to_datetime(agent_df[uploaded_at_col], errors="coerce")
+                latest_upload = parsed_uploads.max()
+                if pd.notna(latest_upload):
+                    dt_py = latest_upload.to_pydatetime() if hasattr(latest_upload, "to_pydatetime") else latest_upload
+                    dt_ist = to_ist_filter(dt_py)
+                    if dt_ist is not None:
+                        last_uploaded_time = dt_ist.strftime("%Y-%m-%d %I:%M %p IST")
+            except Exception:
+                last_uploaded_time = ""
+
         # Count remarks by status
         remarks_dict = {}
         for remark in non_empty_remarks:
@@ -28676,6 +28691,7 @@ def calculate_summary_from_deduplicated_data(combined_df):
                     }
 
         agent_data[agent_name_str] = {
+            "last_uploaded_time": last_uploaded_time,
             "total_assigned_count": total_assigned_count,
             "completed_count": completed_count,
             "empty_remarks_count": empty_remarks_count,
@@ -28693,6 +28709,7 @@ def calculate_summary_from_deduplicated_data(combined_df):
     for agent_name, data in agent_data.items():
         row_data = {
             "Agent": agent_name,
+            "Last Uploaded Time": data.get("last_uploaded_time", ""),
             "Total Assigned Count": data["total_assigned_count"],
             "Completed Count": data["completed_count"],
             "Empty Remarks Count": data["empty_remarks_count"],
@@ -28756,6 +28773,57 @@ def deduplicate_consolidated_data(combined_df):
     return combined_df.copy()
 
 
+def add_last_uploaded_time_to_summary(summary_df, work_files, agent_col="Agent"):
+    """
+    Add 'Last Uploaded Time' column to a consolidation Summary sheet.
+    Time is shown in IST and sourced from the latest upload per agent.
+    """
+    if summary_df is None or summary_df.empty or agent_col not in summary_df.columns:
+        return summary_df
+
+    latest_by_agent_norm = {}
+    for work_file in work_files or []:
+        try:
+            agent_name = (
+                str(work_file.agent.name).strip()
+                if work_file.agent and work_file.agent.name
+                else ""
+            )
+        except Exception:
+            agent_name = ""
+        if not agent_name:
+            continue
+        dt = getattr(work_file, "upload_date", None)
+        norm = agent_name.lower()
+        prev = latest_by_agent_norm.get(norm)
+        if dt is not None and (prev is None or dt > prev):
+            latest_by_agent_norm[norm] = dt
+
+    out = summary_df.copy()
+
+    def _fmt_last_uploaded_row(row):
+        existing = row.get("Last Uploaded Time", "")
+        if existing is not None and str(existing).strip():
+            return existing
+        agent_value = row.get(agent_col)
+        if pd.isna(agent_value):
+            return ""
+        norm = str(agent_value).strip().lower()
+        dt = latest_by_agent_norm.get(norm)
+        if dt is None:
+            return ""
+        try:
+            dt_ist = to_ist_filter(dt)
+            if dt_ist is None:
+                return ""
+            return dt_ist.strftime("%Y-%m-%d %I:%M %p IST")
+        except Exception:
+            return ""
+
+    out["Last Uploaded Time"] = out.apply(_fmt_last_uploaded_row, axis=1)
+    return out
+
+
 @app.route("/consolidate_agent_files", methods=["POST"])
 @admin_required
 def consolidate_agent_files():
@@ -28796,10 +28864,12 @@ def consolidate_agent_files():
 
                             if isinstance(sheet_data, pd.DataFrame):
                                 sheet_data_copy = sheet_data.copy()
+                                sheet_data_copy["__uploaded_at__"] = work_file.upload_date
                                 all_agent_data.append(sheet_data_copy)
                     elif isinstance(file_data, pd.DataFrame):
                         # Single DataFrame
                         file_data_copy = file_data.copy()
+                        file_data_copy["__uploaded_at__"] = work_file.upload_date
                         all_agent_data.append(file_data_copy)
 
             # Create combined sheet with all agent data
@@ -28812,6 +28882,7 @@ def consolidate_agent_files():
                 # Calculate Summary from deduplicated data
                 summary_df = calculate_summary_from_deduplicated_data(combined_df)
                 if not summary_df.empty:
+                    summary_df = add_last_uploaded_time_to_summary(summary_df, work_files)
                     summary_df.to_excel(writer, sheet_name="Summary", index=False)
 
                 # Format all date columns to MM/DD/YYYY using robust parser to avoid blanks
@@ -28842,6 +28913,10 @@ def consolidate_agent_files():
                             # If robust parsing fails, keep original values unchanged
                             pass
 
+                # Internal metadata column used only for Summary calculations
+                if "__uploaded_at__" in combined_df.columns:
+                    combined_df = combined_df.drop(columns=["__uploaded_at__"], errors="ignore")
+
                 combined_df.to_excel(writer, sheet_name="All Agent Data", index=False)
             else:
                 # Fallback if no data found
@@ -28849,6 +28924,7 @@ def consolidate_agent_files():
                     [
                         {
                             "Agent": "No agents",
+                            "Last Uploaded Time": "",
                             "Total Assigned Count": 0,
                             "Completed Count": 0,
                             "Empty Remarks Count": 0,
@@ -29084,15 +29160,20 @@ def consolidate_files_helper_to_buffer(
                             if sheet_name.lower() == "summary":
                                 continue
                             if isinstance(sheet_data, pd.DataFrame):
-                                all_agent_data.append(sheet_data.copy())
+                                sheet_data_copy = sheet_data.copy()
+                                sheet_data_copy["__uploaded_at__"] = work_file.upload_date
+                                all_agent_data.append(sheet_data_copy)
                     elif isinstance(file_data, pd.DataFrame):
-                        all_agent_data.append(file_data.copy())
+                        file_data_copy = file_data.copy()
+                        file_data_copy["__uploaded_at__"] = work_file.upload_date
+                        all_agent_data.append(file_data_copy)
 
             if all_agent_data:
                 combined_df = pd.concat(all_agent_data, ignore_index=True)
                 combined_df = deduplicate_consolidated_data(combined_df)
                 summary_df = calculate_summary_from_deduplicated_data(combined_df)
                 if not summary_df.empty:
+                    summary_df = add_last_uploaded_time_to_summary(summary_df, work_files)
                     summary_df.to_excel(writer, sheet_name="Summary", index=False)
 
                 for col in combined_df.columns:
@@ -29105,12 +29186,17 @@ def consolidate_files_helper_to_buffer(
                         except Exception:
                             pass
 
+                # Internal metadata column used only for Summary calculations
+                if "__uploaded_at__" in combined_df.columns:
+                    combined_df = combined_df.drop(columns=["__uploaded_at__"], errors="ignore")
+
                 combined_df.to_excel(writer, sheet_name="All Agent Data", index=False)
             else:
                 empty_summary_df = pd.DataFrame(
                     [
                         {
                             "Agent": "No agents",
+                            "Last Uploaded Time": "",
                             "Total Assigned Count": 0,
                             "Completed Count": 0,
                             "Empty Remarks Count": 0,
@@ -31171,6 +31257,7 @@ def create_consolidated_data():
 
             # Create summary DataFrame
             summary_df = pd.DataFrame(summary_data)
+            summary_df = add_last_uploaded_time_to_summary(summary_df, work_files)
             summary_df.to_excel(writer, sheet_name="Summary", index=False)
 
             # Combine all agent data into one sheet

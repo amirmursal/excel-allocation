@@ -12733,6 +12733,7 @@ def process_allocation_files_with_dates(
                 priority_status_col = None  # Priority Status column (First/Second)
                 supervisor_col = None  # Supervisor column
                 auditor_col = None  # Auditors column
+                team_leader_col = None  # Team Leader column
                 for col in agent_df.columns:
                     col_lower = col.lower()
                     if "agent" in col_lower and "name" in col_lower:
@@ -12799,6 +12800,12 @@ def process_allocation_files_with_dates(
                         or ("auditor" in col_lower and "name" in col_lower)
                     ):
                         auditor_col = col
+                    elif (
+                        col_lower == "team leader"
+                        or col_lower == "teamleader"
+                        or ("team" in col_lower and "leader" in col_lower)
+                    ):
+                        team_leader_col = col
 
                 # Use CC column if available, otherwise fallback to counts_col
                 capacity_col = cc_col if cc_col else counts_col
@@ -12836,6 +12843,8 @@ def process_allocation_files_with_dates(
                         columns_to_select.append(supervisor_col)
                     if auditor_col:
                         columns_to_select.append(auditor_col)
+                    if team_leader_col:
+                        columns_to_select.append(team_leader_col)
 
                     agent_data = agent_df[columns_to_select].dropna(
                         subset=[agent_name_col, capacity_col]
@@ -13282,6 +13291,11 @@ def process_allocation_files_with_dates(
                         if auditor_col and pd.notna(row[auditor_col]):
                             agent_auditors = str(row[auditor_col]).strip()
 
+                        # Get team leader value
+                        agent_team_leader = ""
+                        if team_leader_col and pd.notna(row[team_leader_col]):
+                            agent_team_leader = str(row[team_leader_col]).strip()
+
                         agent_allocations.append(
                             {
                                 "id": agent_id,  # Unique identifier (ID column or name + index)
@@ -13293,6 +13307,7 @@ def process_allocation_files_with_dates(
                                 "email": agent_email,
                                 "supervisor": agent_supervisor,  # Supervisor name
                                 "auditors": agent_auditors,  # Auditors name(s)
+                                "team_leader": agent_team_leader,  # Team leader name
                                 "insurance_companies": insurance_companies,
                                 "insurance_needs_training": insurance_needs_training,
                                 "insurance_do_not_allocate": insurance_do_not_allocate,  # Insurance companies this agent should NOT be allocated
@@ -19348,10 +19363,15 @@ def process_allocation_files_with_dates(
                     if "Supervisor" not in processed_df.columns:
                         processed_df["Supervisor"] = ""
 
-                    # Set agent name and supervisor for each allocated row
+                    # Initialize Team Leader column if it doesn't exist
+                    if "Team Leader" not in processed_df.columns:
+                        processed_df["Team Leader"] = ""
+
+                    # Set agent name, supervisor, and team leader for each allocated row
                     for agent in agent_allocations:
                         agent_name = agent["name"]
                         agent_supervisor = agent.get("supervisor", "")
+                        agent_team_leader = agent.get("team_leader", "")
                         row_indices = agent.get("row_indices", [])
                         if row_indices:
                             # Filter to only valid row labels present in the dataframe
@@ -19366,6 +19386,10 @@ def process_allocation_files_with_dates(
                                 # Set supervisor for all rows allocated to this agent
                                 processed_df.loc[valid_indices, "Supervisor"] = (
                                     agent_supervisor
+                                )
+                                # Set team leader for all rows allocated to this agent
+                                processed_df.loc[valid_indices, "Team Leader"] = (
+                                    agent_team_leader
                                 )
 
                     # Calculate allocation statistics FIRST
@@ -20691,6 +20715,93 @@ def apply_comparison_tool_excel_output_styling(wb):
         apply_auto_column_widths_openpyxl(ws)
 
 
+def apply_last_uploaded_time_staleness_highlight_openpyxl(wb, stale_hours=2):
+    """
+    In Summary sheets, color 'Last Uploaded Time' cells red when older than stale_hours from current IST.
+    """
+    try:
+        from copy import copy as _copy
+
+        ist_now = datetime.now(pytz.timezone("Asia/Kolkata"))
+
+        for sheet_name in wb.sheetnames:
+            ws = wb[sheet_name]
+            if ws.max_row < 2 or ws.max_column < 1:
+                continue
+            # Only apply to Summary sheets
+            if str(sheet_name).strip().lower() != "summary":
+                continue
+
+            target_col_idx = None
+            for col_idx in range(1, ws.max_column + 1):
+                hv = ws.cell(row=1, column=col_idx).value
+                if hv is None:
+                    continue
+                if str(hv).strip().lower() == "last uploaded time":
+                    target_col_idx = col_idx
+                    break
+            if target_col_idx is None:
+                continue
+
+            for row_idx in range(2, ws.max_row + 1):
+                cell = ws.cell(row=row_idx, column=target_col_idx)
+                raw = cell.value
+                if raw is None:
+                    continue
+                txt = str(raw).strip()
+                if not txt:
+                    continue
+
+                dt_ist = None
+                # Parse summary time-only format first (e.g., "07:29 PM")
+                try:
+                    naive_time = datetime.strptime(txt, "%I:%M %p")
+                    dt_ist = ist_now.replace(
+                        hour=naive_time.hour,
+                        minute=naive_time.minute,
+                        second=0,
+                        microsecond=0,
+                    )
+                    # If parsed time is ahead of current time, treat it as yesterday.
+                    if dt_ist > ist_now:
+                        dt_ist = dt_ist - timedelta(days=1)
+                except Exception:
+                    dt_ist = None
+
+                # Backward-compat parser for older "YYYY-MM-DD hh:mm AM IST" values.
+                if dt_ist is None:
+                    try:
+                        cleaned = txt.replace(" IST", "").strip()
+                        naive = datetime.strptime(cleaned, "%Y-%m-%d %I:%M %p")
+                        dt_ist = pytz.timezone("Asia/Kolkata").localize(naive)
+                    except Exception:
+                        dt_ist = None
+
+                # Final fallback parser for generic date-like values.
+                if dt_ist is None:
+                    try:
+                        dt_date = parse_excel_date(raw)
+                        if dt_date is not None:
+                            dt_ist = pytz.timezone("Asia/Kolkata").localize(
+                                datetime(dt_date.year, dt_date.month, dt_date.day, 0, 0, 0)
+                            )
+                    except Exception:
+                        dt_ist = None
+
+                if dt_ist is None:
+                    continue
+
+                try:
+                    if (ist_now - dt_ist).total_seconds() > stale_hours * 3600:
+                        new_font = _copy(cell.font)
+                        new_font.color = "FFFF0000"
+                        cell.font = new_font
+                except Exception:
+                    continue
+    except Exception as e:
+        print(f"apply_last_uploaded_time_staleness_highlight_openpyxl: {e}", flush=True)
+
+
 def apply_comparison_styling_to_excel_buffer(excel_buffer):
     """
     Load an xlsx from BytesIO, apply comparison-tool header/grid/date/width styling
@@ -20702,6 +20813,7 @@ def apply_comparison_styling_to_excel_buffer(excel_buffer):
 
         wb = load_workbook(excel_buffer)
         apply_comparison_tool_excel_output_styling(wb)
+        apply_last_uploaded_time_staleness_highlight_openpyxl(wb, stale_hours=2)
         out = io.BytesIO()
         wb.save(out)
         wb.close()
@@ -28670,7 +28782,7 @@ def calculate_summary_from_deduplicated_data(combined_df):
                     dt_py = latest_upload.to_pydatetime() if hasattr(latest_upload, "to_pydatetime") else latest_upload
                     dt_ist = to_ist_filter(dt_py)
                     if dt_ist is not None:
-                        last_uploaded_time = dt_ist.strftime("%Y-%m-%d %I:%M %p IST")
+                        last_uploaded_time = dt_ist.strftime("%I:%M %p")
             except Exception:
                 last_uploaded_time = ""
 
@@ -28816,7 +28928,7 @@ def add_last_uploaded_time_to_summary(summary_df, work_files, agent_col="Agent")
             dt_ist = to_ist_filter(dt)
             if dt_ist is None:
                 return ""
-            return dt_ist.strftime("%Y-%m-%d %I:%M %p IST")
+            return dt_ist.strftime("%I:%M %p")
         except Exception:
             return ""
 

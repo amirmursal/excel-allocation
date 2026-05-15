@@ -31501,6 +31501,9 @@ def daily_consolidate_all_subtabs_and_email():
             nh_consolidation_email = os.environ.get(
                 "NH_CONSOLIDATION_EMAIL", "nhbv.tracker.mnc@gmail.com"
             )
+            ar_consolidation_email = os.environ.get(
+                "AR_CONSOLIDATION_EMAIL", "ar.tracker.mnc@gmail.com"
+            )
 
             subtab_configs = [
                 (DayShiftFile, "Day Shift"),
@@ -31522,6 +31525,8 @@ def daily_consolidate_all_subtabs_and_email():
             dbv_files_consolidated = 0
             nh_attachment = None
             nh_files_consolidated = 0
+            ar_attachments = []
+            ar_files_consolidated = 0
             total_files_consolidated = 0
             subtabs_with_data = []
             subtabs_main = []
@@ -31544,6 +31549,9 @@ def daily_consolidate_all_subtabs_and_email():
                     elif file_type_name == "NH":
                         nh_attachment = item
                         nh_files_consolidated = file_count
+                    elif file_type_name in {"Ortho AR", "Dental AR"}:
+                        ar_attachments.append(item)
+                        ar_files_consolidated += file_count
                     else:
                         main_attachments.append(item)
                         subtabs_main.append(file_type_name)
@@ -31559,7 +31567,11 @@ def daily_consolidate_all_subtabs_and_email():
                 subtabs_main.append("MIS Checklist")
 
             has_any_data = bool(
-                main_attachments or ev_attachment or dbv_attachment or nh_attachment
+                main_attachments
+                or ev_attachment
+                or dbv_attachment
+                or nh_attachment
+                or ar_attachments
             )
 
             # Only send when there is at least one sub-tab with data
@@ -31576,6 +31588,8 @@ def daily_consolidate_all_subtabs_and_email():
                         main_total -= dbv_files_consolidated
                     if nh_attachment:
                         main_total -= nh_files_consolidated
+                    if ar_attachments:
+                        main_total -= ar_files_consolidated
                     subtabs_list_main = (
                     "<ul>"
                         + "".join([f"<li>{st}</li>" for st in subtabs_main])
@@ -31583,12 +31597,12 @@ def daily_consolidate_all_subtabs_and_email():
                 )
                     subject_main = f"Daily Consolidated Files - All Sub-tabs - {date_str}"
                     html_main = f"""
-                <p>Please find attached consolidated files (excluding <strong>NH</strong>, <strong>EV</strong>, and <strong>Dental BV</strong>; those are sent in separate emails) generated at {date_str} {time_str}.</p>
+                <p>Please find attached consolidated files (excluding <strong>NH</strong>, <strong>EV</strong>, <strong>Dental BV</strong>, <strong>Ortho AR</strong>, and <strong>Dental AR</strong>; those are sent in separate emails) generated at {date_str} {time_str}.</p>
                 <p><strong>Consolidated Sub-tabs ({len(subtabs_main)}):</strong></p>
                 {subtabs_list_main}
                 <p>Total source files in this bundle: {main_total}</p>
                 """
-                    text_main = f"Daily consolidated files (excluding NH, EV, and Dental BV). Generated at {date_str} {time_str}."
+                    text_main = f"Daily consolidated files (excluding NH, EV, Dental BV, Ortho AR, and Dental AR). Generated at {date_str} {time_str}."
                     main_ok, main_msg = send_email_with_resend(
                         to_email=consolidation_email,
                         subject=subject_main,
@@ -31677,13 +31691,37 @@ def daily_consolidate_all_subtabs_and_email():
                             f"❌ Failed to send NH consolidation email to {nh_consolidation_email}: {nh_msg}"
                         )
 
-                success = main_ok and ev_ok and dbv_ok and nh_ok
+                ar_ok = True
+                if ar_attachments:
+                    subject_ar = f"Daily Consolidated Ortho AR & Dental AR Files - {date_str}"
+                    html_ar = f"""
+                <p>Please find attached the consolidated <strong>Ortho AR</strong> and <strong>Dental AR</strong> agent files generated at {date_str} {time_str}.</p>
+                <p>Source files consolidated: {ar_files_consolidated}</p>
+                """
+                    text_ar = f"Daily consolidated Ortho AR and Dental AR files. Generated at {date_str} {time_str}."
+                    ar_ok, ar_msg = send_email_with_resend(
+                        to_email=ar_consolidation_email,
+                        subject=subject_ar,
+                        html_content=html_ar,
+                        text_content=text_ar,
+                        attachments=ar_attachments,
+                    )
+                    if ar_ok:
+                        print(
+                            f"✅ Daily Ortho AR/Dental AR consolidation email sent to {ar_consolidation_email}"
+                        )
+                    else:
+                        print(
+                            f"❌ Failed to send Ortho AR/Dental AR consolidation email to {ar_consolidation_email}: {ar_msg}"
+                        )
+
+                success = main_ok and ev_ok and dbv_ok and nh_ok and ar_ok
 
                 if success:
                     # Mark as executed today
                     app._last_subtab_consolidation_date = today
                     print(
-                        f"✅ Daily sub-tab consolidation emails completed (main→{consolidation_email}, NH→{nh_consolidation_email}, EV→{ev_consolidation_email}, Dental BV→{dental_bv_consolidation_email})"
+                        f"✅ Daily sub-tab consolidation emails completed (main→{consolidation_email}, NH→{nh_consolidation_email}, EV→{ev_consolidation_email}, Dental BV→{dental_bv_consolidation_email}, Ortho AR/Dental AR→{ar_consolidation_email})"
                     )
 
                     # Perform cleanup after successful email (delete all uploads for these subtabs)

@@ -26598,9 +26598,10 @@ def generate_all_trackers_from_dataframe(
     5. NTBP Allocation
     6. NTC Allocation
     7. NTC Insurance Name and counts
-    8. Agent Insurance
-    9. Priority Appointment Pending
-    10. Zero Allocation Agents
+    8. Insurance Wise Counts
+    9. Agent Insurance
+    10. Priority Appointment Pending
+    11. Zero Allocation Agents
 
     When count_by_auditor=True (Imagen QC Tracker), row/person keys use the **Auditor**
     column instead of **Agent Name**, and summary sheet names reflect auditors.
@@ -27312,7 +27313,32 @@ def generate_all_trackers_from_dataframe(
             writer, sheet_name="NTC Insurance Name and counts", index=False
         )
 
-    # ========== 8. Agent / Auditor Insurance ==========
+    # ========== 8. Insurance Wise Counts ==========
+    if insurance_carrier_col and "Insurance Wise Counts" not in _omit:
+        insurance_counts = {}
+        for idx, row in processed_df.iterrows():
+            insurance_value = row.get(insurance_carrier_col)
+            if pd.notna(insurance_value):
+                insurance_name = str(insurance_value).strip()
+                if insurance_name:
+                    insurance_counts[insurance_name] = (
+                        insurance_counts.get(insurance_name, 0) + 1
+                    )
+
+        insurance_counts_list = sorted(
+            insurance_counts.items(),
+            key=lambda x: x[1],
+            reverse=True,
+        )
+        insurance_wise_counts_df = pd.DataFrame(
+            insurance_counts_list,
+            columns=["Row Labels", "Count of Dental Primary Ins Carr"],
+        )
+        insurance_wise_counts_df.to_excel(
+            writer, sheet_name="Insurance Wise Counts", index=False
+        )
+
+    # ========== 9. Agent / Auditor Insurance ==========
     if agent_name_col and insurance_carrier_col:
         agent_insurance_data = {}
         agent_names = set()
@@ -27386,7 +27412,7 @@ def generate_all_trackers_from_dataframe(
             writer, sheet_name=insurance_sheet_name, index=False
         )
 
-    # ========== 9. Priority Appointment Pending ==========
+    # ========== 10. Priority Appointment Pending ==========
     if office_name_col and appointment_date_col:
         appointment_dates_dict = get_appointment_dates_dict(
             processed_df, appointment_date_col
@@ -27469,7 +27495,7 @@ def generate_all_trackers_from_dataframe(
             writer, sheet_name="Priority Appointment Pending", index=False
         )
 
-    # ========== 10. Zero Allocation Agents ==========
+    # ========== 11. Zero Allocation Agents ==========
     if agent_allocations_data_param:
         zero_allocation_agents = [
             agent

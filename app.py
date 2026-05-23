@@ -1611,20 +1611,57 @@ def get_dental_ar_files(agent_id=None):
     return DentalARFile.query.order_by(DentalARFile.upload_date.desc()).all()
 
 
-def save_dental_bv_agent_file(agent_id, filename, file_data, notes=None):
-    """Save Dental BV agent file to database"""
-    f = DentalBVAgentFile(agent_id=agent_id, filename=filename, notes=notes)
+def save_dental_bv_agent_file(
+    agent_id, filename, file_data, notes=None, shift_type=None
+):
+    """Save Dental BV agent file to database, optionally tagged by shift."""
+    final_notes = notes
+    if shift_type in {DENTAL_BV_SHIFT_DAY, DENTAL_BV_SHIFT_NIGHT}:
+        final_notes = _build_dental_bv_shift_note(shift_type)
+    f = DentalBVAgentFile(agent_id=agent_id, filename=filename, notes=final_notes)
     f.set_file_data(file_data)
     db.session.add(f)
     db.session.commit()
     return f
 
 
-def get_dental_bv_agent_files(agent_id=None):
-    """Get Dental BV agent files, optionally filtered by agent"""
+DENTAL_BV_SHIFT_DAY = "day"
+DENTAL_BV_SHIFT_NIGHT = "night"
+DENTAL_BV_SHIFT_NOTE_PREFIX = "__dental_bv_shift__:"
+
+
+def _build_dental_bv_shift_note(shift_type):
+    return f"{DENTAL_BV_SHIFT_NOTE_PREFIX}{shift_type}"
+
+
+def _extract_dental_bv_shift_note(notes_value):
+    if not notes_value:
+        return None
+    notes_str = str(notes_value).strip().lower()
+    if notes_str.startswith(DENTAL_BV_SHIFT_NOTE_PREFIX):
+        return notes_str[len(DENTAL_BV_SHIFT_NOTE_PREFIX) :].strip()
+    return None
+
+
+def get_dental_bv_agent_files(agent_id=None, shift_type=None):
+    """Get Dental BV agent files, optionally filtered by agent and shift."""
+    query = DentalBVAgentFile.query
     if agent_id:
-        return DentalBVAgentFile.query.filter_by(agent_id=agent_id).order_by(DentalBVAgentFile.upload_date.desc()).all()
-    return DentalBVAgentFile.query.order_by(DentalBVAgentFile.upload_date.desc()).all()
+        query = query.filter_by(agent_id=agent_id)
+    files = query.order_by(DentalBVAgentFile.upload_date.desc()).all()
+
+    if not shift_type:
+        return files
+
+    shift_type = str(shift_type).strip().lower()
+    filtered = []
+    for f in files:
+        tagged_shift = _extract_dental_bv_shift_note(f.notes)
+        # Backward compatibility: legacy untagged files are treated as day shift.
+        effective_shift = tagged_shift or DENTAL_BV_SHIFT_DAY
+        if effective_shift == shift_type:
+            filtered.append(f)
+    return filtered
 
 
 def save_mis_checklist_file(agent_id, filename, file_data, notes=None):
@@ -2998,11 +3035,14 @@ HTML_TEMPLATE = """
             background: linear-gradient(180deg, #667eea 0%, #764ba2 100%);
             color: white;
             min-height: 100vh;
+            height: 100vh;
             position: fixed;
             left: 0;
             top: 0;
             padding: 20px 0;
             box-shadow: 2px 0 10px rgba(0,0,0,0.1);
+            overflow-y: auto;
+            overflow-x: hidden;
         }
         .admin-sidebar-header {
             padding: 20px;
@@ -3055,6 +3095,15 @@ HTML_TEMPLATE = """
             width: 20px;
             text-align: center;
         }
+        .admin-sidebar .menu-item .accordion-chevron {
+            margin-left: auto;
+            font-size: 0.9em;
+            opacity: 0.85;
+            transition: transform 0.2s ease;
+        }
+        .admin-sidebar .menu-item.expanded .accordion-chevron {
+            transform: rotate(180deg);
+        }
         .admin-sidebar .submenu {
             display: block;
             background: rgba(0,0,0,0.1);
@@ -3084,6 +3133,61 @@ HTML_TEMPLATE = """
             margin-right: 12px;
             width: 20px;
             text-align: center;
+        }
+        .admin-sidebar .submenu-main-item {
+            display: flex;
+            align-items: center;
+            justify-content: flex-start;
+            padding: 10px 20px 8px 20px;
+            margin-top: 8px;
+            font-size: 0.82em;
+            font-weight: 400;
+            letter-spacing: normal;
+            text-transform: none;
+            color: rgba(255,255,255,0.78);
+            border-left: none;
+        }
+        .admin-sidebar .submenu-main-item:hover {
+            background: rgba(255,255,255,0.1);
+            border-left: 3px solid white;
+            color: white;
+        }
+        .admin-sidebar .submenu-main-item.active {
+            background: rgba(255,255,255,0.2);
+            border-left: 3px solid white;
+            color: white;
+            font-weight: 700;
+        }
+        .admin-sidebar .submenu-group-label {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 10px 20px 8px 20px;
+            margin-top: 8px;
+            font-size: 0.82em;
+            font-weight: 400;
+            letter-spacing: normal;
+            text-transform: none;
+            color: rgba(255,255,255,0.78);
+            cursor: pointer;
+            user-select: none;
+        }
+        .admin-sidebar .submenu-group-label i {
+            margin-left: 8px;
+            font-size: 0.9em;
+            transition: transform 0.2s ease;
+        }
+        .admin-sidebar .submenu-group-label.expanded i {
+            transform: rotate(180deg);
+        }
+        .admin-sidebar .submenu-group-items {
+            display: none;
+            margin: 0;
+            padding: 0;
+            list-style: none;
+        }
+        .admin-sidebar .submenu-group-items.expanded {
+            display: block;
         }
         .admin-main-content {
             margin-left: 250px;
@@ -3562,6 +3666,7 @@ HTML_TEMPLATE = """
             // Remove active class from all menu items
             document.querySelectorAll('.admin-sidebar .menu-item').forEach(item => {
                 item.classList.remove('active');
+                item.classList.remove('expanded');
             });
             document.querySelectorAll('.admin-sidebar .submenu-item').forEach(item => {
                 item.classList.remove('active');
@@ -3577,14 +3682,16 @@ HTML_TEMPLATE = """
             const targetMenuText = getMenuDisplayName(menuName).toLowerCase();
             menuItems.forEach((item, index) => {
                 const menuText = item.textContent.trim().toLowerCase();
+                const dataMenuMatch = item.getAttribute('data-menu') === menuName;
                 const exactMatch = menuText === targetMenuText;
                 const nameMatch = menuText === menuName.toLowerCase().replace(/-/g, ' ');
-                if (exactMatch || nameMatch) {
+                if (dataMenuMatch || exactMatch || nameMatch) {
                     item.classList.add('active');
                     // Show submenu if it exists (next sibling element)
                     const nextSibling = item.nextElementSibling;
                     if (nextSibling && nextSibling.classList.contains('submenu')) {
                         nextSibling.style.display = 'block';
+                        item.classList.add('expanded');
                     }
                 }
             });
@@ -3594,16 +3701,17 @@ HTML_TEMPLATE = """
                 const submenuItems = document.querySelectorAll('.admin-sidebar .submenu-item');
                 const targetSubmenuText = getSubmenuDisplayName(submenuName).toLowerCase();
                 submenuItems.forEach(item => {
+                    const dataSubmenuMatch = item.getAttribute('data-submenu') === submenuName;
                     const itemText = item.textContent.trim().toLowerCase();
                     const exactMatch = itemText === targetSubmenuText;
                     const nameMatch = itemText === submenuName.toLowerCase().replace(/-/g, ' ');
-                    if (exactMatch || nameMatch) {
+                    if (dataSubmenuMatch || exactMatch || nameMatch) {
                         item.classList.add('active');
                     }
                 });
                 
                 // Show corresponding content
-                const contentId = submenuName + '-content';
+                let contentId = submenuName + '-content';
                 const content = document.getElementById(contentId);
                 if (content) {
                     content.style.display = 'block';
@@ -3644,6 +3752,103 @@ HTML_TEMPLATE = """
             }
             window.history.pushState({}, '', url);
         };
+
+        window.toggleAdminMenuAccordion = function(menuName, defaultSubmenu) {
+            const menuItems = document.querySelectorAll('.admin-sidebar .menu-item');
+            let targetMenuItem = null;
+
+            menuItems.forEach((item) => {
+                if (item.getAttribute('data-menu') === menuName) {
+                    targetMenuItem = item;
+                }
+            });
+
+            if (!targetMenuItem) {
+                switchAdminMenu(menuName, defaultSubmenu || '');
+                return;
+            }
+
+            const submenu = targetMenuItem.nextElementSibling;
+            const isAccordionSection = submenu && submenu.classList.contains('submenu');
+            const isExpanded =
+                isAccordionSection &&
+                getComputedStyle(submenu).display !== 'none' &&
+                targetMenuItem.classList.contains('expanded');
+
+            if (isExpanded) {
+                submenu.style.display = 'none';
+                targetMenuItem.classList.remove('expanded');
+                return;
+            }
+
+            switchAdminMenu(menuName, defaultSubmenu || '');
+        };
+
+        function initializeAgentConsolidationAccordion() {
+            const container = document.querySelector('.admin-sidebar .agent-consolidation-accordion');
+            if (!container) return;
+
+            const labels = Array.from(container.querySelectorAll('.submenu-group-label'));
+
+            function closeGroup(groupLabel) {
+                groupLabel.classList.remove('expanded');
+                const icon = groupLabel.querySelector('i.fa-chevron-down');
+                if (icon) icon.style.transform = '';
+                const groupKey = groupLabel.getAttribute('data-group');
+                const items = container.querySelector(`.submenu-group-items[data-group="${groupKey}"]`);
+                if (items) items.classList.remove('expanded');
+            }
+
+            function openGroup(groupLabel) {
+                groupLabel.classList.add('expanded');
+                const groupKey = groupLabel.getAttribute('data-group');
+                const items = container.querySelector(`.submenu-group-items[data-group="${groupKey}"]`);
+                if (items) items.classList.add('expanded');
+            }
+
+            function openOnlyGroup(targetLabel) {
+                labels.forEach((label) => {
+                    if (label === targetLabel) {
+                        openGroup(label);
+                    } else {
+                        closeGroup(label);
+                    }
+                });
+            }
+
+            labels.forEach((label) => {
+                label.addEventListener('click', function() {
+                    const isExpanded = label.classList.contains('expanded');
+                    if (isExpanded) {
+                        closeGroup(label);
+                    } else {
+                        openOnlyGroup(label);
+                    }
+                });
+            });
+
+            const activeSubmenu = container.querySelector('.submenu-item.active');
+            if (activeSubmenu) {
+                const parentGroup = activeSubmenu.closest('.submenu-group-items');
+                if (parentGroup) {
+                    const groupKey = parentGroup.getAttribute('data-group');
+                    const targetLabel = container.querySelector(`.submenu-group-label[data-group="${groupKey}"]`);
+                    if (targetLabel) {
+                        openOnlyGroup(targetLabel);
+                        return;
+                    }
+                }
+            }
+
+            // Default: open first group only
+            if (labels.length > 0) {
+                openOnlyGroup(labels[0]);
+            }
+        }
+        
+        document.addEventListener('DOMContentLoaded', function() {
+            initializeAgentConsolidationAccordion();
+        });
         
         function getMenuDisplayName(menuName) {
             const names = {
@@ -3661,17 +3866,19 @@ HTML_TEMPLATE = """
                 'ev-allocation': 'EV Allocation',
                 'dental-bv-allocation': 'Dental BV Allocation',
                 'imagen-qc-allocation': 'Imagen QC Allocation',
-                'nh-allocation': 'NH Allocation',
-                'day-shift': 'Day Shift',
-                'night-shift': 'Night Shift',
+                'nh-allocation': 'NH BV Allocation',
+                'day-shift': 'Imagen Day Shift Consolidation',
+                'night-shift': 'Imagen Night Shift Consolidation',
                 'ntbp': 'NTBP',
                 'qcp': 'Auditor',
                 'daily-consolidate': 'Daily Consolidate',
-                'nh-consolidate': 'NH',
+                'nh-consolidate': 'NH BV',
                 'ortho-consolidate': 'Ortho AR',
                 'dental-ar-consolidate': 'Dental AR',
                 'ev-consolidate': 'EV',
                 'dental-bv-consolidate': 'Dental BV',
+                'dental-bv-day-consolidate': 'Dental BV Day Shift Consolidation',
+                'dental-bv-night-consolidate': 'Dental BV Night Shift Consolidation',
                 'mis-checklist-consolidate': 'MIS Checklist',
                 'imagen-tracker': 'Imagen Tracker',
                 'imagen-qc-tracker': 'Imagen QC Tracker'
@@ -3715,8 +3922,9 @@ HTML_TEMPLATE = """
         </div>
         <ul class="admin-sidebar-menu">
             <li>
-                <div class="menu-item {% if current_menu == 'allocations' %}active{% endif %}" onclick="switchAdminMenu('allocations', 'image-allocation')">
+                <div class="menu-item {% if current_menu == 'allocations' %}active expanded{% endif %}" data-menu="allocations" onclick="toggleAdminMenuAccordion('allocations', 'image-allocation')">
                     <i class="fas fa-folder-open"></i> Allocations
+                    <span class="accordion-chevron">▼</span>
                 </div>
                 <ul class="submenu" style="display: {% if current_menu == 'allocations' %}block{% else %}none{% endif %}; list-style: none; padding-left: 0;">
                     <li>
@@ -3741,7 +3949,7 @@ HTML_TEMPLATE = """
                     </li>
                     <li>
                         <div class="submenu-item {% if current_submenu == 'nh-allocation' %}active{% endif %}" onclick="switchAdminMenu('allocations', 'nh-allocation')">
-                            <i class="fas fa-hospital"></i> NH Allocation
+                            <i class="fas fa-hospital"></i> NH BV Allocation
                         </div>
                     </li>
                 </ul>
@@ -3752,70 +3960,92 @@ HTML_TEMPLATE = """
                 </div>
             </li>
             <li>
-                <div class="menu-item {% if current_menu == 'agent-consolidation' %}active{% endif %}" onclick="switchAdminMenu('agent-consolidation', 'day-shift')">
+                <div class="menu-item {% if current_menu == 'agent-consolidation' %}active expanded{% endif %}" data-menu="agent-consolidation" onclick="toggleAdminMenuAccordion('agent-consolidation', 'day-shift')">
                     <i class="fas fa-compress-arrows-alt"></i> Agent Consolidation
+                    <span class="accordion-chevron">▼</span>
                 </div>
-                <ul class="submenu" style="display: {% if current_menu == 'agent-consolidation' %}block{% else %}none{% endif %}; list-style: none; padding-left: 0;">
+                <ul class="submenu agent-consolidation-accordion" style="display: {% if current_menu == 'agent-consolidation' %}block{% else %}none{% endif %}; list-style: none; padding-left: 0;">
                     <li>
-                        <div class="submenu-item {% if current_submenu == 'day-shift' %}active{% endif %}" onclick="switchAdminMenu('agent-consolidation', 'day-shift')">
-                            <i class="fas fa-sun"></i> Day Shift
+                        <div class="submenu-group-label" data-group="imagen">Imagen Consolidation <i class="fas fa-chevron-down"></i></div>
+                        <ul class="submenu-group-items" data-group="imagen">
+                            <li>
+                                <div class="submenu-item {% if current_submenu == 'day-shift' %}active{% endif %}" data-submenu="day-shift" onclick="switchAdminMenu('agent-consolidation', 'day-shift')">
+                                    <i class="fas fa-sun"></i> Day Shift
+                                </div>
+                            </li>
+                            <li>
+                                <div class="submenu-item {% if current_submenu == 'night-shift' %}active{% endif %}" data-submenu="night-shift" onclick="switchAdminMenu('agent-consolidation', 'night-shift')">
+                                    <i class="fas fa-moon"></i> Night Shift
+                                </div>
+                            </li>
+                            <li>
+                                <div class="submenu-item {% if current_submenu == 'ntbp' %}active{% endif %}" data-submenu="ntbp" onclick="switchAdminMenu('agent-consolidation', 'ntbp')">
+                                    <i class="fas fa-ban"></i> NTBP
+                                </div>
+                            </li>
+                            <li>
+                                <div class="submenu-item {% if current_submenu == 'daily-consolidate' %}active{% endif %}" data-submenu="daily-consolidate" onclick="switchAdminMenu('agent-consolidation', 'daily-consolidate')">
+                                    <i class="fas fa-calendar-day"></i> Daily Consolidate
+                                </div>
+                            </li>
+                            <li>
+                                <div class="submenu-item {% if current_submenu == 'qcp' %}active{% endif %}" data-submenu="qcp" onclick="switchAdminMenu('agent-consolidation', 'qcp')">
+                                    <i class="fas fa-check-double"></i> Auditor
+                                </div>
+                            </li>
+                        </ul>
+                    </li>
+                    <li>
+                        <div class="submenu-group-label" data-group="ar">AR Consolidation <i class="fas fa-chevron-down"></i></div>
+                        <ul class="submenu-group-items" data-group="ar">
+                            <li>
+                                <div class="submenu-item {% if current_submenu == 'ortho-consolidate' %}active{% endif %}" data-submenu="ortho-consolidate" onclick="switchAdminMenu('agent-consolidation', 'ortho-consolidate')">
+                                    <i class="fas fa-notes-medical"></i> Ortho AR
+                                </div>
+                            </li>
+                            <li>
+                                <div class="submenu-item {% if current_submenu == 'dental-ar-consolidate' %}active{% endif %}" data-submenu="dental-ar-consolidate" onclick="switchAdminMenu('agent-consolidation', 'dental-ar-consolidate')">
+                                    <i class="fas fa-file-invoice-dollar"></i> Dental AR
+                                </div>
+                            </li>
+                        </ul>
+                    </li>
+                    <li>
+                        <div class="submenu-group-label" data-group="dental-bv">Dental BV Consolidation <i class="fas fa-chevron-down"></i></div>
+                        <ul class="submenu-group-items" data-group="dental-bv">
+                            <li>
+                                <div class="submenu-item {% if current_submenu in ['dental-bv-consolidate', 'dental-bv-day-consolidate'] %}active{% endif %}" data-submenu="dental-bv-day-consolidate" onclick="switchAdminMenu('agent-consolidation', 'dental-bv-day-consolidate')">
+                                    <i class="fas fa-sun"></i> Day Shift
+                                </div>
+                            </li>
+                            <li>
+                                <div class="submenu-item {% if current_submenu == 'dental-bv-night-consolidate' %}active{% endif %}" data-submenu="dental-bv-night-consolidate" onclick="switchAdminMenu('agent-consolidation', 'dental-bv-night-consolidate')">
+                                    <i class="fas fa-moon"></i> Night Shift
+                                </div>
+                            </li>
+                        </ul>
+                    </li>
+                    <li>
+                        <div class="submenu-item submenu-main-item {% if current_submenu == 'nh-consolidate' %}active{% endif %}" data-submenu="nh-consolidate" onclick="switchAdminMenu('agent-consolidation', 'nh-consolidate')">
+                            <i class="fas fa-hospital"></i> NH BV Consolidation
                         </div>
                     </li>
                     <li>
-                        <div class="submenu-item {% if current_submenu == 'night-shift' %}active{% endif %}" onclick="switchAdminMenu('agent-consolidation', 'night-shift')">
-                            <i class="fas fa-moon"></i> Night Shift
+                        <div class="submenu-item submenu-main-item {% if current_submenu == 'ev-consolidate' %}active{% endif %}" data-submenu="ev-consolidate" onclick="switchAdminMenu('agent-consolidation', 'ev-consolidate')">
+                            <i class="fas fa-file-medical"></i> EV Consolidation
                         </div>
                     </li>
                     <li>
-                        <div class="submenu-item {% if current_submenu == 'ntbp' %}active{% endif %}" onclick="switchAdminMenu('agent-consolidation', 'ntbp')">
-                            <i class="fas fa-ban"></i> NTBP
-                        </div>
-                    </li>
-                    <li>
-                        <div class="submenu-item {% if current_submenu == 'qcp' %}active{% endif %}" onclick="switchAdminMenu('agent-consolidation', 'qcp')">
-                            <i class="fas fa-check-double"></i> Auditor
-                        </div>
-                    </li>
-                    <li>
-                        <div class="submenu-item {% if current_submenu == 'daily-consolidate' %}active{% endif %}" onclick="switchAdminMenu('agent-consolidation', 'daily-consolidate')">
-                            <i class="fas fa-calendar-day"></i> Daily Consolidate
-                        </div>
-                    </li>
-                    <li>
-                        <div class="submenu-item {% if current_submenu == 'nh-consolidate' %}active{% endif %}" onclick="switchAdminMenu('agent-consolidation', 'nh-consolidate')">
-                            <i class="fas fa-hospital"></i> NH
-                        </div>
-                    </li>
-                    <li>
-                        <div class="submenu-item {% if current_submenu == 'ortho-consolidate' %}active{% endif %}" onclick="switchAdminMenu('agent-consolidation', 'ortho-consolidate')">
-                            <i class="fas fa-notes-medical"></i> Ortho AR
-                        </div>
-                    </li>
-                    <li>
-                        <div class="submenu-item {% if current_submenu == 'dental-ar-consolidate' %}active{% endif %}" onclick="switchAdminMenu('agent-consolidation', 'dental-ar-consolidate')">
-                            <i class="fas fa-file-invoice-dollar"></i> Dental AR
-                        </div>
-                    </li>
-                    <li>
-                        <div class="submenu-item {% if current_submenu == 'ev-consolidate' %}active{% endif %}" onclick="switchAdminMenu('agent-consolidation', 'ev-consolidate')">
-                            <i class="fas fa-file-medical"></i> EV
-                        </div>
-                    </li>
-                    <li>
-                        <div class="submenu-item {% if current_submenu == 'dental-bv-consolidate' %}active{% endif %}" onclick="switchAdminMenu('agent-consolidation', 'dental-bv-consolidate')">
-                            <i class="fas fa-tooth"></i> Dental BV
-                        </div>
-                    </li>
-                    <li>
-                        <div class="submenu-item {% if current_submenu == 'mis-checklist-consolidate' %}active{% endif %}" onclick="switchAdminMenu('agent-consolidation', 'mis-checklist-consolidate')">
+                        <div class="submenu-item submenu-main-item {% if current_submenu == 'mis-checklist-consolidate' %}active{% endif %}" data-submenu="mis-checklist-consolidate" onclick="switchAdminMenu('agent-consolidation', 'mis-checklist-consolidate')">
                             <i class="fas fa-clipboard-list"></i> MIS Checklist
                         </div>
                     </li>
                 </ul>
             </li>
             <li>
-                <div class="menu-item {% if current_menu == 'trackers' %}active{% endif %}" onclick="switchAdminMenu('trackers', 'imagen-tracker')">
+                <div class="menu-item {% if current_menu == 'trackers' %}active expanded{% endif %}" data-menu="trackers" onclick="toggleAdminMenuAccordion('trackers', 'imagen-tracker')">
                     <i class="fas fa-chart-line"></i> Trackers
+                    <span class="accordion-chevron">▼</span>
                 </div>
                 <ul class="submenu" style="display: {% if current_menu == 'trackers' %}block{% else %}none{% endif %}; list-style: none; padding-left: 0;">
                     <li>
@@ -5113,7 +5343,7 @@ HTML_TEMPLATE = """
                                             Uploaded: {{ (file.upload_date | to_ist).strftime('%Y-%m-%d %I:%M %p') }} IST
                                             | Status: <span style="color: {% if file.status == 'uploaded' %}#28a745{% elif file.status == 'consolidated' %}#007bff{% else %}#6c757d{% endif %}">{{ file.status.title() if file.status else 'Uploaded' }}</span>
                                         </small>
-                                        {% if file.notes %}
+                                        {% if file.notes and not file.notes.startswith('__dental_bv_shift__:') %}
                                         <br>
                                         <small style="color: #666;"><em>{{ file.notes }}</em></small>
                                         {% endif %}
@@ -5172,7 +5402,7 @@ HTML_TEMPLATE = """
                                             Uploaded: {{ (file.upload_date | to_ist).strftime('%Y-%m-%d %I:%M %p') }} IST
                                             | Status: <span style="color: {% if file.status == 'uploaded' %}#28a745{% elif file.status == 'consolidated' %}#007bff{% else %}#6c757d{% endif %}">{{ file.status.title() if file.status else 'Uploaded' }}</span>
                                         </small>
-                                        {% if file.notes %}
+                                        {% if file.notes and not file.notes.startswith('__dental_bv_shift__:') %}
                                         <br>
                                         <small style="color: #666;"><em>{{ file.notes }}</em></small>
                                         {% endif %}
@@ -5280,7 +5510,7 @@ HTML_TEMPLATE = """
                     <div class="section">
                             {% if nh_files %}
                             <div style="background: #f8f9fa; padding: 20px; border-radius: 10px; margin-bottom: 20px;">
-                                <h4>Available NH Files:</h4>
+                                <h4>Available NH BV Files:</h4>
                                 {% for file in nh_files %}
                                 <div style="border-bottom: {% if loop.last %}none{% else %}1px solid #dee2e6{% endif %}; padding: 10px 0; display: flex; justify-content: space-between; align-items: center;">
                                     <div style="flex: 1;">
@@ -5511,13 +5741,13 @@ HTML_TEMPLATE = """
                     </div>
                 </div>
                 
-                <!-- Dental BV Content (under Agent Consolidation menu) -->
-                <div id="dental-bv-consolidate-content" class="admin-menu-content" style="display: {% if current_menu == 'agent-consolidation' and current_submenu == 'dental-bv-consolidate' %}block{% else %}none{% endif %};">
+                <!-- Dental BV Day Shift Content (under Agent Consolidation menu) -->
+                <div id="dental-bv-day-consolidate-content" class="admin-menu-content" style="display: {% if current_menu == 'agent-consolidation' and current_submenu in ['dental-bv-consolidate', 'dental-bv-day-consolidate'] %}block{% else %}none{% endif %};">
                     <div class="section">
-                            {% if dental_bv_agent_files %}
+                            {% if dental_bv_day_agent_files %}
                             <div style="background: #f8f9fa; padding: 20px; border-radius: 10px; margin-bottom: 20px;">
-                                <h4>Available Dental BV Files:</h4>
-                                {% for file in dental_bv_agent_files %}
+                                <h4>Available Dental BV Day Shift Files:</h4>
+                                {% for file in dental_bv_day_agent_files %}
                                 <div style="border-bottom: {% if loop.last %}none{% else %}1px solid #dee2e6{% endif %}; padding: 10px 0; display: flex; justify-content: space-between; align-items: center;">
                                     <div style="flex: 1;">
                                         <strong>{{ file.agent.name }}</strong> - {{ file.filename }}
@@ -5536,9 +5766,9 @@ HTML_TEMPLATE = """
                                             <i class="fas fa-download"></i> Download
                                         </a>
                                         <form action="/delete_dental_bv_agent_file/{{ file.id }}" method="post" style="margin: 0; display: inline-block;" onsubmit="return confirm('Are you sure you want to delete this file?');">
-                                            <input type="hidden" name="subtab" value="dental-bv-consolidate">
+                                            <input type="hidden" name="subtab" value="dental-bv-day-consolidate">
                                             <input type="hidden" name="current_menu" value="agent-consolidation">
-                                            <input type="hidden" name="current_submenu" value="dental-bv-consolidate">
+                                            <input type="hidden" name="current_submenu" value="dental-bv-day-consolidate">
                                             <button type="submit" class="process-btn" style="padding: 8px 16px; background: linear-gradient(135deg, #dc3545, #c82333); color: white; border: none; border-radius: 5px; font-size: 14px; cursor: pointer;">
                                                 <i class="fas fa-trash-alt"></i> Delete
                                             </button>
@@ -5548,15 +5778,18 @@ HTML_TEMPLATE = """
                                 {% endfor %}
                             </div>
                             <div style="display: flex; gap: 10px; flex-wrap: wrap;">
-                                <form action="/consolidate_dental_bv_agent_files" method="post" class="js-ac-consolidation-xlsx-form" data-ac-fallback-filename="consolidated_dental_bv_files.xlsx" style="margin: 0;">
+                                <form action="/consolidate_dental_bv_agent_files" method="post" class="js-ac-consolidation-xlsx-form" data-ac-fallback-filename="consolidated_dental_bv_day_shift_files.xlsx" style="margin: 0;">
+                                    <input type="hidden" name="shift_type" value="day">
+                                    <input type="hidden" name="subtab" value="dental-bv-day-consolidate">
                                     <button type="submit" class="process-btn" style="background: linear-gradient(135deg, #28a745, #20c997);">
-                                        <i class="fas fa-compress-arrows-alt"></i> Consolidate All Dental BV Files
+                                        <i class="fas fa-compress-arrows-alt"></i> Consolidate Day Shift Files
                                     </button>
                                 </form>
                                 <form action="/clear_dental_bv_agent_files" method="post" style="margin: 0;" onsubmit="return confirm('Are you sure you want to delete all Dental BV files?');">
-                                    <input type="hidden" name="subtab" value="dental-bv-consolidate">
+                                    <input type="hidden" name="subtab" value="dental-bv-day-consolidate">
+                                    <input type="hidden" name="shift_type" value="day">
                                     <input type="hidden" name="current_menu" value="agent-consolidation">
-                                    <input type="hidden" name="current_submenu" value="dental-bv-consolidate">
+                                    <input type="hidden" name="current_submenu" value="dental-bv-day-consolidate">
                                     <button type="submit" class="process-btn" style="background: linear-gradient(135deg, #dc3545, #c82333);">
                                         <i class="fas fa-trash-alt"></i> Clear all files
                                     </button>
@@ -5564,7 +5797,69 @@ HTML_TEMPLATE = """
                             </div>
                             {% else %}
                             <div style="background: #f8f9fa; padding: 20px; border-radius: 10px;">
-                                <p style="color: #666;">No Dental BV files uploaded yet.</p>
+                                <p style="color: #666;">No Dental BV Day Shift files uploaded yet.</p>
+                            </div>
+                            {% endif %}
+                    </div>
+                </div>
+
+                <!-- Dental BV Night Shift Content (under Agent Consolidation menu) -->
+                <div id="dental-bv-night-consolidate-content" class="admin-menu-content" style="display: {% if current_menu == 'agent-consolidation' and current_submenu == 'dental-bv-night-consolidate' %}block{% else %}none{% endif %};">
+                    <div class="section">
+                            {% if dental_bv_night_agent_files %}
+                            <div style="background: #f8f9fa; padding: 20px; border-radius: 10px; margin-bottom: 20px;">
+                                <h4>Available Dental BV Night Shift Files:</h4>
+                                {% for file in dental_bv_night_agent_files %}
+                                <div style="border-bottom: {% if loop.last %}none{% else %}1px solid #dee2e6{% endif %}; padding: 10px 0; display: flex; justify-content: space-between; align-items: center;">
+                                    <div style="flex: 1;">
+                                        <strong>{{ file.agent.name }}</strong> - {{ file.filename }}
+                                        <br>
+                                        <small style="color: #666;">
+                                            Uploaded: {{ (file.upload_date | to_ist).strftime('%Y-%m-%d %I:%M %p') }} IST
+                                            | Status: <span style="color: {% if file.status == 'uploaded' %}#28a745{% elif file.status == 'consolidated' %}#007bff{% else %}#6c757d{% endif %}">{{ file.status.title() if file.status else 'Uploaded' }}</span>
+                                        </small>
+                                        {% if file.notes %}
+                                        <br>
+                                        <small style="color: #666;"><em>{{ file.notes }}</em></small>
+                                        {% endif %}
+                                    </div>
+                                    <div style="margin-left: 15px; display: flex; gap: 8px;">
+                                        <a href="/download_dental_bv_agent_file/{{ file.id }}" class="process-btn js-ac-consolidation-xlsx-download" style="padding: 8px 16px; text-decoration: none; display: inline-block; background: linear-gradient(135deg, #007bff, #0056b3); color: white; border-radius: 5px; font-size: 14px;">
+                                            <i class="fas fa-download"></i> Download
+                                        </a>
+                                        <form action="/delete_dental_bv_agent_file/{{ file.id }}" method="post" style="margin: 0; display: inline-block;" onsubmit="return confirm('Are you sure you want to delete this file?');">
+                                            <input type="hidden" name="subtab" value="dental-bv-night-consolidate">
+                                            <input type="hidden" name="current_menu" value="agent-consolidation">
+                                            <input type="hidden" name="current_submenu" value="dental-bv-night-consolidate">
+                                            <button type="submit" class="process-btn" style="padding: 8px 16px; background: linear-gradient(135deg, #dc3545, #c82333); color: white; border: none; border-radius: 5px; font-size: 14px; cursor: pointer;">
+                                                <i class="fas fa-trash-alt"></i> Delete
+                                            </button>
+                                        </form>
+                                    </div>
+                                </div>
+                                {% endfor %}
+                            </div>
+                            <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+                                <form action="/consolidate_dental_bv_agent_files" method="post" class="js-ac-consolidation-xlsx-form" data-ac-fallback-filename="consolidated_dental_bv_night_shift_files.xlsx" style="margin: 0;">
+                                    <input type="hidden" name="shift_type" value="night">
+                                    <input type="hidden" name="subtab" value="dental-bv-night-consolidate">
+                                    <button type="submit" class="process-btn" style="background: linear-gradient(135deg, #28a745, #20c997);">
+                                        <i class="fas fa-compress-arrows-alt"></i> Consolidate Night Shift Files
+                                    </button>
+                                </form>
+                                <form action="/clear_dental_bv_agent_files" method="post" style="margin: 0;" onsubmit="return confirm('Are you sure you want to delete all Dental BV files?');">
+                                    <input type="hidden" name="subtab" value="dental-bv-night-consolidate">
+                                    <input type="hidden" name="shift_type" value="night">
+                                    <input type="hidden" name="current_menu" value="agent-consolidation">
+                                    <input type="hidden" name="current_submenu" value="dental-bv-night-consolidate">
+                                    <button type="submit" class="process-btn" style="background: linear-gradient(135deg, #dc3545, #c82333);">
+                                        <i class="fas fa-trash-alt"></i> Clear all files
+                                    </button>
+                                </form>
+                            </div>
+                            {% else %}
+                            <div style="background: #f8f9fa; padding: 20px; border-radius: 10px;">
+                                <p style="color: #666;">No Dental BV Night Shift files uploaded yet.</p>
                             </div>
                             {% endif %}
                     </div>
@@ -19955,7 +20250,8 @@ def index():
     ortho_files = None
     dental_ar_files = None
     ev_agent_files = None
-    dental_bv_agent_files = None
+    dental_bv_day_agent_files = None
+    dental_bv_night_agent_files = None
     mis_checklist_files = None
 
     # Get menu and submenu from URL parameters (for admin users)
@@ -19986,7 +20282,12 @@ def index():
         ortho_files = get_ortho_files()
         dental_ar_files = get_dental_ar_files()
         ev_agent_files = get_ev_agent_files()
-        dental_bv_agent_files = get_dental_bv_agent_files()
+        dental_bv_day_agent_files = get_dental_bv_agent_files(
+            shift_type=DENTAL_BV_SHIFT_DAY
+        )
+        dental_bv_night_agent_files = get_dental_bv_agent_files(
+            shift_type=DENTAL_BV_SHIFT_NIGHT
+        )
         mis_checklist_files = get_mis_checklist_files()
 
     return render_template_string(
@@ -20009,7 +20310,8 @@ def index():
         ortho_files=ortho_files,
         dental_ar_files=dental_ar_files,
         ev_agent_files=ev_agent_files,
-        dental_bv_agent_files=dental_bv_agent_files,
+        dental_bv_day_agent_files=dental_bv_day_agent_files,
+        dental_bv_night_agent_files=dental_bv_night_agent_files,
         mis_checklist_files=mis_checklist_files,
         current_time=current_time,
         email_staff_details=email_staff_details,
@@ -20703,6 +21005,10 @@ def apply_auto_column_widths_openpyxl(ws):
 
 def apply_comparison_tool_excel_output_styling(wb):
     """Apply excel-comparison-tool header + borders + date text + column widths to every sheet."""
+    from openpyxl.styles import Protection
+
+    header_lock_password = os.environ.get("EXCEL_HEADER_LOCK_PASSWORD", "mnc-lock")
+
     for sheet_name in wb.sheetnames:
         ws = wb[sheet_name]
         if ws.max_row < 1 or ws.max_column < 1:
@@ -20713,6 +21019,29 @@ def apply_comparison_tool_excel_output_styling(wb):
             headers.append("" if v is None else str(v))
         _apply_imagen_openpyxl_worksheet(ws, headers)
         apply_auto_column_widths_openpyxl(ws)
+
+        # Keep headers non-editable everywhere while preserving editable data rows.
+        for row in ws.iter_rows(
+            min_row=1, max_row=ws.max_row, min_col=1, max_col=ws.max_column
+        ):
+            for cell in row:
+                cell.protection = Protection(locked=False)
+        for cell in ws[1]:
+            cell.protection = Protection(locked=True)
+
+        ws.protection.sheet = True
+        ws.protection.enable()
+        ws.protection.selectLockedCells = True
+        ws.protection.selectUnlockedCells = True
+        ws.protection.formatColumns = False
+        ws.protection.formatRows = False
+        ws.protection.insertColumns = False
+        ws.protection.insertRows = False
+        ws.protection.deleteColumns = False
+        ws.protection.deleteRows = False
+        ws.protection.sort = False
+        ws.protection.autoFilter = False
+        ws.protection.set_password(header_lock_password)
 
 
 def apply_last_uploaded_time_staleness_highlight_openpyxl(wb, stale_hours=2):
@@ -20858,6 +21187,58 @@ def format_excel_with_priority_status(excel_path, sheet_name, nh_email_style=Fal
         # Continue even if formatting fails
 
 
+def lock_excel_header_row(excel_path, sheet_name):
+    """
+    Protect only header row (row 1) in an Excel sheet.
+    Data rows remain editable.
+    """
+    try:
+        from openpyxl import load_workbook
+        from openpyxl.styles import Protection
+
+        header_lock_password = os.environ.get("EXCEL_HEADER_LOCK_PASSWORD", "mnc-lock")
+        wb = load_workbook(excel_path)
+        if sheet_name not in wb.sheetnames:
+            wb.close()
+            return
+
+        ws = wb[sheet_name]
+
+        # Default all cells to editable
+        for row in ws.iter_rows(
+            min_row=1,
+            max_row=ws.max_row,
+            min_col=1,
+            max_col=ws.max_column,
+        ):
+            for cell in row:
+                cell.protection = Protection(locked=False)
+
+        # Lock header row only
+        for cell in ws[1]:
+            cell.protection = Protection(locked=True)
+
+        ws.protection.sheet = True
+        ws.protection.enable()
+        ws.protection.selectLockedCells = True
+        ws.protection.selectUnlockedCells = True
+        ws.protection.formatColumns = False
+        ws.protection.formatRows = False
+        ws.protection.insertColumns = False
+        ws.protection.insertRows = False
+        ws.protection.deleteColumns = False
+        ws.protection.deleteRows = False
+        ws.protection.sort = False
+        ws.protection.autoFilter = False
+        ws.protection.set_password(header_lock_password)
+
+        wb.save(excel_path)
+        wb.close()
+    except Exception as e:
+        print(f"Error locking header row: {str(e)}")
+        # Continue even if protection fails
+
+
 def get_ist_today_date_str():
     """Return current date in IST for email subject lines."""
     ist_tz = timezone(timedelta(hours=5, minutes=30))
@@ -20929,6 +21310,7 @@ def send_email_to_agent():
             format_excel_with_priority_status(
                 temp_path, sheet_name, nh_email_style=(channel == "nh")
             )
+            lock_excel_header_row(temp_path, sheet_name)
 
             # Read the Excel file as bytes
             with open(temp_path, "rb") as f:
@@ -21078,6 +21460,7 @@ def send_email_to_all_agents():
                     format_excel_with_priority_status(
                         temp_path, sheet_name, nh_email_style=(channel == "nh")
                     )
+                    lock_excel_header_row(temp_path, sheet_name)
 
                     # Read the Excel file as bytes
                     with open(temp_path, "rb") as f:
@@ -21418,6 +21801,7 @@ def download_auditor_allocation_excel():
                 auditor_rows.to_excel(writer, sheet_name=sheet_name, index=False)
 
             format_excel_with_priority_status(temp_path, sheet_name)
+            lock_excel_header_row(temp_path, sheet_name)
 
             return send_file(
                 temp_path,
@@ -21573,6 +21957,7 @@ def send_email_to_all_auditors():
                         auditor_rows.to_excel(writer, sheet_name=sheet_name, index=False)
 
                     format_excel_with_priority_status(temp_path, sheet_name)
+                    lock_excel_header_row(temp_path, sheet_name)
 
                     with open(temp_path, "rb") as f:
                         excel_bytes = io.BytesIO(f.read())
@@ -28743,7 +29128,9 @@ def upload_status_file():
     return redirect(url_for("upload_work_file"))
 
 
-def calculate_summary_from_deduplicated_data(combined_df):
+def calculate_summary_from_deduplicated_data(
+    combined_df, split_by_work_date=False
+):
     """
     Calculate Summary sheet data from deduplicated combined dataframe.
 
@@ -28759,6 +29146,7 @@ def calculate_summary_from_deduplicated_data(combined_df):
     # Find required columns (case-insensitive)
     agent_name_col = None
     remark_col = None
+    work_date_col = None
     uploaded_at_col = "__uploaded_at__" if "__uploaded_at__" in combined_df.columns else None
 
     for col in combined_df.columns:
@@ -28767,6 +29155,8 @@ def calculate_summary_from_deduplicated_data(combined_df):
             agent_name_col = col
         elif col_lower in ["remark", "remarks"]:
             remark_col = col
+        elif col_lower == "work date":
+            work_date_col = col
 
     # If required columns not found, return empty DataFrame
     if not agent_name_col or not remark_col:
@@ -28774,11 +29164,29 @@ def calculate_summary_from_deduplicated_data(combined_df):
 
     # Collect all unique remark statuses
     all_remark_statuses = set()
-    agent_data = {}
+    agent_data = []
 
-    # Group by agent name
-    for agent_name, agent_df in combined_df.groupby(agent_name_col):
-        agent_name_str = str(agent_name)
+    # Group by agent or agent + work date (Dental BV day/night requirement)
+    group_cols = [agent_name_col]
+    include_work_date = bool(split_by_work_date and work_date_col is not None)
+    if include_work_date:
+        group_cols.append(work_date_col)
+
+    for group_key, agent_df in combined_df.groupby(group_cols, dropna=False):
+        if include_work_date:
+            agent_name, work_date_val = group_key
+            agent_name_str = str(agent_name)
+            parsed_work_date = parse_excel_date(work_date_val)
+            if parsed_work_date:
+                work_date_str = parsed_work_date.strftime("%m/%d/%Y")
+            elif pd.isna(work_date_val):
+                work_date_str = ""
+            else:
+                work_date_str = str(work_date_val).strip()
+        else:
+            agent_name = group_key
+            agent_name_str = str(agent_name)
+            work_date_str = None
 
         # Total assigned count
         total_assigned_count = len(agent_df)
@@ -28828,13 +29236,17 @@ def calculate_summary_from_deduplicated_data(combined_df):
                         "display": remark_normalized,
                     }
 
-        agent_data[agent_name_str] = {
-            "last_uploaded_time": last_uploaded_time,
-            "total_assigned_count": total_assigned_count,
-            "completed_count": completed_count,
-            "empty_remarks_count": empty_remarks_count,
-            "remarks_dict": remarks_dict,
-        }
+        agent_data.append(
+            {
+                "agent_name": agent_name_str,
+                "work_date": work_date_str,
+                "last_uploaded_time": last_uploaded_time,
+                "total_assigned_count": total_assigned_count,
+                "completed_count": completed_count,
+                "empty_remarks_count": empty_remarks_count,
+                "remarks_dict": remarks_dict,
+            }
+        )
 
     # Add empty remarks as a status if needed
     all_remark_statuses.add("(Empty/No Remark)")
@@ -28844,9 +29256,14 @@ def calculate_summary_from_deduplicated_data(combined_df):
 
     # Create summary data
     summary_data = []
-    for agent_name, data in agent_data.items():
+    for data in agent_data:
         row_data = {
-            "Agent": agent_name,
+            "Agent": data["agent_name"],
+            **(
+                {"Work Date": data.get("work_date", "")}
+                if include_work_date
+                else {}
+            ),
             "Last Uploaded Time": data.get("last_uploaded_time", ""),
             "Total Assigned Count": data["total_assigned_count"],
             "Completed Count": data["completed_count"],
@@ -28867,8 +29284,28 @@ def calculate_summary_from_deduplicated_data(combined_df):
                 row_data[remark_status] = count
 
         summary_data.append(row_data)
+    summary_df = pd.DataFrame(summary_data)
 
-    return pd.DataFrame(summary_data)
+    # For Agent + Work Date summaries (Dental BV), display agent name once per group.
+    if include_work_date and not summary_df.empty and "Agent" in summary_df.columns:
+        if "Work Date" in summary_df.columns:
+            summary_df = summary_df.sort_values(
+                by=["Agent", "Work Date"], kind="stable", na_position="last"
+            ).reset_index(drop=True)
+        else:
+            summary_df = summary_df.sort_values(
+                by=["Agent"], kind="stable", na_position="last"
+            ).reset_index(drop=True)
+
+        prev_agent = None
+        for idx in range(len(summary_df)):
+            curr_agent = str(summary_df.at[idx, "Agent"]).strip()
+            if prev_agent == curr_agent:
+                summary_df.at[idx, "Agent"] = ""
+            else:
+                prev_agent = curr_agent
+
+    return summary_df
 
 
 def deduplicate_consolidated_data(combined_df):
@@ -29267,7 +29704,7 @@ def apply_nh_consolidated_workbook_formatting(writer):
 
 
 def consolidate_files_helper_to_buffer(
-    file_model, file_type_name, mark_consolidated=False
+    file_model, file_type_name, mark_consolidated=False, work_files=None
 ):
     """
     Helper function to consolidate files from any file model and return Excel buffer
@@ -29281,7 +29718,8 @@ def consolidate_files_helper_to_buffer(
         tuple: (excel_buffer: BytesIO or None, filename: str, file_count: int)
     """
     try:
-        work_files = file_model.query.order_by(file_model.upload_date.desc()).all()
+        if work_files is None:
+            work_files = file_model.query.order_by(file_model.upload_date.desc()).all()
 
         if not work_files:
             return None, None, 0
@@ -29309,7 +29747,10 @@ def consolidate_files_helper_to_buffer(
             if all_agent_data:
                 combined_df = pd.concat(all_agent_data, ignore_index=True)
                 combined_df = deduplicate_consolidated_data(combined_df)
-                summary_df = calculate_summary_from_deduplicated_data(combined_df)
+                is_dental_bv_consolidation = file_model == DentalBVAgentFile
+                summary_df = calculate_summary_from_deduplicated_data(
+                    combined_df, split_by_work_date=is_dental_bv_consolidation
+                )
                 if not summary_df.empty:
                     summary_df = add_last_uploaded_time_to_summary(summary_df, work_files)
                     summary_df.to_excel(writer, sheet_name="Summary", index=False)
@@ -29743,8 +30184,40 @@ def clear_ev_agent_files():
 @app.route("/consolidate_dental_bv_agent_files", methods=["POST"])
 @admin_required
 def consolidate_dental_bv_agent_files():
-    """Consolidate all Dental BV agent files"""
-    return consolidate_files_helper(DentalBVAgentFile, "Dental BV")
+    """Consolidate Dental BV agent files by selected shift bucket."""
+    shift_type = request.form.get("shift_type", "").strip().lower()
+    subtab = request.form.get("subtab", "dental-bv-day-consolidate")
+
+    if shift_type not in {DENTAL_BV_SHIFT_DAY, DENTAL_BV_SHIFT_NIGHT}:
+        shift_type = (
+            DENTAL_BV_SHIFT_NIGHT
+            if subtab == "dental-bv-night-consolidate"
+            else DENTAL_BV_SHIFT_DAY
+        )
+
+    display = (
+        "Dental BV Night Shift"
+        if shift_type == DENTAL_BV_SHIFT_NIGHT
+        else "Dental BV Day Shift"
+    )
+    scoped_files = get_dental_bv_agent_files(shift_type=shift_type)
+    excel_buffer, filename, file_count = consolidate_files_helper_to_buffer(
+        DentalBVAgentFile,
+        display,
+        mark_consolidated=True,
+        work_files=scoped_files,
+    )
+
+    if excel_buffer is None:
+        flash(f"No {display} files found to consolidate", "warning")
+        return redirect(f"/?menu=agent-consolidation&submenu={subtab}")
+
+    return send_file(
+        excel_buffer,
+        as_attachment=True,
+        download_name=filename,
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
 
 
 @app.route("/download_dental_bv_agent_file/<int:file_id>", methods=["GET"])
@@ -29765,9 +30238,34 @@ def delete_dental_bv_agent_file(file_id):
 @app.route("/clear_dental_bv_agent_files", methods=["POST"])
 @admin_required
 def clear_dental_bv_agent_files():
-    """Clear all Dental BV agent files"""
-    subtab = request.form.get("subtab", "dental-bv-consolidate")
-    return clear_files_helper(DentalBVAgentFile, "Dental BV", subtab)
+    """Clear Dental BV agent files for selected shift bucket only."""
+    subtab = request.form.get("subtab", "dental-bv-day-consolidate")
+    shift_type = request.form.get("shift_type", "").strip().lower()
+    if shift_type not in {DENTAL_BV_SHIFT_DAY, DENTAL_BV_SHIFT_NIGHT}:
+        shift_type = (
+            DENTAL_BV_SHIFT_NIGHT
+            if subtab == "dental-bv-night-consolidate"
+            else DENTAL_BV_SHIFT_DAY
+        )
+
+    try:
+        files_to_delete = get_dental_bv_agent_files(shift_type=shift_type)
+        file_count = len(files_to_delete)
+        for work_file in files_to_delete:
+            db.session.delete(work_file)
+        db.session.commit()
+        shift_label = "Night Shift" if shift_type == DENTAL_BV_SHIFT_NIGHT else "Day Shift"
+        if file_count > 0:
+            flash(
+                f"Successfully deleted {file_count} Dental BV {shift_label} file(s)",
+                "success",
+            )
+        else:
+            flash(f"No Dental BV {shift_label} files to delete", "info")
+    except Exception as e:
+        flash(f"Error clearing Dental BV files: {str(e)}", "error")
+
+    return redirect(f"/?menu=agent-consolidation&submenu={subtab}")
 
 
 @app.route("/consolidate_mis_checklist_files", methods=["POST"])
@@ -34580,10 +35078,40 @@ AGENT_TEMPLATE_WITH_SIDEBAR = """
         .sidebar-menu li {
             margin: 5px 0;
         }
+        .sidebar-menu .group-label {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 10px 20px 8px 20px;
+            margin-top: 8px;
+            font-size: 0.9em;
+            font-weight: 400;
+            color: rgba(255,255,255,0.9);
+            cursor: pointer;
+            user-select: none;
+        }
+        .sidebar-menu .group-label i {
+            margin-left: 8px;
+            font-size: 0.85em;
+            transition: transform 0.2s ease;
+        }
+        .sidebar-menu .group-label.expanded i {
+            transform: rotate(180deg);
+        }
+        .sidebar-menu .group-items {
+            display: none;
+            list-style: none;
+            margin: 0;
+            padding: 0;
+        }
+        .sidebar-menu .group-items.expanded {
+            display: block;
+        }
         .sidebar-menu a {
             display: flex;
             align-items: center;
             padding: 15px 20px;
+            padding-left: 40px;
             color: white;
             text-decoration: none;
             transition: all 0.3s;
@@ -34602,6 +35130,10 @@ AGENT_TEMPLATE_WITH_SIDEBAR = """
             margin-right: 12px;
             width: 20px;
             text-align: center;
+        }
+        .sidebar-menu a.sidebar-main-item {
+            padding: 10px 20px 8px 20px;
+            font-size: 0.9em;
         }
         .main-content {
             margin-left: 250px;
@@ -34731,6 +35263,63 @@ AGENT_TEMPLATE_WITH_SIDEBAR = """
                     });
                 }
             });
+
+            const sidebarAccordion = document.querySelector('.sidebar-menu.agent-consolidation-accordion');
+            if (sidebarAccordion) {
+                const labels = Array.from(sidebarAccordion.querySelectorAll('.group-label'));
+
+                function closeGroup(label) {
+                    label.classList.remove('expanded');
+                    const groupKey = label.getAttribute('data-group');
+                    const items = sidebarAccordion.querySelector(`.group-items[data-group="${groupKey}"]`);
+                    if (items) items.classList.remove('expanded');
+                }
+
+                function openGroup(label) {
+                    label.classList.add('expanded');
+                    const groupKey = label.getAttribute('data-group');
+                    const items = sidebarAccordion.querySelector(`.group-items[data-group="${groupKey}"]`);
+                    if (items) items.classList.add('expanded');
+                }
+
+                function openOnlyGroup(targetLabel) {
+                    labels.forEach((label) => {
+                        if (label === targetLabel) {
+                            openGroup(label);
+                        } else {
+                            closeGroup(label);
+                        }
+                    });
+                }
+
+                labels.forEach((label) => {
+                    label.addEventListener('click', function() {
+                        const isExpanded = label.classList.contains('expanded');
+                        if (isExpanded) {
+                            closeGroup(label);
+                        } else {
+                            openOnlyGroup(label);
+                        }
+                    });
+                });
+
+                const activeLink = sidebarAccordion.querySelector('a.active');
+                if (activeLink) {
+                    const parentGroup = activeLink.closest('.group-items');
+                    if (parentGroup) {
+                        const groupKey = parentGroup.getAttribute('data-group');
+                        const targetLabel = sidebarAccordion.querySelector(`.group-label[data-group="${groupKey}"]`);
+                        if (targetLabel) {
+                            openOnlyGroup(targetLabel);
+                            return;
+                        }
+                    }
+                }
+
+                if (labels.length > 0) {
+                    openOnlyGroup(labels[0]);
+                }
+            }
         });
     </script>
 </head>
@@ -34739,38 +35328,62 @@ AGENT_TEMPLATE_WITH_SIDEBAR = """
         <div class="sidebar-header">
             <h3><i class="fas fa-file-excel"></i> Upload Work Agent Portal</h3>
         </div>
-        <ul class="sidebar-menu">
-            <li><a href="/day-shift" class="{{ 'active' if current_page == 'day_shift' else '' }}">
-                <i class="fas fa-sun"></i> Day Shift
+        <ul class="sidebar-menu agent-consolidation-accordion">
+            <li>
+                <div class="group-label {% if current_page in ['day_shift', 'night_shift', 'ntbp', 'daily_consolidate', 'qcp'] %}expanded{% endif %}" data-group="imagen">
+                    Imagen <i class="fas fa-chevron-down"></i>
+                </div>
+                <ul class="group-items {% if current_page in ['day_shift', 'night_shift', 'ntbp', 'daily_consolidate', 'qcp'] %}expanded{% endif %}" data-group="imagen">
+                    <li><a href="/day-shift" class="{{ 'active' if current_page == 'day_shift' else '' }}">
+                        <i class="fas fa-sun"></i> Day Shift
+                    </a></li>
+                    <li><a href="/night-shift" class="{{ 'active' if current_page == 'night_shift' else '' }}">
+                        <i class="fas fa-moon"></i> Night Shift
+                    </a></li>
+                    <li><a href="/ntbp" class="{{ 'active' if current_page == 'ntbp' else '' }}">
+                        <i class="fas fa-file-upload"></i> NTBP
+                    </a></li>
+                    <li><a href="/daily-consolidate" class="{{ 'active' if current_page == 'daily_consolidate' else '' }}">
+                        <i class="fas fa-archive"></i> Daily Consolidate
+                    </a></li>
+                    <li><a href="/qcp" class="{{ 'active' if current_page == 'qcp' else '' }}">
+                        <i class="fas fa-check-circle"></i> Auditor
+                    </a></li>
+                </ul>
+            </li>
+            <li>
+                <div class="group-label {% if current_page in ['ortho', 'dental_ar'] %}expanded{% endif %}" data-group="ar">
+                    AR <i class="fas fa-chevron-down"></i>
+                </div>
+                <ul class="group-items {% if current_page in ['ortho', 'dental_ar'] %}expanded{% endif %}" data-group="ar">
+                    <li><a href="/ortho" class="{{ 'active' if current_page == 'ortho' else '' }}">
+                        <i class="fas fa-notes-medical"></i> Ortho AR
+                    </a></li>
+                    <li><a href="/dental-ar" class="{{ 'active' if current_page == 'dental_ar' else '' }}">
+                        <i class="fas fa-file-invoice-dollar"></i> Dental AR
+                    </a></li>
+                </ul>
+            </li>
+            <li>
+                <div class="group-label {% if current_page in ['dental_bv', 'dental_bv_day', 'dental_bv_night'] %}expanded{% endif %}" data-group="dental-bv">
+                    Dental BV <i class="fas fa-chevron-down"></i>
+                </div>
+                <ul class="group-items {% if current_page in ['dental_bv', 'dental_bv_day', 'dental_bv_night'] %}expanded{% endif %}" data-group="dental-bv">
+                    <li><a href="/dental-bv-day-shift" class="{{ 'active' if current_page in ['dental_bv', 'dental_bv_day'] else '' }}">
+                        <i class="fas fa-sun"></i> Day Shift
+                    </a></li>
+                    <li><a href="/dental-bv-night-shift" class="{{ 'active' if current_page == 'dental_bv_night' else '' }}">
+                        <i class="fas fa-moon"></i> Night Shift
+                    </a></li>
+                </ul>
+            </li>
+            <li><a href="/nh" class="sidebar-main-item {{ 'active' if current_page == 'nh' else '' }}">
+                <i class="fas fa-hospital"></i> NH BV
             </a></li>
-            <li><a href="/night-shift" class="{{ 'active' if current_page == 'night_shift' else '' }}">
-                <i class="fas fa-moon"></i> Night Shift
-            </a></li>
-            <li><a href="/ntbp" class="{{ 'active' if current_page == 'ntbp' else '' }}">
-                <i class="fas fa-file-upload"></i> NTBP
-            </a></li>
-            <li><a href="/qcp" class="{{ 'active' if current_page == 'qcp' else '' }}">
-                <i class="fas fa-check-circle"></i> Auditor
-            </a></li>
-            <li><a href="/daily-consolidate" class="{{ 'active' if current_page == 'daily_consolidate' else '' }}">
-                <i class="fas fa-archive"></i> Daily Consolidate
-            </a></li>
-            <li><a href="/nh" class="{{ 'active' if current_page == 'nh' else '' }}">
-                <i class="fas fa-hospital"></i> NH
-            </a></li>
-            <li><a href="/ortho" class="{{ 'active' if current_page == 'ortho' else '' }}">
-                <i class="fas fa-notes-medical"></i> Ortho AR
-            </a></li>
-            <li><a href="/dental-ar" class="{{ 'active' if current_page == 'dental_ar' else '' }}">
-                <i class="fas fa-file-invoice-dollar"></i> Dental AR
-            </a></li>
-            <li><a href="/ev" class="{{ 'active' if current_page == 'ev' else '' }}">
+            <li><a href="/ev" class="sidebar-main-item {{ 'active' if current_page == 'ev' else '' }}">
                 <i class="fas fa-clipboard-check"></i> EV
             </a></li>
-            <li><a href="/dental-bv" class="{{ 'active' if current_page == 'dental_bv' else '' }}">
-                <i class="fas fa-tooth"></i> Dental BV
-            </a></li>
-            <li><a href="/mis-checklist" class="{{ 'active' if current_page == 'mis_checklist' else '' }}">
+            <li><a href="/mis-checklist" class="sidebar-main-item {{ 'active' if current_page == 'mis_checklist' else '' }}">
                 <i class="fas fa-clipboard-list"></i> MIS Checklist
             </a></li>
         </ul>
@@ -34844,7 +35457,7 @@ def day_shift():
 
     return render_template_string(
         AGENT_TEMPLATE_WITH_SIDEBAR,
-        page_title="Day Shift",
+        page_title="Imagen Day Shift",
         current_page="day_shift",
         user_name=user_name,
         content=content,
@@ -34891,7 +35504,7 @@ def night_shift():
 
     return render_template_string(
         AGENT_TEMPLATE_WITH_SIDEBAR,
-        page_title="Night Shift",
+        page_title="Imagen Night Shift",
         current_page="night_shift",
         user_name=user_name,
         content=content,
@@ -34963,7 +35576,7 @@ def qcp():
 
     user_name = user.name if user else "Agent"
 
-    content = """
+    content = f"""
     <h2>Auditor File Upload</h2>
     <p>Upload your Auditor work file.</p>
     
@@ -35027,7 +35640,7 @@ def daily_consolidate():
 @app.route("/nh")
 @normal_agent_required
 def nh_agent():
-    """NH view - Upload NH work files"""
+    """NH BV view - Upload NH BV work files"""
     user_id = session.get("user_id")
     user = User.query.filter_by(email=user_id, is_active=True).first()
     if not user:
@@ -35045,15 +35658,15 @@ def nh_agent():
         files_list += "</ul>"
 
     content = """
-    <h2>NH File Upload</h2>
-    <p>Upload your NH work file.</p>
+    <h2>NH BV File Upload</h2>
+    <p>Upload your NH BV work file.</p>
     <p style="color: #666; font-size: 0.9em; margin-top: 10px;"><em>Note: Uploading a new file will replace your previous upload.</em></p>
 
     <div style="border: 2px dashed #ddd; padding: 30px; border-radius: 10px; text-align: center; margin-top: 30px; max-width: 500px;">
         <form action="/upload_nh" method="post" enctype="multipart/form-data" id="nh-agent-form">
             <input type="file" name="file" accept=".xlsx,.xls" required style="margin-bottom: 15px; width: 100%; padding: 10px;">
             <button type="submit" style="padding: 10px 20px; background: #667eea; color: white; border: none; border-radius: 5px; cursor: pointer;">
-                <i class="fas fa-upload"></i> Upload NH File
+                <i class="fas fa-upload"></i> Upload NH BV File
             </button>
         </form>
     </div>
@@ -35061,7 +35674,7 @@ def nh_agent():
 
     return render_template_string(
         AGENT_TEMPLATE_WITH_SIDEBAR,
-        page_title="NH",
+        page_title="NH BV",
         current_page="nh",
         user_name=user_name,
         content=content,
@@ -35136,7 +35749,7 @@ def upload_nh():
 
             return jsonify({
                 "success": True,
-                "message": f"NH file '{filename}' uploaded successfully",
+                "message": f"NH BV file '{filename}' uploaded successfully",
                 "file_id": nh_file.id,
             })
 
@@ -35607,17 +36220,22 @@ DENTAL_BV_REQUIRED_COLUMNS = [
 ]
 
 
-@app.route("/dental-bv")
-@normal_agent_required
-def dental_bv_agent():
-    """Dental BV view - Upload Dental BV work files"""
+def _render_dental_bv_agent_page(
+    page_title="Dental BV",
+    current_page="dental_bv",
+    shift_type=DENTAL_BV_SHIFT_DAY,
+):
+    """Render Dental BV agent upload page (shared for Day/Night submenu variants)."""
     user_id = session.get("user_id")
     user = User.query.filter_by(email=user_id, is_active=True).first()
     if not user:
         user = User.query.filter_by(id=user_id, is_active=True).first()
 
     user_name = user.name if user else "Agent"
-    dental_bv_files = get_dental_bv_agent_files(user.id) if user else []
+    if user:
+        dental_bv_files = get_dental_bv_agent_files(user.id, shift_type=shift_type)
+    else:
+        dental_bv_files = []
 
     files_list = ""
     if dental_bv_files:
@@ -35634,6 +36252,7 @@ def dental_bv_agent():
 
     <div style="border: 2px dashed #ddd; padding: 30px; border-radius: 10px; text-align: center; margin-top: 30px; max-width: 500px;">
         <form action="/upload_dental_bv" method="post" enctype="multipart/form-data" id="dental-bv-agent-form">
+            <input type="hidden" name="shift_type" value="{shift_type}">
             <input type="file" name="file" accept=".xlsx,.xls" required style="margin-bottom: 15px; width: 100%; padding: 10px;">
             <button type="submit" style="padding: 10px 20px; background: #667eea; color: white; border: none; border-radius: 5px; cursor: pointer;">
                 <i class="fas fa-upload"></i> Upload Dental BV File
@@ -35644,10 +36263,41 @@ def dental_bv_agent():
 
     return render_template_string(
         AGENT_TEMPLATE_WITH_SIDEBAR,
-        page_title="Dental BV",
-        current_page="dental_bv",
+        page_title=page_title,
+        current_page=current_page,
         user_name=user_name,
         content=content,
+    )
+
+
+@app.route("/dental-bv")
+@normal_agent_required
+def dental_bv_agent():
+    """Dental BV view - Upload Dental BV work files"""
+    return _render_dental_bv_agent_page(
+        page_title="Dental BV", current_page="dental_bv", shift_type=DENTAL_BV_SHIFT_DAY
+    )
+
+
+@app.route("/dental-bv-day-shift")
+@normal_agent_required
+def dental_bv_day_shift_agent():
+    """Dental BV Day Shift view - same functionality as Dental BV upload."""
+    return _render_dental_bv_agent_page(
+        page_title="Dental BV Day Shift",
+        current_page="dental_bv_day",
+        shift_type=DENTAL_BV_SHIFT_DAY,
+    )
+
+
+@app.route("/dental-bv-night-shift")
+@normal_agent_required
+def dental_bv_night_shift_agent():
+    """Dental BV Night Shift view - same functionality as Dental BV upload."""
+    return _render_dental_bv_agent_page(
+        page_title="Dental BV Night Shift",
+        current_page="dental_bv_night",
+        shift_type=DENTAL_BV_SHIFT_NIGHT,
     )
 
 
@@ -35668,6 +36318,26 @@ def upload_dental_bv():
             user = User.query.filter_by(id=user_id, is_active=True).first()
         if not user:
             return jsonify({"success": False, "message": "User not found"}), 400
+
+        raw_shift_type = request.form.get("shift_type", "")
+        shift_type = str(raw_shift_type).strip().lower()
+        if shift_type not in {DENTAL_BV_SHIFT_DAY, DENTAL_BV_SHIFT_NIGHT}:
+            ref = (request.referrer or "").lower()
+            if "dental-bv-night-shift" in ref:
+                shift_type = DENTAL_BV_SHIFT_NIGHT
+            elif "dental-bv-day-shift" in ref or "dental-bv" in ref:
+                shift_type = DENTAL_BV_SHIFT_DAY
+            else:
+                shift_type = DENTAL_BV_SHIFT_DAY
+        try:
+            print(
+                "🔎 DEBUG Dental BV upload shift resolution: "
+                f"raw_shift_type={repr(raw_shift_type)} "
+                f"referrer={repr(request.referrer)} "
+                f"resolved_shift_type={shift_type}"
+            )
+        except Exception:
+            pass
 
         filename = secure_filename(file.filename)
         file.save(filename)
@@ -35694,19 +36364,25 @@ def upload_dental_bv():
                     "message": f"File validation failed. Missing columns: {', '.join(missing)}"
                 }), 400
 
-            existing_files = DentalBVAgentFile.query.filter_by(agent_id=user.id).all()
+            existing_files = get_dental_bv_agent_files(user.id, shift_type=shift_type)
             for ef in existing_files:
                 db.session.delete(ef)
             db.session.commit()
 
-            dental_bv_file = save_dental_bv_agent_file(agent_id=user.id, filename=filename, file_data=file_data, notes=None)
+            dental_bv_file = save_dental_bv_agent_file(
+                agent_id=user.id,
+                filename=filename,
+                file_data=file_data,
+                notes=None,
+                shift_type=shift_type,
+            )
 
             if os.path.exists(filename):
                 os.remove(filename)
 
             return jsonify({
                 "success": True,
-                "message": f"Dental BV file '{filename}' uploaded successfully",
+                "message": f"Dental BV {shift_type.title()} Shift file '{filename}' uploaded successfully",
                 "file_id": dental_bv_file.id,
             })
 

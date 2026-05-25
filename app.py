@@ -21005,10 +21005,6 @@ def apply_auto_column_widths_openpyxl(ws):
 
 def apply_comparison_tool_excel_output_styling(wb):
     """Apply excel-comparison-tool header + borders + date text + column widths to every sheet."""
-    from openpyxl.styles import Protection
-
-    header_lock_password = os.environ.get("EXCEL_HEADER_LOCK_PASSWORD", "mnc-lock")
-
     for sheet_name in wb.sheetnames:
         ws = wb[sheet_name]
         if ws.max_row < 1 or ws.max_column < 1:
@@ -21019,29 +21015,6 @@ def apply_comparison_tool_excel_output_styling(wb):
             headers.append("" if v is None else str(v))
         _apply_imagen_openpyxl_worksheet(ws, headers)
         apply_auto_column_widths_openpyxl(ws)
-
-        # Keep headers non-editable everywhere while preserving editable data rows.
-        for row in ws.iter_rows(
-            min_row=1, max_row=ws.max_row, min_col=1, max_col=ws.max_column
-        ):
-            for cell in row:
-                cell.protection = Protection(locked=False)
-        for cell in ws[1]:
-            cell.protection = Protection(locked=True)
-
-        ws.protection.sheet = True
-        ws.protection.enable()
-        ws.protection.selectLockedCells = True
-        ws.protection.selectUnlockedCells = True
-        ws.protection.formatColumns = False
-        ws.protection.formatRows = False
-        ws.protection.insertColumns = False
-        ws.protection.insertRows = False
-        ws.protection.deleteColumns = False
-        ws.protection.deleteRows = False
-        ws.protection.sort = False
-        ws.protection.autoFilter = False
-        ws.protection.set_password(header_lock_password)
 
 
 def apply_last_uploaded_time_staleness_highlight_openpyxl(wb, stale_hours=2):
@@ -21187,58 +21160,6 @@ def format_excel_with_priority_status(excel_path, sheet_name, nh_email_style=Fal
         # Continue even if formatting fails
 
 
-def lock_excel_header_row(excel_path, sheet_name):
-    """
-    Protect only header row (row 1) in an Excel sheet.
-    Data rows remain editable.
-    """
-    try:
-        from openpyxl import load_workbook
-        from openpyxl.styles import Protection
-
-        header_lock_password = os.environ.get("EXCEL_HEADER_LOCK_PASSWORD", "mnc-lock")
-        wb = load_workbook(excel_path)
-        if sheet_name not in wb.sheetnames:
-            wb.close()
-            return
-
-        ws = wb[sheet_name]
-
-        # Default all cells to editable
-        for row in ws.iter_rows(
-            min_row=1,
-            max_row=ws.max_row,
-            min_col=1,
-            max_col=ws.max_column,
-        ):
-            for cell in row:
-                cell.protection = Protection(locked=False)
-
-        # Lock header row only
-        for cell in ws[1]:
-            cell.protection = Protection(locked=True)
-
-        ws.protection.sheet = True
-        ws.protection.enable()
-        ws.protection.selectLockedCells = True
-        ws.protection.selectUnlockedCells = True
-        ws.protection.formatColumns = False
-        ws.protection.formatRows = False
-        ws.protection.insertColumns = False
-        ws.protection.insertRows = False
-        ws.protection.deleteColumns = False
-        ws.protection.deleteRows = False
-        ws.protection.sort = False
-        ws.protection.autoFilter = False
-        ws.protection.set_password(header_lock_password)
-
-        wb.save(excel_path)
-        wb.close()
-    except Exception as e:
-        print(f"Error locking header row: {str(e)}")
-        # Continue even if protection fails
-
-
 def get_ist_today_date_str():
     """Return current date in IST for email subject lines."""
     ist_tz = timezone(timedelta(hours=5, minutes=30))
@@ -21310,7 +21231,6 @@ def send_email_to_agent():
             format_excel_with_priority_status(
                 temp_path, sheet_name, nh_email_style=(channel == "nh")
             )
-            lock_excel_header_row(temp_path, sheet_name)
 
             # Read the Excel file as bytes
             with open(temp_path, "rb") as f:
@@ -21460,7 +21380,6 @@ def send_email_to_all_agents():
                     format_excel_with_priority_status(
                         temp_path, sheet_name, nh_email_style=(channel == "nh")
                     )
-                    lock_excel_header_row(temp_path, sheet_name)
 
                     # Read the Excel file as bytes
                     with open(temp_path, "rb") as f:
@@ -21801,7 +21720,6 @@ def download_auditor_allocation_excel():
                 auditor_rows.to_excel(writer, sheet_name=sheet_name, index=False)
 
             format_excel_with_priority_status(temp_path, sheet_name)
-            lock_excel_header_row(temp_path, sheet_name)
 
             return send_file(
                 temp_path,
@@ -21957,7 +21875,6 @@ def send_email_to_all_auditors():
                         auditor_rows.to_excel(writer, sheet_name=sheet_name, index=False)
 
                     format_excel_with_priority_status(temp_path, sheet_name)
-                    lock_excel_header_row(temp_path, sheet_name)
 
                     with open(temp_path, "rb") as f:
                         excel_bytes = io.BytesIO(f.read())

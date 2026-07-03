@@ -30940,6 +30940,13 @@ def send_approval_email():
 
         # Create Excel file with agent's allocated data
         excel_buffer = create_agent_excel_file(agent_name, agent_info)
+        # Apply NH-style red highlighting for NH agent channel, else standard first-priority red.
+        agent_channel = normalize_email_agent_allocation_channel(
+            agent_info.get("allocation_channel")
+        )
+        excel_buffer = apply_priority_styling_to_excel_buffer(
+            excel_buffer, nh_email_style=(agent_channel == "nh")
+        )
 
         # Format insurance companies list
         insurance_list = (
@@ -31095,6 +31102,12 @@ def approve_all_allocations():
 
                 # Create Excel file with agent's allocated data
                 excel_buffer = create_agent_excel_file(agent_name, agent)
+                agent_channel = normalize_email_agent_allocation_channel(
+                    agent.get("allocation_channel")
+                )
+                excel_buffer = apply_priority_styling_to_excel_buffer(
+                    excel_buffer, nh_email_style=(agent_channel == "nh")
+                )
 
                 # Format insurance companies list
                 insurance_list = (
@@ -32429,6 +32442,32 @@ def create_agent_excel_file(agent_name, agent_info):
         return excel_buffer
 
 
+def apply_priority_styling_to_excel_buffer(excel_buffer, nh_email_style=False):
+    """Apply priority row red-font styling + standard workbook styling to an Excel buffer."""
+    try:
+        excel_buffer.seek(0)
+        from openpyxl import load_workbook
+
+        wb = load_workbook(excel_buffer)
+        sheet_name = (
+            "Allocated Data" if "Allocated Data" in wb.sheetnames else wb.sheetnames[0]
+        )
+        if nh_email_style:
+            apply_nh_style_priority_row_red_highlights_openpyxl(wb, sheet_name)
+        else:
+            apply_first_priority_full_row_red_openpyxl(wb, sheet_name)
+        apply_comparison_tool_excel_output_styling(wb)
+        out = io.BytesIO()
+        wb.save(out)
+        wb.close()
+        out.seek(0)
+        return out
+    except Exception as e:
+        print(f"apply_priority_styling_to_excel_buffer: {e}", flush=True)
+        excel_buffer.seek(0)
+        return excel_buffer
+
+
 @app.route("/reset_app", methods=["POST"])
 @admin_required
 def reset_app():
@@ -32975,31 +33014,9 @@ def process_nh_allocation():
                     continue
                 alloc_df.at[_nh_r1_idx, a_agent_name] = ""
 
-        # Staff Status = No allocation but file still has their name + Remark Workable → clear so another agent can match
-        nh_no_alloc_agent_names_norm = set()
-        for _, _st_row in staff_df.iterrows():
-            _st_name = str(_st_row[s_agent]).strip() if pd.notna(_st_row[s_agent]) else ""
-            if not _st_name or _st_name.lower() == "nan":
-                continue
-            if s_status and staff_status_is_no_allocation(_st_row[s_status]):
-                nh_no_alloc_agent_names_norm.add(re.sub(r"\s+", " ", _st_name.lower()))
-
-        if a_remark is not None and nh_no_alloc_agent_names_norm:
-            for _nh_na_idx in alloc_df.index:
-                if is_row_unassigned(_nh_na_idx):
-                    continue
-                try:
-                    _nr = alloc_df.at[_nh_na_idx, a_remark]
-                except (KeyError, TypeError):
-                    continue
-                _nr_l = str(_nr).strip().lower() if pd.notna(_nr) else ""
-                if _nr_l != "workable":
-                    continue
-                _cell_ag = str(alloc_df.at[_nh_na_idx, a_agent_name]).strip()
-                if not _cell_ag or _cell_ag.lower() == "nan":
-                    continue
-                if re.sub(r"\s+", " ", _cell_ag.lower()) in nh_no_alloc_agent_names_norm:
-                    alloc_df.at[_nh_na_idx, a_agent_name] = ""
+        # STRICT RULE: do not clear/reallocate rows based on other Remark values
+        # (e.g., "workable"). Remark-driven reassignment is only for Rule 1
+        # values handled by is_nh_rule1_remark_row: NTC or "allocate to ...".
 
         # Rows that already had Agent Name before this run (excluded from summary "Assigned" count)
         nh_preexisting_agent_idx = frozenset(

@@ -1291,6 +1291,11 @@ imagen_qc_tracker_file_ready = False
 imagen_qc_tracker_processed_df = None  # normalized sheet used for generate_all_trackers_from_dataframe
 imagen_qc_tracker_sheet_name = None
 
+# AR Ticker data storage
+ar_ticker_output_df = None
+ar_ticker_source_filenames = []
+ar_ticker_file_ready = False
+
 
 # Database helper functions
 def init_database():
@@ -3881,7 +3886,8 @@ HTML_TEMPLATE = """
                 'dental-bv-night-consolidate': 'Dental BV Night Shift Consolidation',
                 'mis-checklist-consolidate': 'MIS Checklist',
                 'imagen-tracker': 'Imagen Tracker',
-                'imagen-qc-tracker': 'Imagen QC Tracker'
+                'imagen-qc-tracker': 'Imagen QC Tracker',
+                'ar-ticker': 'AR Ticker'
             };
             return names[submenuName] || submenuName;
         }
@@ -4056,6 +4062,11 @@ HTML_TEMPLATE = """
                     <li>
                         <div class="submenu-item {% if current_submenu == 'imagen-qc-tracker' %}active{% endif %}" onclick="switchAdminMenu('trackers', 'imagen-qc-tracker')">
                             <i class="fas fa-check-double"></i> Imagen QC Tracker
+                        </div>
+                    </li>
+                    <li>
+                        <div class="submenu-item {% if current_submenu == 'ar-ticker' %}active{% endif %}" onclick="switchAdminMenu('trackers', 'ar-ticker')">
+                            <i class="fas fa-columns"></i> AR Ticker
                         </div>
                     </li>
                 </ul>
@@ -6040,6 +6051,68 @@ HTML_TEMPLATE = """
                             </div>
                             <div class="progress-text" id="imagen-qc-tracker-progress-text">Please wait...</div>
                         </div>
+                    </div>
+                </div>
+
+                <!-- AR Ticker Content -->
+                <div id="ar-ticker-content" class="admin-menu-content" style="display: {% if current_menu == 'trackers' and current_submenu == 'ar-ticker' %}block{% else %}none{% endif %};">
+                    <div class="section">
+                        <h3>📊 AR Ticker</h3>
+                        <p>Upload multiple AR workbooks to build one combined board summary by priority. Current logic removes first two rows, normalizes repeated headers, and computes Pending / Completed / Others with Average = Completed / 2.</p>
+
+                        <div class="upload-card" style="max-width: 600px; margin: 20px auto;">
+                            <form action="/upload_ar_ticker_file" method="post" enctype="multipart/form-data">
+                                <div class="form-group">
+                                    <label for="ar_ticker_file" style="display: block; margin-bottom: 8px; font-weight: 600; color: #555;">
+                                        <i class="fas fa-file-excel"></i> Upload AR source files:
+                                    </label>
+                                    <input type="file" id="ar_ticker_file" name="files" accept=".xlsx,.xls" multiple required style="width: 100%; padding: 12px; border: 2px solid #ddd; border-radius: 8px; font-size: 16px;">
+                                </div>
+                                <button type="submit" class="process-btn" style="width: 100%;">
+                                    <i class="fas fa-upload"></i> Upload and Process AR Ticker Files
+                                </button>
+                            </form>
+                        </div>
+
+                        {% with messages = get_flashed_messages(with_categories=true) %}
+                            {% if messages %}
+                                {% for category, message in messages %}
+                                    {% if 'ar ticker' in message.lower() or ('board name not found' in message.lower()) %}
+                                    <div class="status-message" style="margin-top: 20px; {% if category == 'success' %}background: #d4edda; color: #155724; border: 1px solid #c3e6cb;{% elif category == 'error' %}background: #f8d7da; color: #721c24; border: 1px solid #f5c6cb;{% else %}background: #d1ecf1; color: #0c5460; border: 1px solid #bee5eb;{% endif %}">
+                                        {{ message | safe }}
+                                    </div>
+                                    {% endif %}
+                                {% endfor %}
+                            {% endif %}
+                        {% endwith %}
+
+                        {% if ar_ticker_file_ready %}
+                        <div class="section" style="margin-top: 30px;">
+                            <h3>👀 AR Ticker Preview</h3>
+                            <p>Preview the generated Excel content before downloading.</p>
+                            <div style="overflow-x: auto; background: #fff; border-radius: 8px; padding: 10px; border: 1px solid #e9ecef;">
+                                {% if ar_ticker_preview_html %}
+                                    {{ ar_ticker_preview_html | safe }}
+                                {% else %}
+                                    <p style="margin: 0; color: #666;">Preview not available.</p>
+                                {% endif %}
+                            </div>
+                        </div>
+
+                        <div class="section" style="margin-top: 20px;">
+                            <h3>💾 Download AR Ticker Output</h3>
+                            <form action="/download_ar_ticker_output" method="post" style="display: inline-block; margin-right: 10px;">
+                                <button type="submit" class="process-btn" style="background: linear-gradient(135deg, #3498db, #2980b9);">
+                                    <i class="fas fa-download"></i> Download AR Ticker Summary
+                                </button>
+                            </form>
+                            <form action="/reset_ar_ticker" method="post" style="display: inline-block;">
+                                <button type="submit" class="process-btn" style="background: linear-gradient(135deg, #dc3545, #c82333);">
+                                    <i class="fas fa-undo"></i> Reset AR Ticker
+                                </button>
+                            </form>
+                        </div>
+                        {% endif %}
                     </div>
                 </div>
                 
@@ -20224,6 +20297,7 @@ def index():
     global auditor_email_allocation_data, auditor_email_allocation_filename, auditor_email_agents_list, auditor_email_sent
     global tracker_data, tracker_filename, tracker_file_ready
     global imagen_qc_tracker_data, imagen_qc_tracker_filename, imagen_qc_tracker_file_ready
+    global ar_ticker_output_df, ar_ticker_source_filenames, ar_ticker_file_ready
     global ev_staff_data, ev_staff_filename, ev_allocation_data, ev_allocation_filename, ev_processing_result
     global dental_bv_staff_data, dental_bv_staff_filename, dental_bv_allocation_data, dental_bv_allocation_filename, dental_bv_processing_result
     global imagen_qc_staff_data, imagen_qc_staff_filename, imagen_qc_allocation_data, imagen_qc_allocation_filename, imagen_qc_processing_result
@@ -20290,6 +20364,20 @@ def index():
         )
         mis_checklist_files = get_mis_checklist_files()
 
+    ar_ticker_preview_html = None
+    if (
+        "ar_ticker_output_df" in globals()
+        and isinstance(ar_ticker_output_df, pd.DataFrame)
+        and not ar_ticker_output_df.empty
+    ):
+        ar_ticker_preview_html = ar_ticker_output_df.to_html(
+            index=False,
+            classes="ar-ticker-preview-table",
+            border=0,
+            justify="left",
+            na_rep="",
+        )
+
     return render_template_string(
         HTML_TEMPLATE,
         allocation_data=allocation_data,
@@ -20332,6 +20420,10 @@ def index():
             if "imagen_qc_tracker_file_ready" in globals()
             else False
         ),
+        ar_ticker_file_ready=(
+            ar_ticker_file_ready if "ar_ticker_file_ready" in globals() else False
+        ),
+        ar_ticker_preview_html=ar_ticker_preview_html,
         ev_staff_data=ev_staff_data,
         ev_staff_filename=ev_staff_filename,
         ev_allocation_data=ev_allocation_data,
@@ -24925,6 +25017,214 @@ def generate_tracker_sheets(processed_df, writer, agent_allocations_data=None):
     # Due to length constraints, I'll create a function that reuses the existing logic
 
 
+def _extract_ar_board_name(filename):
+    """Extract board name token from AR ticker filename with flexible patterns."""
+    base_name = os.path.splitext(os.path.basename(filename or ""))[0]
+    if not base_name:
+        return None
+
+    # Preferred pattern: ..._<Board>_s_AR_... (or ..._<Board>_AR_...)
+    match = re.search(r"_([A-Za-z][A-Za-z .'-]*)_(?:s_)?AR(?:_|$)", base_name, re.IGNORECASE)
+    if match:
+        token = match.group(1).strip()
+        if token:
+            return token
+
+    # Fallback: choose first non-generic alphabetic token from underscore parts
+    skip_tokens = {
+        "january",
+        "february",
+        "march",
+        "april",
+        "may",
+        "june",
+        "july",
+        "august",
+        "september",
+        "october",
+        "november",
+        "december",
+        "jan",
+        "feb",
+        "mar",
+        "apr",
+        "jun",
+        "jul",
+        "aug",
+        "sep",
+        "sept",
+        "oct",
+        "nov",
+        "dec",
+        "ar",
+        "s",
+    }
+    parts = [p.strip() for p in re.split(r"[_\-]+", base_name) if p.strip()]
+    for token in parts:
+        lower = token.lower()
+        if lower in skip_tokens:
+            continue
+        if lower.isdigit():
+            continue
+        if re.fullmatch(r"[A-Za-z][A-Za-z .'-]*", token):
+            return token
+
+    return None
+
+
+def _normalize_ar_ticker_dataframe(raw_df):
+    """
+    Normalize AR sheet by removing first 2 rows and stitching repeated header blocks.
+    Header rows are detected when both `OC Status` and `Priority Work` are present.
+    """
+    if raw_df is None or raw_df.empty:
+        return pd.DataFrame()
+
+    working_df = raw_df.iloc[2:].reset_index(drop=True)
+    normalized_rows = []
+    current_headers = None
+
+    for _, row in working_df.iterrows():
+        values = row.tolist()
+        text_values = [str(v).strip() for v in values if str(v).strip().lower() != "nan"]
+
+        if not text_values:
+            continue
+
+        lower_values = [v.lower() for v in text_values]
+        is_header_row = ("oc status" in lower_values) and ("priority work" in lower_values)
+        if is_header_row:
+            current_headers = [str(v).strip() for v in values]
+            continue
+
+        if not current_headers:
+            continue
+
+        row_map = {}
+        for col_idx, header in enumerate(current_headers):
+            header_text = str(header).strip()
+            if not header_text or header_text.lower() == "nan":
+                continue
+            cell_value = values[col_idx] if col_idx < len(values) else None
+            row_map[header_text] = cell_value
+
+        if row_map:
+            normalized_rows.append(row_map)
+
+    if not normalized_rows:
+        return pd.DataFrame()
+
+    normalized_df = pd.DataFrame(normalized_rows)
+    normalized_df = normalized_df.dropna(how="all")
+    return normalized_df
+
+
+def _compute_ar_ticker_counts(normalized_df):
+    """Compute per-priority counts from a normalized AR dataframe."""
+    if normalized_df is None or normalized_df.empty:
+        raise ValueError("No data rows found after header normalization.")
+
+    columns_lower = {str(col).strip().lower(): col for col in normalized_df.columns}
+    priority_col = columns_lower.get("priority work")
+    status_col = columns_lower.get("oc status")
+
+    missing_cols = []
+    if not priority_col:
+        missing_cols.append("Priority Work")
+    if not status_col:
+        missing_cols.append("OC Status")
+    if missing_cols:
+        raise ValueError(f"Missing required columns: {', '.join(missing_cols)}")
+
+    status_series = normalized_df[status_col].fillna("").astype(str).str.strip()
+    status_lower = status_series.str.lower()
+
+    done_values = {"done", "done/done"}
+    is_pending = status_series.eq("")
+    is_completed = status_lower.isin(done_values)
+    is_others = ~(is_pending | is_completed)
+
+    counts = {}
+    for priority_label in ["Priority 1", "Priority 2", "Priority 3"]:
+        priority_mask = (
+            normalized_df[priority_col].fillna("").astype(str).str.strip().str.lower()
+            == priority_label.lower()
+        )
+
+        beginning_count = int(priority_mask.sum())
+        pending_count = int((priority_mask & is_pending).sum())
+        completed_count = int((priority_mask & is_completed).sum())
+        others_count = int((priority_mask & is_others).sum())
+        average_value = completed_count / 2
+
+        counts[priority_label] = {
+            "Beginning": beginning_count,
+            "Pending": pending_count,
+            "Completed": completed_count,
+            "Others": others_count,
+            "Average": average_value,
+        }
+
+    return counts
+
+
+def _build_ar_ticker_output(board_counts):
+    """Build final AR ticker output for multiple board files."""
+    if not board_counts:
+        raise ValueError("No valid AR files were processed.")
+
+    output_rows = []
+    for priority_label in ["Priority 1", "Priority 2", "Priority 3"]:
+        for idx, board_item in enumerate(board_counts):
+            metrics = board_item["counts"][priority_label]
+            output_rows.append(
+                {
+                    "Priority": priority_label if idx == 0 else "",
+                    "Boards": board_item["board"],
+                    "Beginning": metrics["Beginning"],
+                    "Pending": metrics["Pending"],
+                    "Completed": metrics["Completed"],
+                    "Others": metrics["Others"],
+                    "Average": metrics["Average"],
+                }
+            )
+
+        total_beginning = sum(
+            b["counts"][priority_label]["Beginning"] for b in board_counts
+        )
+        total_pending = sum(b["counts"][priority_label]["Pending"] for b in board_counts)
+        total_completed = sum(
+            b["counts"][priority_label]["Completed"] for b in board_counts
+        )
+        total_others = sum(b["counts"][priority_label]["Others"] for b in board_counts)
+        total_average = total_completed / 2
+
+        output_rows.append(
+            {
+                "Priority": "",
+                "Boards": "Total",
+                "Beginning": total_beginning,
+                "Pending": total_pending,
+                "Completed": total_completed,
+                "Others": total_others,
+                "Average": total_average,
+            }
+        )
+        output_rows.append(
+            {
+                "Priority": "",
+                "Boards": "",
+                "Beginning": "",
+                "Pending": "",
+                "Completed": "",
+                "Others": "",
+                "Average": "",
+            }
+        )
+
+    return pd.DataFrame(output_rows)
+
+
 @app.route("/upload_tracker_data", methods=["POST"])
 @admin_required
 def upload_tracker_data():
@@ -26555,6 +26855,114 @@ def download_imagen_qc_allocation():
         flash(f"Error downloading Imagen QC Allocation file: {str(e)}", "error")
         print(f"Imagen QC Allocation Download Error: {error_trace}")
         return redirect("/?menu=allocations&submenu=imagen-qc-allocation")
+
+
+@app.route("/upload_ar_ticker_file", methods=["POST"])
+@admin_required
+def upload_ar_ticker_file():
+    """Upload multiple AR ticker files and prepare combined summary output."""
+    global ar_ticker_output_df, ar_ticker_source_filenames, ar_ticker_file_ready
+
+    files = request.files.getlist("files")
+    if not files:
+        single_file = request.files.get("file")
+        if single_file:
+            files = [single_file]
+
+    if not files:
+        flash("No files provided", "error")
+        return redirect("/?menu=trackers&submenu=ar-ticker")
+
+    try:
+        board_counts = []
+        source_filenames = []
+
+        for file in files:
+            if not file or not file.filename:
+                continue
+
+            temp_name = secure_filename(file.filename)
+            file.save(temp_name)
+            try:
+                raw_df = pd.read_excel(temp_name, header=None)
+                normalized_df = _normalize_ar_ticker_dataframe(raw_df)
+                board_name = _extract_ar_board_name(file.filename)
+                if not board_name:
+                    raise ValueError(
+                        f"Board name not found in filename '{file.filename}'. Expected format like 'July_2026_Andrea_s_AR_1783866032.xlsx'."
+                    )
+                counts = _compute_ar_ticker_counts(normalized_df)
+                board_counts.append({"board": board_name, "counts": counts})
+                source_filenames.append(file.filename)
+            finally:
+                if os.path.exists(temp_name):
+                    os.remove(temp_name)
+
+        if not board_counts:
+            raise ValueError("No valid files selected for AR Ticker processing.")
+
+        ar_ticker_output_df = _build_ar_ticker_output(board_counts)
+        ar_ticker_source_filenames = source_filenames
+        ar_ticker_file_ready = True
+
+        flash(
+            f"AR Ticker files processed successfully ({len(source_filenames)} file(s)). Download is ready.",
+            "success",
+        )
+    except Exception as e:
+        ar_ticker_output_df = None
+        ar_ticker_source_filenames = []
+        ar_ticker_file_ready = False
+        flash(f"Error processing AR Ticker file: {str(e)}", "error")
+
+    return redirect("/?menu=trackers&submenu=ar-ticker")
+
+
+@app.route("/download_ar_ticker_output", methods=["POST"])
+@admin_required
+def download_ar_ticker_output():
+    """Download AR ticker processed output."""
+    global ar_ticker_output_df, ar_ticker_source_filenames
+
+    if ar_ticker_output_df is None or ar_ticker_output_df.empty:
+        flash("No AR Ticker output available. Upload a file first.", "error")
+        return redirect("/?menu=trackers&submenu=ar-ticker")
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    if len(ar_ticker_source_filenames or []) == 1:
+        base_name = os.path.splitext(ar_ticker_source_filenames[0])[0]
+    else:
+        base_name = "ar_ticker_multi"
+    filename = f"{base_name}_ar_ticker_summary_{timestamp}.xlsx"
+
+    temp_fd, temp_path = tempfile.mkstemp(suffix=".xlsx")
+    try:
+        with pd.ExcelWriter(temp_path, engine="openpyxl") as writer:
+            ar_ticker_output_df.to_excel(writer, sheet_name="AR Ticker", index=False)
+        return send_file(temp_path, as_attachment=True, download_name=filename)
+    finally:
+        try:
+            os.close(temp_fd)
+        except Exception:
+            pass
+        try:
+            if os.path.exists(temp_path):
+                os.unlink(temp_path)
+        except Exception:
+            pass
+
+
+@app.route("/reset_ar_ticker", methods=["POST"])
+@admin_required
+def reset_ar_ticker():
+    """Reset AR ticker upload/output state."""
+    global ar_ticker_output_df, ar_ticker_source_filenames, ar_ticker_file_ready
+
+    ar_ticker_output_df = None
+    ar_ticker_source_filenames = []
+    ar_ticker_file_ready = False
+    flash("AR Ticker has been reset.", "success")
+    return redirect("/?menu=trackers&submenu=ar-ticker")
 
 
 @app.route("/download_trackers", methods=["POST"])
@@ -32479,6 +32887,7 @@ def reset_app():
     global tracker_processed_df, tracker_processed_sheet
     global imagen_qc_tracker_data, imagen_qc_tracker_filename, imagen_qc_tracker_file_ready
     global imagen_qc_tracker_processed_df, imagen_qc_tracker_sheet_name
+    global ar_ticker_output_df, ar_ticker_source_filenames, ar_ticker_file_ready
 
     try:
         # Do NOT clear agent work files - preserve all agent files (both uploaded and consolidated)
@@ -32513,6 +32922,9 @@ def reset_app():
         imagen_qc_tracker_file_ready = False
         imagen_qc_tracker_processed_df = None
         imagen_qc_tracker_sheet_name = None
+        ar_ticker_output_df = None
+        ar_ticker_source_filenames = []
+        ar_ticker_file_ready = False
 
         # Commit database changes
         db.session.commit()

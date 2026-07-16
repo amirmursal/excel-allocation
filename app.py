@@ -755,6 +755,124 @@ class NHFile(db.Model):
         return None
 
 
+class WebARFile(db.Model):
+    """Web AR file model for storing Web AR uploads"""
+
+    __tablename__ = "web_ar_files"
+
+    id = db.Column(db.Integer, primary_key=True)
+    agent_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False)
+    filename = db.Column(db.String(255), nullable=False)
+    file_data = db.Column(db.Text)
+    upload_date = db.Column(db.DateTime, default=datetime.utcnow)
+    status = db.Column(db.String(50), default="uploaded")
+    notes = db.Column(db.Text)
+
+    agent = db.relationship("User", backref="web_ar_files")
+
+    def set_file_data(self, data):
+        if data is not None:
+            if isinstance(data, dict):
+                serializable_data = {}
+                for key, value in data.items():
+                    if isinstance(value, pd.DataFrame):
+                        df_records = value.to_dict("records")
+                        for record in df_records:
+                            for k, v in record.items():
+                                if hasattr(v, "isoformat"):
+                                    record[k] = v.isoformat()
+                        serializable_data[key] = df_records
+                    else:
+                        serializable_data[key] = value
+                self.file_data = json.dumps(serializable_data)
+            elif isinstance(data, pd.DataFrame):
+                df_records = data.to_dict("records")
+                for record in df_records:
+                    for k, v in record.items():
+                        if hasattr(v, "isoformat"):
+                            record[k] = v.isoformat()
+                self.file_data = json.dumps(df_records)
+            else:
+                self.file_data = json.dumps(data)
+        else:
+            self.file_data = None
+
+    def get_file_data(self):
+        if self.file_data:
+            data = json.loads(self.file_data)
+            if isinstance(data, dict):
+                converted_data = {}
+                for key, value in data.items():
+                    if isinstance(value, list) and len(value) > 0:
+                        converted_data[key] = pd.DataFrame(value)
+                    else:
+                        converted_data[key] = value
+                return converted_data
+            elif isinstance(data, list):
+                return pd.DataFrame(data)
+            return data
+        return None
+
+
+class PaymentListPPFile(db.Model):
+    """Payment List (PP) file model for storing Payment List uploads"""
+
+    __tablename__ = "payment_list_pp_files"
+
+    id = db.Column(db.Integer, primary_key=True)
+    agent_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False)
+    filename = db.Column(db.String(255), nullable=False)
+    file_data = db.Column(db.Text)
+    upload_date = db.Column(db.DateTime, default=datetime.utcnow)
+    status = db.Column(db.String(50), default="uploaded")
+    notes = db.Column(db.Text)
+
+    agent = db.relationship("User", backref="payment_list_pp_files")
+
+    def set_file_data(self, data):
+        if data is not None:
+            if isinstance(data, dict):
+                serializable_data = {}
+                for key, value in data.items():
+                    if isinstance(value, pd.DataFrame):
+                        df_records = value.to_dict("records")
+                        for record in df_records:
+                            for k, v in record.items():
+                                if hasattr(v, "isoformat"):
+                                    record[k] = v.isoformat()
+                        serializable_data[key] = df_records
+                    else:
+                        serializable_data[key] = value
+                self.file_data = json.dumps(serializable_data)
+            elif isinstance(data, pd.DataFrame):
+                df_records = data.to_dict("records")
+                for record in df_records:
+                    for k, v in record.items():
+                        if hasattr(v, "isoformat"):
+                            record[k] = v.isoformat()
+                self.file_data = json.dumps(df_records)
+            else:
+                self.file_data = json.dumps(data)
+        else:
+            self.file_data = None
+
+    def get_file_data(self):
+        if self.file_data:
+            data = json.loads(self.file_data)
+            if isinstance(data, dict):
+                converted_data = {}
+                for key, value in data.items():
+                    if isinstance(value, list) and len(value) > 0:
+                        converted_data[key] = pd.DataFrame(value)
+                    else:
+                        converted_data[key] = value
+                return converted_data
+            elif isinstance(data, list):
+                return pd.DataFrame(data)
+            return data
+        return None
+
+
 class OrthoFile(db.Model):
     """Ortho file model for storing Ortho uploads"""
 
@@ -1579,6 +1697,44 @@ def get_nh_files(agent_id=None):
     if agent_id:
         return NHFile.query.filter_by(agent_id=agent_id).order_by(NHFile.upload_date.desc()).all()
     return NHFile.query.order_by(NHFile.upload_date.desc()).all()
+
+
+def save_web_ar_file(agent_id, filename, file_data, notes=None):
+    """Save Web AR file to database"""
+    web_ar_file = WebARFile(agent_id=agent_id, filename=filename, notes=notes)
+    web_ar_file.set_file_data(file_data)
+    db.session.add(web_ar_file)
+    db.session.commit()
+    return web_ar_file
+
+
+def get_web_ar_files(agent_id=None):
+    """Get Web AR files, optionally filtered by agent"""
+    if agent_id:
+        return WebARFile.query.filter_by(agent_id=agent_id).order_by(
+            WebARFile.upload_date.desc()
+        ).all()
+    return WebARFile.query.order_by(WebARFile.upload_date.desc()).all()
+
+
+def save_payment_list_pp_file(agent_id, filename, file_data, notes=None):
+    """Save Payment List (PP) file to database"""
+    payment_list_pp_file = PaymentListPPFile(
+        agent_id=agent_id, filename=filename, notes=notes
+    )
+    payment_list_pp_file.set_file_data(file_data)
+    db.session.add(payment_list_pp_file)
+    db.session.commit()
+    return payment_list_pp_file
+
+
+def get_payment_list_pp_files(agent_id=None):
+    """Get Payment List (PP) files, optionally filtered by agent"""
+    if agent_id:
+        return PaymentListPPFile.query.filter_by(agent_id=agent_id).order_by(
+            PaymentListPPFile.upload_date.desc()
+        ).all()
+    return PaymentListPPFile.query.order_by(PaymentListPPFile.upload_date.desc()).all()
 
 
 def save_ortho_file(agent_id, filename, file_data, notes=None):
@@ -3901,9 +4057,11 @@ HTML_TEMPLATE = """
                 'qcp': 'Auditor',
                 'daily-consolidate': 'Daily Consolidate',
                 'nh-consolidate': 'NH BV',
+                'web-ar-consolidate': 'Web AR',
                 'ortho-consolidate': 'Ortho AR',
                 'dental-ar-consolidate': 'Dental AR',
                 'ev-consolidate': 'EV',
+                'payment-list-pp-consolidate': 'Payment List (PP)',
                 'dental-bv-consolidate': 'Dental BV',
                 'dental-bv-day-consolidate': 'Dental BV Day Shift Consolidation',
                 'dental-bv-night-consolidate': 'Dental BV Night Shift Consolidation',
@@ -4060,8 +4218,18 @@ HTML_TEMPLATE = """
                         </div>
                     </li>
                     <li>
+                        <div class="submenu-item submenu-main-item {% if current_submenu == 'web-ar-consolidate' %}active{% endif %}" data-submenu="web-ar-consolidate" onclick="switchAdminMenu('agent-consolidation', 'web-ar-consolidate')">
+                            <i class="fas fa-globe"></i> Web AR Consolidation
+                        </div>
+                    </li>
+                    <li>
                         <div class="submenu-item submenu-main-item {% if current_submenu == 'ev-consolidate' %}active{% endif %}" data-submenu="ev-consolidate" onclick="switchAdminMenu('agent-consolidation', 'ev-consolidate')">
                             <i class="fas fa-file-medical"></i> EV Consolidation
+                        </div>
+                    </li>
+                    <li>
+                        <div class="submenu-item submenu-main-item {% if current_submenu == 'payment-list-pp-consolidate' %}active{% endif %}" data-submenu="payment-list-pp-consolidate" onclick="switchAdminMenu('agent-consolidation', 'payment-list-pp-consolidate')">
+                            <i class="fas fa-list-check"></i> Payment List (PP) Consolidation
                         </div>
                     </li>
                     <li>
@@ -5598,6 +5766,65 @@ HTML_TEMPLATE = """
                     </div>
                 </div>
 
+                <!-- Web AR Content (under Agent Consolidation menu) -->
+                <div id="web-ar-consolidate-content" class="admin-menu-content" style="display: {% if current_menu == 'agent-consolidation' and current_submenu == 'web-ar-consolidate' %}block{% else %}none{% endif %};">
+                    <div class="section">
+                            {% if web_ar_files %}
+                            <div style="background: #f8f9fa; padding: 20px; border-radius: 10px; margin-bottom: 20px;">
+                                <h4>Available Web AR Files:</h4>
+                                {% for file in web_ar_files %}
+                                <div style="border-bottom: {% if loop.last %}none{% else %}1px solid #dee2e6{% endif %}; padding: 10px 0; display: flex; justify-content: space-between; align-items: center;">
+                                    <div style="flex: 1;">
+                                        <strong>{{ file.agent.name }}</strong> - {{ file.filename }}
+                                        <br>
+                                        <small style="color: #666;">
+                                            Uploaded: {{ (file.upload_date | to_ist).strftime('%Y-%m-%d %I:%M %p') }} IST
+                                            | Status: <span style="color: {% if file.status == 'uploaded' %}#28a745{% elif file.status == 'consolidated' %}#007bff{% else %}#6c757d{% endif %}">{{ file.status.title() if file.status else 'Uploaded' }}</span>
+                                        </small>
+                                        {% if file.notes %}
+                                        <br>
+                                        <small style="color: #666;"><em>{{ file.notes }}</em></small>
+                                        {% endif %}
+                                    </div>
+                                    <div style="margin-left: 15px; display: flex; gap: 8px;">
+                                        <a href="/download_web_ar_file/{{ file.id }}" class="process-btn js-ac-consolidation-xlsx-download" style="padding: 8px 16px; text-decoration: none; display: inline-block; background: linear-gradient(135deg, #007bff, #0056b3); color: white; border-radius: 5px; font-size: 14px;">
+                                            <i class="fas fa-download"></i> Download
+                                        </a>
+                                        <form action="/delete_web_ar_file/{{ file.id }}" method="post" style="margin: 0; display: inline-block;" onsubmit="return confirm('Are you sure you want to delete this file?');">
+                                            <input type="hidden" name="subtab" value="web-ar-consolidate">
+                                            <input type="hidden" name="current_menu" value="agent-consolidation">
+                                            <input type="hidden" name="current_submenu" value="web-ar-consolidate">
+                                            <button type="submit" class="process-btn" style="padding: 8px 16px; background: linear-gradient(135deg, #dc3545, #c82333); color: white; border: none; border-radius: 5px; font-size: 14px; cursor: pointer;">
+                                                <i class="fas fa-trash-alt"></i> Delete
+                                            </button>
+                                        </form>
+                                    </div>
+                                </div>
+                                {% endfor %}
+                            </div>
+                            <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+                                <form action="/consolidate_web_ar_files" method="post" class="js-ac-consolidation-xlsx-form" data-ac-fallback-filename="consolidated_web_ar_files.xlsx" style="margin: 0;">
+                                    <button type="submit" class="process-btn" style="background: linear-gradient(135deg, #28a745, #20c997);">
+                                        <i class="fas fa-compress-arrows-alt"></i> Consolidate All Web AR Files
+                                    </button>
+                                </form>
+                                <form action="/clear_web_ar_files" method="post" style="margin: 0;" onsubmit="return confirm('Are you sure you want to delete all Web AR files?');">
+                                    <input type="hidden" name="subtab" value="web-ar-consolidate">
+                                    <input type="hidden" name="current_menu" value="agent-consolidation">
+                                    <input type="hidden" name="current_submenu" value="web-ar-consolidate">
+                                    <button type="submit" class="process-btn" style="background: linear-gradient(135deg, #dc3545, #c82333);">
+                                        <i class="fas fa-trash-alt"></i> Clear all files
+                                    </button>
+                                </form>
+                            </div>
+                            {% else %}
+                            <div style="background: #f8f9fa; padding: 20px; border-radius: 10px;">
+                                <p style="color: #666;">No Web AR files uploaded yet.</p>
+                            </div>
+                            {% endif %}
+                    </div>
+                </div>
+
                 <!-- Ortho AR Content (under Agent Consolidation menu) -->
                 <div id="ortho-consolidate-content" class="admin-menu-content" style="display: {% if current_menu == 'agent-consolidation' and current_submenu == 'ortho-consolidate' %}block{% else %}none{% endif %};">
                     <div class="section">
@@ -5770,6 +5997,65 @@ HTML_TEMPLATE = """
                             {% else %}
                             <div style="background: #f8f9fa; padding: 20px; border-radius: 10px;">
                                 <p style="color: #666;">No EV files uploaded yet.</p>
+                            </div>
+                            {% endif %}
+                    </div>
+                </div>
+
+                <!-- Payment List (PP) Content (under Agent Consolidation menu) -->
+                <div id="payment-list-pp-consolidate-content" class="admin-menu-content" style="display: {% if current_menu == 'agent-consolidation' and current_submenu == 'payment-list-pp-consolidate' %}block{% else %}none{% endif %};">
+                    <div class="section">
+                            {% if payment_list_pp_files %}
+                            <div style="background: #f8f9fa; padding: 20px; border-radius: 10px; margin-bottom: 20px;">
+                                <h4>Available Payment List (PP) Files:</h4>
+                                {% for file in payment_list_pp_files %}
+                                <div style="border-bottom: {% if loop.last %}none{% else %}1px solid #dee2e6{% endif %}; padding: 10px 0; display: flex; justify-content: space-between; align-items: center;">
+                                    <div style="flex: 1;">
+                                        <strong>{{ file.agent.name }}</strong> - {{ file.filename }}
+                                        <br>
+                                        <small style="color: #666;">
+                                            Uploaded: {{ (file.upload_date | to_ist).strftime('%Y-%m-%d %I:%M %p') }} IST
+                                            | Status: <span style="color: {% if file.status == 'uploaded' %}#28a745{% elif file.status == 'consolidated' %}#007bff{% else %}#6c757d{% endif %}">{{ file.status.title() if file.status else 'Uploaded' }}</span>
+                                        </small>
+                                        {% if file.notes %}
+                                        <br>
+                                        <small style="color: #666;"><em>{{ file.notes }}</em></small>
+                                        {% endif %}
+                                    </div>
+                                    <div style="margin-left: 15px; display: flex; gap: 8px;">
+                                        <a href="/download_payment_list_pp_file/{{ file.id }}" class="process-btn js-ac-consolidation-xlsx-download" style="padding: 8px 16px; text-decoration: none; display: inline-block; background: linear-gradient(135deg, #007bff, #0056b3); color: white; border-radius: 5px; font-size: 14px;">
+                                            <i class="fas fa-download"></i> Download
+                                        </a>
+                                        <form action="/delete_payment_list_pp_file/{{ file.id }}" method="post" style="margin: 0; display: inline-block;" onsubmit="return confirm('Are you sure you want to delete this file?');">
+                                            <input type="hidden" name="subtab" value="payment-list-pp-consolidate">
+                                            <input type="hidden" name="current_menu" value="agent-consolidation">
+                                            <input type="hidden" name="current_submenu" value="payment-list-pp-consolidate">
+                                            <button type="submit" class="process-btn" style="padding: 8px 16px; background: linear-gradient(135deg, #dc3545, #c82333); color: white; border: none; border-radius: 5px; font-size: 14px; cursor: pointer;">
+                                                <i class="fas fa-trash-alt"></i> Delete
+                                            </button>
+                                        </form>
+                                    </div>
+                                </div>
+                                {% endfor %}
+                            </div>
+                            <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+                                <form action="/consolidate_payment_list_pp_files" method="post" class="js-ac-consolidation-xlsx-form" data-ac-fallback-filename="consolidated_payment_list_pp_files.xlsx" style="margin: 0;">
+                                    <button type="submit" class="process-btn" style="background: linear-gradient(135deg, #28a745, #20c997);">
+                                        <i class="fas fa-compress-arrows-alt"></i> Consolidate All Payment List (PP) Files
+                                    </button>
+                                </form>
+                                <form action="/clear_payment_list_pp_files" method="post" style="margin: 0;" onsubmit="return confirm('Are you sure you want to delete all Payment List (PP) files?');">
+                                    <input type="hidden" name="subtab" value="payment-list-pp-consolidate">
+                                    <input type="hidden" name="current_menu" value="agent-consolidation">
+                                    <input type="hidden" name="current_submenu" value="payment-list-pp-consolidate">
+                                    <button type="submit" class="process-btn" style="background: linear-gradient(135deg, #dc3545, #c82333);">
+                                        <i class="fas fa-trash-alt"></i> Clear all files
+                                    </button>
+                                </form>
+                            </div>
+                            {% else %}
+                            <div style="background: #f8f9fa; padding: 20px; border-radius: 10px;">
+                                <p style="color: #666;">No Payment List (PP) files uploaded yet.</p>
                             </div>
                             {% endif %}
                     </div>
@@ -20400,9 +20686,11 @@ def index():
     qcp_files = None
     daily_consolidate_files = None
     nh_files = None
+    web_ar_files = None
     ortho_files = None
     dental_ar_files = None
     ev_agent_files = None
+    payment_list_pp_files = None
     dental_bv_day_agent_files = None
     dental_bv_night_agent_files = None
     mis_checklist_files = None
@@ -20432,9 +20720,11 @@ def index():
         qcp_files = get_qcp_files()
         daily_consolidate_files = get_daily_consolidate_files()
         nh_files = get_nh_files()
+        web_ar_files = get_web_ar_files()
         ortho_files = get_ortho_files()
         dental_ar_files = get_dental_ar_files()
         ev_agent_files = get_ev_agent_files()
+        payment_list_pp_files = get_payment_list_pp_files()
         dental_bv_day_agent_files = get_dental_bv_agent_files(
             shift_type=DENTAL_BV_SHIFT_DAY
         )
@@ -20474,9 +20764,11 @@ def index():
         qcp_files=qcp_files,
         daily_consolidate_files=daily_consolidate_files,
         nh_files=nh_files,
+        web_ar_files=web_ar_files,
         ortho_files=ortho_files,
         dental_ar_files=dental_ar_files,
         ev_agent_files=ev_agent_files,
+        payment_list_pp_files=payment_list_pp_files,
         dental_bv_day_agent_files=dental_bv_day_agent_files,
         dental_bv_night_agent_files=dental_bv_night_agent_files,
         mis_checklist_files=mis_checklist_files,
@@ -30563,6 +30855,36 @@ def clear_nh_files():
     return clear_files_helper(NHFile, "NH", subtab)
 
 
+@app.route("/consolidate_web_ar_files", methods=["POST"])
+@admin_required
+def consolidate_web_ar_files():
+    """Consolidate all Web AR files"""
+    return consolidate_files_helper(WebARFile, "Web AR")
+
+
+@app.route("/download_web_ar_file/<int:file_id>", methods=["GET"])
+@admin_required
+def download_web_ar_file(file_id):
+    """Download a single Web AR file"""
+    return download_file_helper(WebARFile, file_id, "Web AR")
+
+
+@app.route("/delete_web_ar_file/<int:file_id>", methods=["POST"])
+@admin_required
+def delete_web_ar_file(file_id):
+    """Delete a single Web AR file"""
+    subtab = request.form.get("subtab", "web-ar-consolidate")
+    return delete_file_helper(WebARFile, file_id, "Web AR", subtab)
+
+
+@app.route("/clear_web_ar_files", methods=["POST"])
+@admin_required
+def clear_web_ar_files():
+    """Clear all Web AR files"""
+    subtab = request.form.get("subtab", "web-ar-consolidate")
+    return clear_files_helper(WebARFile, "Web AR", subtab)
+
+
 @app.route("/consolidate_ortho_files", methods=["POST"])
 @admin_required
 def consolidate_ortho_files():
@@ -30651,6 +30973,38 @@ def clear_ev_agent_files():
     """Clear all EV agent files"""
     subtab = request.form.get("subtab", "ev-consolidate")
     return clear_files_helper(EVAgentFile, "EV", subtab)
+
+
+@app.route("/consolidate_payment_list_pp_files", methods=["POST"])
+@admin_required
+def consolidate_payment_list_pp_files():
+    """Consolidate all Payment List (PP) files"""
+    return consolidate_files_helper(PaymentListPPFile, "Payment List (PP)")
+
+
+@app.route("/download_payment_list_pp_file/<int:file_id>", methods=["GET"])
+@admin_required
+def download_payment_list_pp_file(file_id):
+    """Download a single Payment List (PP) file"""
+    return download_file_helper(PaymentListPPFile, file_id, "Payment List (PP)")
+
+
+@app.route("/delete_payment_list_pp_file/<int:file_id>", methods=["POST"])
+@admin_required
+def delete_payment_list_pp_file(file_id):
+    """Delete a single Payment List (PP) file"""
+    subtab = request.form.get("subtab", "payment-list-pp-consolidate")
+    return delete_file_helper(
+        PaymentListPPFile, file_id, "Payment List (PP)", subtab
+    )
+
+
+@app.route("/clear_payment_list_pp_files", methods=["POST"])
+@admin_required
+def clear_payment_list_pp_files():
+    """Clear all Payment List (PP) files"""
+    subtab = request.form.get("subtab", "payment-list-pp-consolidate")
+    return clear_files_helper(PaymentListPPFile, "Payment List (PP)", subtab)
 
 
 @app.route("/consolidate_dental_bv_agent_files", methods=["POST"])
@@ -32521,9 +32875,11 @@ def daily_consolidate_all_subtabs_and_email():
                 (QCPFile, "Auditor"),
                 (DailyConsolidateFile, "Daily Consolidate"),
                 (NHFile, "NH"),
+                (WebARFile, "Web AR"),
                 (OrthoFile, "Ortho AR"),
                 (DentalARFile, "Dental AR"),
                 (EVAgentFile, "EV"),
+                (PaymentListPPFile, "Payment List (PP)"),
                 (DentalBVAgentFile, "Dental BV"),
             ]
 
@@ -35699,7 +36055,7 @@ AGENT_TEMPLATE_WITH_SIDEBAR = """
     <script>
         // Handle form submissions with AJAX for Day Shift, Night Shift, NTBP, QCP, and Daily Consolidate
         document.addEventListener('DOMContentLoaded', function() {
-            const forms = ['day-shift-form', 'night-shift-form', 'ntbp-form', 'qcp-form', 'consolidate-form', 'nh-agent-form', 'ortho-agent-form', 'dental-ar-agent-form', 'ev-agent-form', 'dental-bv-agent-form', 'mis-checklist-agent-form'];
+            const forms = ['day-shift-form', 'night-shift-form', 'ntbp-form', 'qcp-form', 'consolidate-form', 'nh-agent-form', 'web-ar-agent-form', 'ortho-agent-form', 'dental-ar-agent-form', 'ev-agent-form', 'dental-bv-agent-form', 'payment-list-pp-agent-form', 'mis-checklist-agent-form'];
             forms.forEach(formId => {
                 const form = document.getElementById(formId);
                 if (form) {
@@ -35874,8 +36230,14 @@ AGENT_TEMPLATE_WITH_SIDEBAR = """
             <li><a href="/nh" class="sidebar-main-item {{ 'active' if current_page == 'nh' else '' }}">
                 <i class="fas fa-hospital"></i> NH BV
             </a></li>
+            <li><a href="/web-ar" class="sidebar-main-item {{ 'active' if current_page == 'web_ar' else '' }}">
+                <i class="fas fa-globe"></i> Web AR
+            </a></li>
             <li><a href="/ev" class="sidebar-main-item {{ 'active' if current_page == 'ev' else '' }}">
                 <i class="fas fa-clipboard-check"></i> EV
+            </a></li>
+            <li><a href="/payment-list-pp" class="sidebar-main-item {{ 'active' if current_page == 'payment_list_pp' else '' }}">
+                <i class="fas fa-list-check"></i> Payment List (PP)
             </a></li>
             <li><a href="/mis-checklist" class="sidebar-main-item {{ 'active' if current_page == 'mis_checklist' else '' }}">
                 <i class="fas fa-clipboard-list"></i> MIS Checklist
@@ -36254,6 +36616,214 @@ def upload_nh():
 
     except Exception as e:
         return jsonify({"success": False, "message": f"Error uploading file: {str(e)}"}), 500
+
+
+@app.route("/web-ar")
+@normal_agent_required
+def web_ar_agent():
+    """Web AR view - Upload Web AR work files"""
+    user_id = session.get("user_id")
+    user = User.query.filter_by(email=user_id, is_active=True).first()
+    if not user:
+        user = User.query.filter_by(id=user_id, is_active=True).first()
+
+    user_name = user.name if user else "Agent"
+    web_ar_agent_files = get_web_ar_files(user.id) if user else []
+
+    files_list = ""
+    if web_ar_agent_files:
+        files_list = "<h3 style='margin-top: 30px;'>Uploaded Files</h3><ul style='list-style: none; padding: 0;'>"
+        for file in web_ar_agent_files:
+            upload_date = (
+                file.upload_date.strftime("%Y-%m-%d %H:%M:%S")
+                if file.upload_date
+                else "Unknown"
+            )
+            files_list += f"<li style='padding: 10px; background: #f8f9fa; margin: 5px 0; border-radius: 5px;'><i class='fas fa-file-excel'></i> {file.filename} - {upload_date}</li>"
+        files_list += "</ul>"
+
+    content = """
+    <h2>Web AR File Upload</h2>
+    <p>Upload your Web AR work file.</p>
+    <p style="color: #666; font-size: 0.9em; margin-top: 10px;"><em>Note: Uploading a new file will replace your previous upload.</em></p>
+
+    <div style="border: 2px dashed #ddd; padding: 30px; border-radius: 10px; text-align: center; margin-top: 30px; max-width: 500px;">
+        <form action="/upload_web_ar" method="post" enctype="multipart/form-data" id="web-ar-agent-form">
+            <input type="file" name="file" accept=".xlsx,.xls" required style="margin-bottom: 15px; width: 100%; padding: 10px;">
+            <button type="submit" style="padding: 10px 20px; background: #667eea; color: white; border: none; border-radius: 5px; cursor: pointer;">
+                <i class="fas fa-upload"></i> Upload Web AR File
+            </button>
+        </form>
+    </div>
+    """ + files_list
+
+    return render_template_string(
+        AGENT_TEMPLATE_WITH_SIDEBAR,
+        page_title="Web AR",
+        current_page="web_ar",
+        user_name=user_name,
+        content=content,
+    )
+
+
+@app.route("/upload_web_ar", methods=["POST"])
+@normal_agent_required
+def upload_web_ar():
+    """Upload Web AR file"""
+    if "file" not in request.files:
+        return jsonify({"success": False, "message": "No file provided"}), 400
+    file = request.files["file"]
+    if file.filename == "":
+        return jsonify({"success": False, "message": "No file selected"}), 400
+
+    try:
+        user_id = session.get("user_id")
+        user = User.query.filter_by(email=user_id, is_active=True).first()
+        if not user:
+            user = User.query.filter_by(id=user_id, is_active=True).first()
+        if not user:
+            return jsonify({"success": False, "message": "User not found"}), 400
+
+        filename = secure_filename(file.filename)
+        file.save(filename)
+
+        try:
+            file_data = pd.read_excel(filename, sheet_name=None, parse_dates=False)
+
+            existing_files = WebARFile.query.filter_by(agent_id=user.id).all()
+            for ef in existing_files:
+                db.session.delete(ef)
+            db.session.commit()
+
+            web_ar_file = save_web_ar_file(
+                agent_id=user.id, filename=filename, file_data=file_data, notes=None
+            )
+
+            if os.path.exists(filename):
+                os.remove(filename)
+
+            return jsonify(
+                {
+                    "success": True,
+                    "message": f"Web AR file '{filename}' uploaded successfully",
+                    "file_id": web_ar_file.id,
+                }
+            )
+
+        except Exception:
+            if os.path.exists(filename):
+                os.remove(filename)
+            raise
+
+    except Exception as e:
+        return (
+            jsonify({"success": False, "message": f"Error uploading file: {str(e)}"}),
+            500,
+        )
+
+
+@app.route("/payment-list-pp")
+@normal_agent_required
+def payment_list_pp_agent():
+    """Payment List (PP) view - Upload Payment List work files"""
+    user_id = session.get("user_id")
+    user = User.query.filter_by(email=user_id, is_active=True).first()
+    if not user:
+        user = User.query.filter_by(id=user_id, is_active=True).first()
+
+    user_name = user.name if user else "Agent"
+    payment_list_pp_agent_files = get_payment_list_pp_files(user.id) if user else []
+
+    files_list = ""
+    if payment_list_pp_agent_files:
+        files_list = "<h3 style='margin-top: 30px;'>Uploaded Files</h3><ul style='list-style: none; padding: 0;'>"
+        for file in payment_list_pp_agent_files:
+            upload_date = (
+                file.upload_date.strftime("%Y-%m-%d %H:%M:%S")
+                if file.upload_date
+                else "Unknown"
+            )
+            files_list += f"<li style='padding: 10px; background: #f8f9fa; margin: 5px 0; border-radius: 5px;'><i class='fas fa-file-excel'></i> {file.filename} - {upload_date}</li>"
+        files_list += "</ul>"
+
+    content = """
+    <h2>Payment List (PP) File Upload</h2>
+    <p>Upload your Payment List (PP) work file.</p>
+    <p style="color: #666; font-size: 0.9em; margin-top: 10px;"><em>Note: Uploading a new file will replace your previous upload.</em></p>
+
+    <div style="border: 2px dashed #ddd; padding: 30px; border-radius: 10px; text-align: center; margin-top: 30px; max-width: 500px;">
+        <form action="/upload_payment_list_pp" method="post" enctype="multipart/form-data" id="payment-list-pp-agent-form">
+            <input type="file" name="file" accept=".xlsx,.xls" required style="margin-bottom: 15px; width: 100%; padding: 10px;">
+            <button type="submit" style="padding: 10px 20px; background: #667eea; color: white; border: none; border-radius: 5px; cursor: pointer;">
+                <i class="fas fa-upload"></i> Upload Payment List (PP) File
+            </button>
+        </form>
+    </div>
+    """ + files_list
+
+    return render_template_string(
+        AGENT_TEMPLATE_WITH_SIDEBAR,
+        page_title="Payment List (PP)",
+        current_page="payment_list_pp",
+        user_name=user_name,
+        content=content,
+    )
+
+
+@app.route("/upload_payment_list_pp", methods=["POST"])
+@normal_agent_required
+def upload_payment_list_pp():
+    """Upload Payment List (PP) file"""
+    if "file" not in request.files:
+        return jsonify({"success": False, "message": "No file provided"}), 400
+    file = request.files["file"]
+    if file.filename == "":
+        return jsonify({"success": False, "message": "No file selected"}), 400
+
+    try:
+        user_id = session.get("user_id")
+        user = User.query.filter_by(email=user_id, is_active=True).first()
+        if not user:
+            user = User.query.filter_by(id=user_id, is_active=True).first()
+        if not user:
+            return jsonify({"success": False, "message": "User not found"}), 400
+
+        filename = secure_filename(file.filename)
+        file.save(filename)
+
+        try:
+            file_data = pd.read_excel(filename, sheet_name=None, parse_dates=False)
+
+            existing_files = PaymentListPPFile.query.filter_by(agent_id=user.id).all()
+            for ef in existing_files:
+                db.session.delete(ef)
+            db.session.commit()
+
+            payment_list_pp_file = save_payment_list_pp_file(
+                agent_id=user.id, filename=filename, file_data=file_data, notes=None
+            )
+
+            if os.path.exists(filename):
+                os.remove(filename)
+
+            return jsonify(
+                {
+                    "success": True,
+                    "message": f"Payment List (PP) file '{filename}' uploaded successfully",
+                    "file_id": payment_list_pp_file.id,
+                }
+            )
+
+        except Exception:
+            if os.path.exists(filename):
+                os.remove(filename)
+            raise
+
+    except Exception as e:
+        return (
+            jsonify({"success": False, "message": f"Error uploading file: {str(e)}"}),
+            500,
+        )
 
 
 @app.route("/ortho")

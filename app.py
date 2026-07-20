@@ -32867,6 +32867,10 @@ def daily_consolidate_all_subtabs_and_email():
             ar_consolidation_email = os.environ.get(
                 "AR_CONSOLIDATION_EMAIL", "ar.tracker.mnc@gmail.com"
             )
+            web_ar_payment_pp_consolidation_email = os.environ.get(
+                "WEB_AR_PAYMENT_PP_CONSOLIDATION_EMAIL",
+                "Sunil.yadav.mnc@gmail.com",
+            )
 
             subtab_configs = [
                 (DayShiftFile, "Day Shift"),
@@ -32892,6 +32896,8 @@ def daily_consolidate_all_subtabs_and_email():
             nh_files_consolidated = 0
             ar_attachments = []
             ar_files_consolidated = 0
+            web_ar_payment_pp_attachments = []
+            web_ar_payment_pp_files_consolidated = 0
             total_files_consolidated = 0
             subtabs_with_data = []
             subtabs_main = []
@@ -32917,6 +32923,9 @@ def daily_consolidate_all_subtabs_and_email():
                     elif file_type_name in {"Ortho AR", "Dental AR"}:
                         ar_attachments.append(item)
                         ar_files_consolidated += file_count
+                    elif file_type_name in {"Web AR", "Payment List (PP)"}:
+                        web_ar_payment_pp_attachments.append(item)
+                        web_ar_payment_pp_files_consolidated += file_count
                     else:
                         main_attachments.append(item)
                         subtabs_main.append(file_type_name)
@@ -32937,6 +32946,7 @@ def daily_consolidate_all_subtabs_and_email():
                 or dbv_attachment
                 or nh_attachment
                 or ar_attachments
+                or web_ar_payment_pp_attachments
             )
 
             # Only send when there is at least one sub-tab with data
@@ -32955,6 +32965,8 @@ def daily_consolidate_all_subtabs_and_email():
                         main_total -= nh_files_consolidated
                     if ar_attachments:
                         main_total -= ar_files_consolidated
+                    if web_ar_payment_pp_attachments:
+                        main_total -= web_ar_payment_pp_files_consolidated
                     subtabs_list_main = (
                     "<ul>"
                         + "".join([f"<li>{st}</li>" for st in subtabs_main])
@@ -32962,12 +32974,12 @@ def daily_consolidate_all_subtabs_and_email():
                 )
                     subject_main = f"Daily Consolidated Files - All Sub-tabs - {date_str}"
                     html_main = f"""
-                <p>Please find attached consolidated files (excluding <strong>NH</strong>, <strong>EV</strong>, <strong>Dental BV</strong>, <strong>Ortho AR</strong>, and <strong>Dental AR</strong>; those are sent in separate emails) generated at {date_str} {time_str}.</p>
+                <p>Please find attached consolidated files (excluding <strong>NH</strong>, <strong>EV</strong>, <strong>Dental BV</strong>, <strong>Ortho AR</strong>, <strong>Dental AR</strong>, <strong>Web AR</strong>, and <strong>Payment List (PP)</strong>; those are sent in separate emails) generated at {date_str} {time_str}.</p>
                 <p><strong>Consolidated Sub-tabs ({len(subtabs_main)}):</strong></p>
                 {subtabs_list_main}
                 <p>Total source files in this bundle: {main_total}</p>
                 """
-                    text_main = f"Daily consolidated files (excluding NH, EV, Dental BV, Ortho AR, and Dental AR). Generated at {date_str} {time_str}."
+                    text_main = f"Daily consolidated files (excluding NH, EV, Dental BV, Ortho AR, Dental AR, Web AR, and Payment List (PP)). Generated at {date_str} {time_str}."
                     main_ok, main_msg = send_email_with_resend(
                         to_email=consolidation_email,
                         subject=subject_main,
@@ -33080,13 +33092,51 @@ def daily_consolidate_all_subtabs_and_email():
                             f"❌ Failed to send Ortho AR/Dental AR consolidation email to {ar_consolidation_email}: {ar_msg}"
                         )
 
-                success = main_ok and ev_ok and dbv_ok and nh_ok and ar_ok
+                web_ar_payment_pp_ok = True
+                if web_ar_payment_pp_attachments:
+                    subject_web_ar_payment_pp = (
+                        f"Daily Consolidated Web AR & Payment List (PP) Files - {date_str}"
+                    )
+                    html_web_ar_payment_pp = f"""
+                <p>Please find attached the consolidated <strong>Web AR</strong> and <strong>Payment List (PP)</strong> agent files generated at {date_str} {time_str}.</p>
+                <p>Source files consolidated: {web_ar_payment_pp_files_consolidated}</p>
+                """
+                    text_web_ar_payment_pp = (
+                        "Daily consolidated Web AR and Payment List (PP) files. "
+                        f"Generated at {date_str} {time_str}."
+                    )
+                    web_ar_payment_pp_ok, web_ar_payment_pp_msg = send_email_with_resend(
+                        to_email=web_ar_payment_pp_consolidation_email,
+                        subject=subject_web_ar_payment_pp,
+                        html_content=html_web_ar_payment_pp,
+                        text_content=text_web_ar_payment_pp,
+                        attachments=web_ar_payment_pp_attachments,
+                    )
+                    if web_ar_payment_pp_ok:
+                        print(
+                            "✅ Daily Web AR/Payment List (PP) consolidation email sent to "
+                            f"{web_ar_payment_pp_consolidation_email}"
+                        )
+                    else:
+                        print(
+                            "❌ Failed to send Web AR/Payment List (PP) consolidation email to "
+                            f"{web_ar_payment_pp_consolidation_email}: {web_ar_payment_pp_msg}"
+                        )
+
+                success = (
+                    main_ok
+                    and ev_ok
+                    and dbv_ok
+                    and nh_ok
+                    and ar_ok
+                    and web_ar_payment_pp_ok
+                )
 
                 if success:
                     # Mark as executed today
                     app._last_subtab_consolidation_date = today
                     print(
-                        f"✅ Daily sub-tab consolidation emails completed (main→{consolidation_email}, NH→{nh_consolidation_email}, EV→{ev_consolidation_email}, Dental BV→{dental_bv_consolidation_email}, Ortho AR/Dental AR→{ar_consolidation_email})"
+                        f"✅ Daily sub-tab consolidation emails completed (main→{consolidation_email}, NH→{nh_consolidation_email}, EV→{ev_consolidation_email}, Dental BV→{dental_bv_consolidation_email}, Ortho AR/Dental AR→{ar_consolidation_email}, Web AR/Payment List (PP)→{web_ar_payment_pp_consolidation_email})"
                     )
 
                     # Perform cleanup after successful email (delete all uploads for these subtabs)
@@ -33097,9 +33147,11 @@ def daily_consolidate_all_subtabs_and_email():
                         (QCPFile, "Auditor"),
                         (DailyConsolidateFile, "Daily Consolidate"),
                         (NHFile, "NH"),
+                        (WebARFile, "Web AR"),
                         (OrthoFile, "Ortho AR"),
                         (DentalARFile, "Dental AR"),
                         (EVAgentFile, "EV"),
+                        (PaymentListPPFile, "Payment List (PP)"),
                         (DentalBVAgentFile, "Dental BV"),
                         (MISChecklistFile, "MIS Checklist"),
                     ]

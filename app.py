@@ -873,6 +873,65 @@ class PaymentListPPFile(db.Model):
         return None
 
 
+class ARProductionDailyFile(db.Model):
+    """AR Production Daily file model for storing AR Production Daily uploads"""
+
+    __tablename__ = "ar_production_daily_files"
+
+    id = db.Column(db.Integer, primary_key=True)
+    agent_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False)
+    filename = db.Column(db.String(255), nullable=False)
+    file_data = db.Column(db.Text)
+    upload_date = db.Column(db.DateTime, default=datetime.utcnow)
+    status = db.Column(db.String(50), default="uploaded")
+    notes = db.Column(db.Text)
+
+    agent = db.relationship("User", backref="ar_production_daily_files")
+
+    def set_file_data(self, data):
+        if data is not None:
+            if isinstance(data, dict):
+                serializable_data = {}
+                for key, value in data.items():
+                    if isinstance(value, pd.DataFrame):
+                        df_records = value.to_dict("records")
+                        for record in df_records:
+                            for k, v in record.items():
+                                if hasattr(v, "isoformat"):
+                                    record[k] = v.isoformat()
+                        serializable_data[key] = df_records
+                    else:
+                        serializable_data[key] = value
+                self.file_data = json.dumps(serializable_data)
+            elif isinstance(data, pd.DataFrame):
+                df_records = data.to_dict("records")
+                for record in df_records:
+                    for k, v in record.items():
+                        if hasattr(v, "isoformat"):
+                            record[k] = v.isoformat()
+                self.file_data = json.dumps(df_records)
+            else:
+                self.file_data = json.dumps(data)
+        else:
+            self.file_data = None
+
+    def get_file_data(self):
+        if self.file_data:
+            data = json.loads(self.file_data)
+            if isinstance(data, dict):
+                converted_data = {}
+                for key, value in data.items():
+                    if isinstance(value, list) and len(value) > 0:
+                        converted_data[key] = pd.DataFrame(value)
+                    else:
+                        converted_data[key] = value
+                return converted_data
+            elif isinstance(data, list):
+                return pd.DataFrame(data)
+            return data
+        return None
+
+
 class OrthoFile(db.Model):
     """Ortho file model for storing Ortho uploads"""
 
@@ -1735,6 +1794,28 @@ def get_payment_list_pp_files(agent_id=None):
             PaymentListPPFile.upload_date.desc()
         ).all()
     return PaymentListPPFile.query.order_by(PaymentListPPFile.upload_date.desc()).all()
+
+
+def save_ar_production_daily_file(agent_id, filename, file_data, notes=None):
+    """Save AR Production Daily file to database"""
+    ar_production_daily_file = ARProductionDailyFile(
+        agent_id=agent_id, filename=filename, notes=notes
+    )
+    ar_production_daily_file.set_file_data(file_data)
+    db.session.add(ar_production_daily_file)
+    db.session.commit()
+    return ar_production_daily_file
+
+
+def get_ar_production_daily_files(agent_id=None):
+    """Get AR Production Daily files, optionally filtered by agent"""
+    if agent_id:
+        return ARProductionDailyFile.query.filter_by(agent_id=agent_id).order_by(
+            ARProductionDailyFile.upload_date.desc()
+        ).all()
+    return ARProductionDailyFile.query.order_by(
+        ARProductionDailyFile.upload_date.desc()
+    ).all()
 
 
 def save_ortho_file(agent_id, filename, file_data, notes=None):
@@ -4062,6 +4143,7 @@ HTML_TEMPLATE = """
                 'dental-ar-consolidate': 'Dental AR',
                 'ev-consolidate': 'EV',
                 'payment-list-pp-consolidate': 'Payment List (PP)',
+                'ar-production-daily-consolidate': 'AR Production Daily',
                 'dental-bv-consolidate': 'Dental BV',
                 'dental-bv-day-consolidate': 'Dental BV Day Shift Consolidation',
                 'dental-bv-night-consolidate': 'Dental BV Night Shift Consolidation',
@@ -4230,6 +4312,11 @@ HTML_TEMPLATE = """
                     <li>
                         <div class="submenu-item submenu-main-item {% if current_submenu == 'payment-list-pp-consolidate' %}active{% endif %}" data-submenu="payment-list-pp-consolidate" onclick="switchAdminMenu('agent-consolidation', 'payment-list-pp-consolidate')">
                             <i class="fas fa-list-check"></i> Payment List (PP) Consolidation
+                        </div>
+                    </li>
+                    <li>
+                        <div class="submenu-item submenu-main-item {% if current_submenu == 'ar-production-daily-consolidate' %}active{% endif %}" data-submenu="ar-production-daily-consolidate" onclick="switchAdminMenu('agent-consolidation', 'ar-production-daily-consolidate')">
+                            <i class="fas fa-chart-line"></i> AR Production Daily Consolidation
                         </div>
                     </li>
                     <li>
@@ -6056,6 +6143,65 @@ HTML_TEMPLATE = """
                             {% else %}
                             <div style="background: #f8f9fa; padding: 20px; border-radius: 10px;">
                                 <p style="color: #666;">No Payment List (PP) files uploaded yet.</p>
+                            </div>
+                            {% endif %}
+                    </div>
+                </div>
+
+                <!-- AR Production Daily Content (under Agent Consolidation menu) -->
+                <div id="ar-production-daily-consolidate-content" class="admin-menu-content" style="display: {% if current_menu == 'agent-consolidation' and current_submenu == 'ar-production-daily-consolidate' %}block{% else %}none{% endif %};">
+                    <div class="section">
+                            {% if ar_production_daily_files %}
+                            <div style="background: #f8f9fa; padding: 20px; border-radius: 10px; margin-bottom: 20px;">
+                                <h4>Available AR Production Daily Files:</h4>
+                                {% for file in ar_production_daily_files %}
+                                <div style="border-bottom: {% if loop.last %}none{% else %}1px solid #dee2e6{% endif %}; padding: 10px 0; display: flex; justify-content: space-between; align-items: center;">
+                                    <div style="flex: 1;">
+                                        <strong>{{ file.agent.name }}</strong> - {{ file.filename }}
+                                        <br>
+                                        <small style="color: #666;">
+                                            Uploaded: {{ (file.upload_date | to_ist).strftime('%Y-%m-%d %I:%M %p') }} IST
+                                            | Status: <span style="color: {% if file.status == 'uploaded' %}#28a745{% elif file.status == 'consolidated' %}#007bff{% else %}#6c757d{% endif %}">{{ file.status.title() if file.status else 'Uploaded' }}</span>
+                                        </small>
+                                        {% if file.notes %}
+                                        <br>
+                                        <small style="color: #666;"><em>{{ file.notes }}</em></small>
+                                        {% endif %}
+                                    </div>
+                                    <div style="margin-left: 15px; display: flex; gap: 8px;">
+                                        <a href="/download_ar_production_daily_file/{{ file.id }}" class="process-btn js-ac-consolidation-xlsx-download" style="padding: 8px 16px; text-decoration: none; display: inline-block; background: linear-gradient(135deg, #007bff, #0056b3); color: white; border-radius: 5px; font-size: 14px;">
+                                            <i class="fas fa-download"></i> Download
+                                        </a>
+                                        <form action="/delete_ar_production_daily_file/{{ file.id }}" method="post" style="margin: 0; display: inline-block;" onsubmit="return confirm('Are you sure you want to delete this file?');">
+                                            <input type="hidden" name="subtab" value="ar-production-daily-consolidate">
+                                            <input type="hidden" name="current_menu" value="agent-consolidation">
+                                            <input type="hidden" name="current_submenu" value="ar-production-daily-consolidate">
+                                            <button type="submit" class="process-btn" style="padding: 8px 16px; background: linear-gradient(135deg, #dc3545, #c82333); color: white; border: none; border-radius: 5px; font-size: 14px; cursor: pointer;">
+                                                <i class="fas fa-trash-alt"></i> Delete
+                                            </button>
+                                        </form>
+                                    </div>
+                                </div>
+                                {% endfor %}
+                            </div>
+                            <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+                                <form action="/consolidate_ar_production_daily_files" method="post" class="js-ac-consolidation-xlsx-form" data-ac-fallback-filename="consolidated_ar_production_daily_files.xlsx" style="margin: 0;">
+                                    <button type="submit" class="process-btn" style="background: linear-gradient(135deg, #28a745, #20c997);">
+                                        <i class="fas fa-compress-arrows-alt"></i> Consolidate All AR Production Daily Files
+                                    </button>
+                                </form>
+                                <form action="/clear_ar_production_daily_files" method="post" style="margin: 0;" onsubmit="return confirm('Are you sure you want to delete all AR Production Daily files?');">
+                                    <input type="hidden" name="subtab" value="ar-production-daily-consolidate">
+                                    <input type="hidden" name="current_menu" value="agent-consolidation">
+                                    <input type="hidden" name="current_submenu" value="ar-production-daily-consolidate">
+                                    <button type="submit" class="process-btn" style="background: linear-gradient(135deg, #dc3545, #c82333);">
+                                        <i class="fas fa-trash-alt"></i> Clear all files
+                                    </button>
+                                </form>
+                            </div>
+                            {% else %}
+                            <div style="background: #f8f9fa; padding: 20px; border-radius: 10px;">
+                                <p style="color: #666;">No AR Production Daily files uploaded yet.</p>
                             </div>
                             {% endif %}
                     </div>
@@ -20691,6 +20837,7 @@ def index():
     dental_ar_files = None
     ev_agent_files = None
     payment_list_pp_files = None
+    ar_production_daily_files = None
     dental_bv_day_agent_files = None
     dental_bv_night_agent_files = None
     mis_checklist_files = None
@@ -20725,6 +20872,7 @@ def index():
         dental_ar_files = get_dental_ar_files()
         ev_agent_files = get_ev_agent_files()
         payment_list_pp_files = get_payment_list_pp_files()
+        ar_production_daily_files = get_ar_production_daily_files()
         dental_bv_day_agent_files = get_dental_bv_agent_files(
             shift_type=DENTAL_BV_SHIFT_DAY
         )
@@ -20769,6 +20917,7 @@ def index():
         dental_ar_files=dental_ar_files,
         ev_agent_files=ev_agent_files,
         payment_list_pp_files=payment_list_pp_files,
+        ar_production_daily_files=ar_production_daily_files,
         dental_bv_day_agent_files=dental_bv_day_agent_files,
         dental_bv_night_agent_files=dental_bv_night_agent_files,
         mis_checklist_files=mis_checklist_files,
@@ -30163,6 +30312,95 @@ def add_last_uploaded_time_to_summary(summary_df, work_files, agent_col="Agent")
     return out
 
 
+def build_ar_production_daily_summary(combined_df):
+    """
+    Build AR Production Daily summary grouped by Agent Name, Status, and Category.
+    Returns a DataFrame with grouped row counts.
+    """
+    if combined_df is None or combined_df.empty:
+        return pd.DataFrame(
+            columns=["Agent Name", "Status", "Category", "Count"]
+        )
+
+    def _find_col(df, target_name):
+        target_norm = str(target_name).strip().lower()
+        for col in df.columns:
+            if str(col).strip().lower() == target_norm:
+                return col
+        return None
+
+    agent_col = _find_col(combined_df, "Agent Name")
+    status_col = _find_col(combined_df, "Status")
+    category_col = _find_col(combined_df, "Category")
+
+    if not agent_col or not status_col or not category_col:
+        return pd.DataFrame(
+            [
+                {
+                    "Agent Name": "Validation Error",
+                    "Status": "",
+                    "Category": "",
+                    "Count": 0,
+                }
+            ]
+        )
+
+    group_df = combined_df[[agent_col, status_col, category_col]].copy()
+    group_df[agent_col] = group_df[agent_col].fillna("").astype(str).str.strip()
+    group_df[status_col] = group_df[status_col].fillna("").astype(str).str.strip()
+    group_df[category_col] = group_df[category_col].fillna("").astype(str).str.strip()
+
+    summary_df = (
+        group_df.groupby([agent_col, status_col, category_col], dropna=False)
+        .size()
+        .reset_index(name="Count")
+    )
+    summary_df = summary_df.rename(
+        columns={
+            agent_col: "Agent Name",
+            status_col: "Status",
+            category_col: "Category",
+        }
+    )
+    summary_df = summary_df.sort_values(
+        by=["Agent Name", "Status", "Category"], kind="stable"
+    ).reset_index(drop=True)
+    return summary_df
+
+
+AR_PRODUCTION_DAILY_DATE_COLUMNS = {
+    "date of service",
+    "date worked",
+    "follow up date",
+    "import date",
+}
+
+
+def format_ar_production_daily_dates(df):
+    """Format AR Production Daily date columns as MM/DD/YYYY."""
+    if not isinstance(df, pd.DataFrame) or df.empty:
+        return df
+
+    out = df.copy()
+    for col in out.columns:
+        if str(col).strip().lower() in AR_PRODUCTION_DAILY_DATE_COLUMNS:
+            try:
+                original_col = out[col].copy()
+                parsed_series = out[col].apply(parse_excel_date)
+                formatted_col = []
+                for original_val, parsed_val in zip(original_col, parsed_series):
+                    if parsed_val:
+                        formatted_col.append(parsed_val.strftime("%m/%d/%Y"))
+                    else:
+                        # Keep original text/value as-is when parsing fails.
+                        formatted_col.append(original_val)
+                out[col] = formatted_col
+            except Exception:
+                # Keep original values if parsing fails unexpectedly
+                pass
+    return out
+
+
 @app.route("/consolidate_agent_files", methods=["POST"])
 @admin_required
 def consolidate_agent_files():
@@ -30512,15 +30750,29 @@ def consolidate_files_helper_to_buffer(
                 combined_df = pd.concat(all_agent_data, ignore_index=True)
                 combined_df = deduplicate_consolidated_data(combined_df)
                 is_dental_bv_consolidation = file_model == DentalBVAgentFile
-                summary_df = calculate_summary_from_deduplicated_data(
-                    combined_df, split_by_work_date=is_dental_bv_consolidation
-                )
+                is_ar_production_daily_consolidation = file_model == ARProductionDailyFile
+                if is_ar_production_daily_consolidation:
+                    summary_df = build_ar_production_daily_summary(combined_df)
+                else:
+                    summary_df = calculate_summary_from_deduplicated_data(
+                        combined_df, split_by_work_date=is_dental_bv_consolidation
+                    )
                 if not summary_df.empty:
-                    summary_df = add_last_uploaded_time_to_summary(summary_df, work_files)
+                    if not is_ar_production_daily_consolidation:
+                        summary_df = add_last_uploaded_time_to_summary(
+                            summary_df, work_files
+                        )
                     summary_df.to_excel(writer, sheet_name="Summary", index=False)
 
                 for col in combined_df.columns:
-                    if "date" in col.lower():
+                    col_lower = col.lower()
+                    if is_ar_production_daily_consolidation:
+                        # For AR Production Daily, avoid generic "date" parsing entirely.
+                        # This prevents non-target columns like "Last updated" from being
+                        # accidentally coerced/blanked. We format only explicit date columns
+                        # in format_ar_production_daily_dates().
+                        continue
+                    if "date" in col_lower:
                         try:
                             parsed_series = combined_df[col].apply(parse_excel_date)
                             combined_df[col] = parsed_series.apply(
@@ -30529,23 +30781,32 @@ def consolidate_files_helper_to_buffer(
                         except Exception:
                             pass
 
+                if is_ar_production_daily_consolidation:
+                    combined_df = format_ar_production_daily_dates(combined_df)
+
                 # Internal metadata column used only for Summary calculations
                 if "__uploaded_at__" in combined_df.columns:
                     combined_df = combined_df.drop(columns=["__uploaded_at__"], errors="ignore")
 
                 combined_df.to_excel(writer, sheet_name="All Agent Data", index=False)
             else:
-                empty_summary_df = pd.DataFrame(
-                    [
-                        {
-                            "Agent": "No agents",
-                            "Last Uploaded Time": "",
-                            "Total Assigned Count": 0,
-                            "Completed Count": 0,
-                            "Empty Remarks Count": 0,
-                        }
-                    ]
-                )
+                is_ar_production_daily_consolidation = file_model == ARProductionDailyFile
+                if is_ar_production_daily_consolidation:
+                    empty_summary_df = pd.DataFrame(
+                        [{"Agent Name": "No agents", "Status": "", "Category": "", "Count": 0}]
+                    )
+                else:
+                    empty_summary_df = pd.DataFrame(
+                        [
+                            {
+                                "Agent": "No agents",
+                                "Last Uploaded Time": "",
+                                "Total Assigned Count": 0,
+                                "Completed Count": 0,
+                                "Empty Remarks Count": 0,
+                            }
+                        ]
+                    )
                 empty_summary_df.to_excel(writer, sheet_name="Summary", index=False)
                 simple_df = pd.DataFrame(
                     [{"Message": "No data available from any agent"}]
@@ -30639,9 +30900,17 @@ def download_file_helper(file_model, file_id, file_type_name):
             if isinstance(file_data, dict):
                 for sheet_name, sheet_data in file_data.items():
                     if isinstance(sheet_data, pd.DataFrame):
-                        sheet_data.to_excel(writer, sheet_name=sheet_name, index=False)
+                        sheet_data_copy = sheet_data.copy()
+                        if file_model == ARProductionDailyFile:
+                            sheet_data_copy = format_ar_production_daily_dates(
+                                sheet_data_copy
+                            )
+                        sheet_data_copy.to_excel(writer, sheet_name=sheet_name, index=False)
             elif isinstance(file_data, pd.DataFrame):
-                file_data.to_excel(writer, sheet_name="Sheet1", index=False)
+                file_data_copy = file_data.copy()
+                if file_model == ARProductionDailyFile:
+                    file_data_copy = format_ar_production_daily_dates(file_data_copy)
+                file_data_copy.to_excel(writer, sheet_name="Sheet1", index=False)
             else:
                 pd.DataFrame([{"Message": "No data available"}]).to_excel(
                     writer, sheet_name="Sheet1", index=False
@@ -31005,6 +31274,38 @@ def clear_payment_list_pp_files():
     """Clear all Payment List (PP) files"""
     subtab = request.form.get("subtab", "payment-list-pp-consolidate")
     return clear_files_helper(PaymentListPPFile, "Payment List (PP)", subtab)
+
+
+@app.route("/consolidate_ar_production_daily_files", methods=["POST"])
+@admin_required
+def consolidate_ar_production_daily_files():
+    """Consolidate all AR Production Daily files"""
+    return consolidate_files_helper(ARProductionDailyFile, "AR Production Daily")
+
+
+@app.route("/download_ar_production_daily_file/<int:file_id>", methods=["GET"])
+@admin_required
+def download_ar_production_daily_file(file_id):
+    """Download a single AR Production Daily file"""
+    return download_file_helper(ARProductionDailyFile, file_id, "AR Production Daily")
+
+
+@app.route("/delete_ar_production_daily_file/<int:file_id>", methods=["POST"])
+@admin_required
+def delete_ar_production_daily_file(file_id):
+    """Delete a single AR Production Daily file"""
+    subtab = request.form.get("subtab", "ar-production-daily-consolidate")
+    return delete_file_helper(
+        ARProductionDailyFile, file_id, "AR Production Daily", subtab
+    )
+
+
+@app.route("/clear_ar_production_daily_files", methods=["POST"])
+@admin_required
+def clear_ar_production_daily_files():
+    """Clear all AR Production Daily files"""
+    subtab = request.form.get("subtab", "ar-production-daily-consolidate")
+    return clear_files_helper(ARProductionDailyFile, "AR Production Daily", subtab)
 
 
 @app.route("/consolidate_dental_bv_agent_files", methods=["POST"])
@@ -32871,6 +33172,10 @@ def daily_consolidate_all_subtabs_and_email():
                 "WEB_AR_PAYMENT_PP_CONSOLIDATION_EMAIL",
                 "Sunil.yadav.mnc@gmail.com",
             )
+            ar_production_daily_consolidation_email = os.environ.get(
+                "AR_PRODUCTION_DAILY_CONSOLIDATION_EMAIL",
+                "Sunil.yadav.mnc@gmail.com",
+            )
 
             subtab_configs = [
                 (DayShiftFile, "Day Shift"),
@@ -32884,6 +33189,7 @@ def daily_consolidate_all_subtabs_and_email():
                 (DentalARFile, "Dental AR"),
                 (EVAgentFile, "EV"),
                 (PaymentListPPFile, "Payment List (PP)"),
+                (ARProductionDailyFile, "AR Production Daily"),
                 (DentalBVAgentFile, "Dental BV"),
             ]
 
@@ -32898,6 +33204,8 @@ def daily_consolidate_all_subtabs_and_email():
             ar_files_consolidated = 0
             web_ar_payment_pp_attachments = []
             web_ar_payment_pp_files_consolidated = 0
+            ar_production_daily_attachments = []
+            ar_production_daily_files_consolidated = 0
             total_files_consolidated = 0
             subtabs_with_data = []
             subtabs_main = []
@@ -32926,6 +33234,9 @@ def daily_consolidate_all_subtabs_and_email():
                     elif file_type_name in {"Web AR", "Payment List (PP)"}:
                         web_ar_payment_pp_attachments.append(item)
                         web_ar_payment_pp_files_consolidated += file_count
+                    elif file_type_name == "AR Production Daily":
+                        ar_production_daily_attachments.append(item)
+                        ar_production_daily_files_consolidated += file_count
                     else:
                         main_attachments.append(item)
                         subtabs_main.append(file_type_name)
@@ -32947,6 +33258,7 @@ def daily_consolidate_all_subtabs_and_email():
                 or nh_attachment
                 or ar_attachments
                 or web_ar_payment_pp_attachments
+                or ar_production_daily_attachments
             )
 
             # Only send when there is at least one sub-tab with data
@@ -32967,6 +33279,8 @@ def daily_consolidate_all_subtabs_and_email():
                         main_total -= ar_files_consolidated
                     if web_ar_payment_pp_attachments:
                         main_total -= web_ar_payment_pp_files_consolidated
+                    if ar_production_daily_attachments:
+                        main_total -= ar_production_daily_files_consolidated
                     subtabs_list_main = (
                     "<ul>"
                         + "".join([f"<li>{st}</li>" for st in subtabs_main])
@@ -32974,12 +33288,12 @@ def daily_consolidate_all_subtabs_and_email():
                 )
                     subject_main = f"Daily Consolidated Files - All Sub-tabs - {date_str}"
                     html_main = f"""
-                <p>Please find attached consolidated files (excluding <strong>NH</strong>, <strong>EV</strong>, <strong>Dental BV</strong>, <strong>Ortho AR</strong>, <strong>Dental AR</strong>, <strong>Web AR</strong>, and <strong>Payment List (PP)</strong>; those are sent in separate emails) generated at {date_str} {time_str}.</p>
+                <p>Please find attached consolidated files (excluding <strong>NH</strong>, <strong>EV</strong>, <strong>Dental BV</strong>, <strong>Ortho AR</strong>, <strong>Dental AR</strong>, <strong>Web AR</strong>, <strong>Payment List (PP)</strong>, and <strong>AR Production Daily</strong>; those are sent in separate emails) generated at {date_str} {time_str}.</p>
                 <p><strong>Consolidated Sub-tabs ({len(subtabs_main)}):</strong></p>
                 {subtabs_list_main}
                 <p>Total source files in this bundle: {main_total}</p>
                 """
-                    text_main = f"Daily consolidated files (excluding NH, EV, Dental BV, Ortho AR, Dental AR, Web AR, and Payment List (PP)). Generated at {date_str} {time_str}."
+                    text_main = f"Daily consolidated files (excluding NH, EV, Dental BV, Ortho AR, Dental AR, Web AR, Payment List (PP), and AR Production Daily). Generated at {date_str} {time_str}."
                     main_ok, main_msg = send_email_with_resend(
                         to_email=consolidation_email,
                         subject=subject_main,
@@ -33123,6 +33437,37 @@ def daily_consolidate_all_subtabs_and_email():
                             f"{web_ar_payment_pp_consolidation_email}: {web_ar_payment_pp_msg}"
                         )
 
+                ar_production_daily_ok = True
+                if ar_production_daily_attachments:
+                    subject_ar_production_daily = (
+                        f"Daily Consolidated AR Production Daily Files - {date_str}"
+                    )
+                    html_ar_production_daily = f"""
+                <p>Please find attached the consolidated <strong>AR Production Daily</strong> agent files generated at {date_str} {time_str}.</p>
+                <p>Source files consolidated: {ar_production_daily_files_consolidated}</p>
+                """
+                    text_ar_production_daily = (
+                        "Daily consolidated AR Production Daily files. "
+                        f"Generated at {date_str} {time_str}."
+                    )
+                    ar_production_daily_ok, ar_production_daily_msg = send_email_with_resend(
+                        to_email=ar_production_daily_consolidation_email,
+                        subject=subject_ar_production_daily,
+                        html_content=html_ar_production_daily,
+                        text_content=text_ar_production_daily,
+                        attachments=ar_production_daily_attachments,
+                    )
+                    if ar_production_daily_ok:
+                        print(
+                            "✅ Daily AR Production Daily consolidation email sent to "
+                            f"{ar_production_daily_consolidation_email}"
+                        )
+                    else:
+                        print(
+                            "❌ Failed to send AR Production Daily consolidation email to "
+                            f"{ar_production_daily_consolidation_email}: {ar_production_daily_msg}"
+                        )
+
                 success = (
                     main_ok
                     and ev_ok
@@ -33130,13 +33475,14 @@ def daily_consolidate_all_subtabs_and_email():
                     and nh_ok
                     and ar_ok
                     and web_ar_payment_pp_ok
+                    and ar_production_daily_ok
                 )
 
                 if success:
                     # Mark as executed today
                     app._last_subtab_consolidation_date = today
                     print(
-                        f"✅ Daily sub-tab consolidation emails completed (main→{consolidation_email}, NH→{nh_consolidation_email}, EV→{ev_consolidation_email}, Dental BV→{dental_bv_consolidation_email}, Ortho AR/Dental AR→{ar_consolidation_email}, Web AR/Payment List (PP)→{web_ar_payment_pp_consolidation_email})"
+                        f"✅ Daily sub-tab consolidation emails completed (main→{consolidation_email}, NH→{nh_consolidation_email}, EV→{ev_consolidation_email}, Dental BV→{dental_bv_consolidation_email}, Ortho AR/Dental AR→{ar_consolidation_email}, Web AR/Payment List (PP)→{web_ar_payment_pp_consolidation_email}, AR Production Daily→{ar_production_daily_consolidation_email})"
                     )
 
                     # Perform cleanup after successful email (delete all uploads for these subtabs)
@@ -33152,6 +33498,7 @@ def daily_consolidate_all_subtabs_and_email():
                         (DentalARFile, "Dental AR"),
                         (EVAgentFile, "EV"),
                         (PaymentListPPFile, "Payment List (PP)"),
+                        (ARProductionDailyFile, "AR Production Daily"),
                         (DentalBVAgentFile, "Dental BV"),
                         (MISChecklistFile, "MIS Checklist"),
                     ]
@@ -36107,7 +36454,7 @@ AGENT_TEMPLATE_WITH_SIDEBAR = """
     <script>
         // Handle form submissions with AJAX for Day Shift, Night Shift, NTBP, QCP, and Daily Consolidate
         document.addEventListener('DOMContentLoaded', function() {
-            const forms = ['day-shift-form', 'night-shift-form', 'ntbp-form', 'qcp-form', 'consolidate-form', 'nh-agent-form', 'web-ar-agent-form', 'ortho-agent-form', 'dental-ar-agent-form', 'ev-agent-form', 'dental-bv-agent-form', 'payment-list-pp-agent-form', 'mis-checklist-agent-form'];
+            const forms = ['day-shift-form', 'night-shift-form', 'ntbp-form', 'qcp-form', 'consolidate-form', 'nh-agent-form', 'web-ar-agent-form', 'ortho-agent-form', 'dental-ar-agent-form', 'ev-agent-form', 'dental-bv-agent-form', 'payment-list-pp-agent-form', 'ar-production-daily-agent-form', 'mis-checklist-agent-form'];
             forms.forEach(formId => {
                 const form = document.getElementById(formId);
                 if (form) {
@@ -36290,6 +36637,9 @@ AGENT_TEMPLATE_WITH_SIDEBAR = """
             </a></li>
             <li><a href="/payment-list-pp" class="sidebar-main-item {{ 'active' if current_page == 'payment_list_pp' else '' }}">
                 <i class="fas fa-list-check"></i> Payment List (PP)
+            </a></li>
+            <li><a href="/ar-production-daily" class="sidebar-main-item {{ 'active' if current_page == 'ar_production_daily' else '' }}">
+                <i class="fas fa-chart-line"></i> AR Production Daily
             </a></li>
             <li><a href="/mis-checklist" class="sidebar-main-item {{ 'active' if current_page == 'mis_checklist' else '' }}">
                 <i class="fas fa-clipboard-list"></i> MIS Checklist
@@ -36863,6 +37213,222 @@ def upload_payment_list_pp():
                     "success": True,
                     "message": f"Payment List (PP) file '{filename}' uploaded successfully",
                     "file_id": payment_list_pp_file.id,
+                }
+            )
+
+        except Exception:
+            if os.path.exists(filename):
+                os.remove(filename)
+            raise
+
+    except Exception as e:
+        return (
+            jsonify({"success": False, "message": f"Error uploading file: {str(e)}"}),
+            500,
+        )
+
+
+@app.route("/ar-production-daily")
+@normal_agent_required
+def ar_production_daily_agent():
+    """AR Production Daily view - Upload AR Production Daily work files"""
+    user_id = session.get("user_id")
+    user = User.query.filter_by(email=user_id, is_active=True).first()
+    if not user:
+        user = User.query.filter_by(id=user_id, is_active=True).first()
+
+    user_name = user.name if user else "Agent"
+    ar_production_daily_agent_files = (
+        get_ar_production_daily_files(user.id) if user else []
+    )
+
+    files_list = ""
+    if ar_production_daily_agent_files:
+        files_list = "<h3 style='margin-top: 30px;'>Uploaded Files</h3><ul style='list-style: none; padding: 0;'>"
+        for file in ar_production_daily_agent_files:
+            upload_date = (
+                file.upload_date.strftime("%Y-%m-%d %H:%M:%S")
+                if file.upload_date
+                else "Unknown"
+            )
+            files_list += f"<li style='padding: 10px; background: #f8f9fa; margin: 5px 0; border-radius: 5px;'><i class='fas fa-file-excel'></i> {file.filename} - {upload_date}</li>"
+        files_list += "</ul>"
+
+    content = """
+    <h2>AR Production Daily File Upload</h2>
+    <p>Upload your AR Production Daily work file.</p>
+    <p style="color: #666; font-size: 0.9em; margin-top: 10px;"><em>Note: Uploading a new file will replace your previous upload.</em></p>
+
+    <div style="border: 2px dashed #ddd; padding: 30px; border-radius: 10px; text-align: center; margin-top: 30px; max-width: 500px;">
+        <form action="/upload_ar_production_daily" method="post" enctype="multipart/form-data" id="ar-production-daily-agent-form">
+            <input type="file" name="file" accept=".xlsx,.xls" required style="margin-bottom: 15px; width: 100%; padding: 10px;">
+            <button type="submit" style="padding: 10px 20px; background: #667eea; color: white; border: none; border-radius: 5px; cursor: pointer;">
+                <i class="fas fa-upload"></i> Upload AR Production Daily File
+            </button>
+        </form>
+    </div>
+    """ + files_list
+
+    return render_template_string(
+        AGENT_TEMPLATE_WITH_SIDEBAR,
+        page_title="AR Production Daily",
+        current_page="ar_production_daily",
+        user_name=user_name,
+        content=content,
+    )
+
+
+AR_PRODUCTION_DAILY_REQUIRED_COLUMNS = [
+    "Board",
+    "Source File",
+    "Name",
+    "Subitems",
+    "Chart ID",
+    "Doctor Name",
+    "Carrier Name",
+    "OSI Rep",
+    "Date Of Service",
+    "Date Worked",
+    "Reason Code",
+    "Action Code",
+    "Quick Win",
+    "Follow Up Date",
+    "Dup. of Action Code",
+    "Note",
+    "OSI Notes",
+    "Last Paid Date",
+    "Last Paid Amount",
+    "Import Date",
+    "PM System",
+    "Location Name",
+    "PFS Rep",
+    "Dup. of Reason Code",
+    "GoTech",
+    "Who Works",
+    "Balance",
+    "Ins Current",
+    "Ins 30 Day",
+    "Ins 60 Day",
+    "Ins 90 Day",
+    "Ins 120 Day",
+    "Sum of 60+90 Day",
+    "Total AR",
+    "WAR",
+    "OC Status",
+    "PP",
+    "CF",
+    "Priority Work",
+    "Practice ID",
+    "KeyID",
+    "Last updated",
+    "Item ID (auto generated)",
+    ">60 Day",
+    "Site",
+    "Agent Name",
+    "Category",
+    "Status",
+]
+
+
+def _normalize_ar_production_daily_header(header):
+    return " ".join(str(header).strip().lower().split())
+
+
+@app.route("/upload_ar_production_daily", methods=["POST"])
+@normal_agent_required
+def upload_ar_production_daily():
+    """Upload AR Production Daily file"""
+    if "file" not in request.files:
+        return jsonify({"success": False, "message": "No file provided"}), 400
+    file = request.files["file"]
+    if file.filename == "":
+        return jsonify({"success": False, "message": "No file selected"}), 400
+
+    try:
+        user_id = session.get("user_id")
+        user = User.query.filter_by(email=user_id, is_active=True).first()
+        if not user:
+            user = User.query.filter_by(id=user_id, is_active=True).first()
+        if not user:
+            return jsonify({"success": False, "message": "User not found"}), 400
+
+        filename = secure_filename(file.filename)
+        file.save(filename)
+
+        try:
+            file_data = pd.read_excel(filename, sheet_name=None, parse_dates=False)
+
+            required_cols_normalized = {
+                _normalize_ar_production_daily_header(c): c
+                for c in AR_PRODUCTION_DAILY_REQUIRED_COLUMNS
+            }
+            valid_sheet = False
+            best_missing = list(AR_PRODUCTION_DAILY_REQUIRED_COLUMNS)
+            best_sheet = None
+            best_match_count = -1
+
+            for sheet_name, sheet_df in file_data.items():
+                if not isinstance(sheet_df, pd.DataFrame):
+                    continue
+                if str(sheet_name).strip().lower() == "summary":
+                    continue
+
+                sheet_cols_normalized = {
+                    _normalize_ar_production_daily_header(c)
+                    for c in sheet_df.columns
+                }
+                missing = [
+                    original_name
+                    for normalized_name, original_name in required_cols_normalized.items()
+                    if normalized_name not in sheet_cols_normalized
+                ]
+                match_count = len(required_cols_normalized) - len(missing)
+                if match_count > best_match_count:
+                    best_match_count = match_count
+                    best_missing = missing
+                    best_sheet = sheet_name
+
+                if not missing:
+                    valid_sheet = True
+                    break
+
+            if not valid_sheet:
+                if os.path.exists(filename):
+                    os.remove(filename)
+                if best_sheet is None:
+                    return jsonify(
+                        {
+                            "success": False,
+                            "message": "File validation failed. No valid data sheet found.",
+                        }
+                    ), 400
+                return jsonify(
+                    {
+                        "success": False,
+                        "message": (
+                            f"File validation failed on sheet '{best_sheet}'. Missing columns: "
+                            + ", ".join(best_missing)
+                        ),
+                    }
+                ), 400
+
+            existing_files = ARProductionDailyFile.query.filter_by(agent_id=user.id).all()
+            for ef in existing_files:
+                db.session.delete(ef)
+            db.session.commit()
+
+            ar_production_daily_file = save_ar_production_daily_file(
+                agent_id=user.id, filename=filename, file_data=file_data, notes=None
+            )
+
+            if os.path.exists(filename):
+                os.remove(filename)
+
+            return jsonify(
+                {
+                    "success": True,
+                    "message": f"AR Production Daily file '{filename}' uploaded successfully",
+                    "file_id": ar_production_daily_file.id,
                 }
             )
 

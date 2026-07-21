@@ -1471,6 +1471,9 @@ imagen_qc_tracker_sheet_name = None
 # AR Ticker data storage
 ar_ticker_output_df = None
 ar_ticker_combined_formatted_df = None
+ar_ticker_combined_formatted_styles = []
+ar_ticker_combined_formatted_row_heights = []
+ar_ticker_combined_formatted_col_widths = {}
 ar_ticker_source_filenames = []
 ar_ticker_file_ready = False
 
@@ -25644,6 +25647,104 @@ def _normalize_ar_ticker_dataframe(raw_df):
     return normalized_df
 
 
+def _normalize_ar_ticker_workbook_with_styles(file_path):
+    """
+    Normalize AR workbook and collect per-cell styles for the normalized rows.
+    Returns: (normalized_df, style_rows, row_heights, col_widths_by_header)
+      - normalized_df: pandas DataFrame of normalized rows
+      - style_rows: list[dict[column_name, {"fill": ..., "font": ...}]]
+      - row_heights: list[float|None] aligned with normalized rows
+      - col_widths_by_header: dict[column_name, width]
+    """
+    from copy import copy as _copy
+    from openpyxl import load_workbook
+    from openpyxl.utils import get_column_letter
+
+    wb = load_workbook(file_path, data_only=True)
+    try:
+        ws = wb.active
+        normalized_rows = []
+        style_rows = []
+        row_heights = []
+        col_widths_by_header = {}
+        current_headers = None
+
+        # Match existing behavior: ignore first two rows.
+        for row in ws.iter_rows(min_row=3):
+            values = [cell.value for cell in row]
+            text_values = [
+                str(v).strip() for v in values if str(v).strip().lower() != "nan"
+            ]
+
+            if not text_values:
+                continue
+
+            lower_values = [v.lower() for v in text_values]
+            is_header_row = ("oc status" in lower_values) and (
+                "priority work" in lower_values
+            )
+            if is_header_row:
+                current_headers = [str(v).strip() for v in values]
+                continue
+
+            if not current_headers:
+                continue
+
+            row_map = {}
+            row_style_map = {}
+            for col_idx, header in enumerate(current_headers):
+                header_text = str(header).strip()
+                if not header_text or header_text.lower() == "nan":
+                    continue
+
+                cell = row[col_idx] if col_idx < len(row) else None
+                cell_value = cell.value if cell is not None else None
+                row_map[header_text] = cell_value
+
+                if cell is not None:
+                    fill = getattr(cell, "fill", None)
+                    font = getattr(cell, "font", None)
+                    has_fill = bool(fill and getattr(fill, "fill_type", None))
+                    has_font = bool(
+                        font
+                        and (
+                            font.bold
+                            or font.italic
+                            or font.underline
+                            or (font.color is not None)
+                        )
+                    )
+                    if has_fill or has_font:
+                        row_style_map[header_text] = {
+                            "fill": _copy(fill) if has_fill else None,
+                            "font": _copy(font) if has_font else None,
+                        }
+
+            if row_map:
+                normalized_rows.append(row_map)
+                style_rows.append(row_style_map)
+                row_heights.append(ws.row_dimensions[row[0].row].height if row else None)
+
+                for col_idx, header in enumerate(current_headers):
+                    header_text = str(header).strip()
+                    if not header_text or header_text.lower() == "nan":
+                        continue
+                    col_letter = get_column_letter(col_idx + 1)
+                    width = ws.column_dimensions[col_letter].width
+                    if width is not None:
+                        prev_width = col_widths_by_header.get(header_text)
+                        if prev_width is None or width > prev_width:
+                            col_widths_by_header[header_text] = width
+
+        if not normalized_rows:
+            return pd.DataFrame(), [], [], {}
+
+        normalized_df = pd.DataFrame(normalized_rows).dropna(how="all")
+        return normalized_df, style_rows, row_heights, col_widths_by_header
+    finally:
+        wb.close()
+
+
 def _compute_ar_ticker_counts(normalized_df):
     """Compute per-priority counts from a normalized AR dataframe."""
     if normalized_df is None or normalized_df.empty:
@@ -25786,6 +25887,38 @@ def _build_ar_ticker_output(board_counts):
         output_rows.append(blank_row)
 
     return pd.DataFrame(output_rows, columns=output_columns)
+
+
+AR_TICKER_DATE_COLUMNS = {
+    "date worked",
+    "follow up date",
+    "last paid date",
+    "import date",
+}
+
+
+def _format_ar_ticker_date_columns(df):
+    """Format selected AR Ticker date columns as MM/DD/YYYY, preserving non-date text."""
+    if not isinstance(df, pd.DataFrame) or df.empty:
+        return df
+
+    out = df.copy()
+    for col in out.columns:
+        if str(col).strip().lower() not in AR_TICKER_DATE_COLUMNS:
+            continue
+        try:
+            original_col = out[col].copy()
+            parsed_series = out[col].apply(parse_excel_date)
+            formatted_values = []
+            for original_val, parsed_val in zip(original_col, parsed_series):
+                if parsed_val:
+                    formatted_values.append(parsed_val.strftime("%m/%d/%Y"))
+                else:
+                    formatted_values.append(original_val)
+            out[col] = formatted_values
+        except Exception:
+            pass
+    return out
 
 
 @app.route("/upload_tracker_data", methods=["POST"])
@@ -27424,7 +27557,7 @@ def download_imagen_qc_allocation():
 @admin_required
 def upload_ar_ticker_file():
     """Upload multiple AR ticker files and prepare combined summary output."""
-    global ar_ticker_output_df, ar_ticker_combined_formatted_df, ar_ticker_source_filenames, ar_ticker_file_ready
+    global ar_ticker_output_df, ar_ticker_combined_formatted_df, ar_ticker_combined_formatted_styles, ar_ticker_combined_formatted_row_heights, ar_ticker_combined_formatted_col_widths, ar_ticker_source_filenames, ar_ticker_file_ready
 
     files = request.files.getlist("files")
     if not files:
@@ -27440,6 +27573,9 @@ def upload_ar_ticker_file():
         board_counts = []
         source_filenames = []
         combined_formatted_frames = []
+        combined_formatted_styles = []
+        combined_formatted_row_heights = []
+        combined_formatted_col_widths = {}
 
         for file in files:
             if not file or not file.filename:
@@ -27448,8 +27584,14 @@ def upload_ar_ticker_file():
             temp_name = secure_filename(file.filename)
             file.save(temp_name)
             try:
-                raw_df = pd.read_excel(temp_name, header=None)
-                normalized_df = _normalize_ar_ticker_dataframe(raw_df)
+                (
+                    normalized_df,
+                    normalized_style_rows,
+                    normalized_row_heights,
+                    normalized_col_widths,
+                ) = (
+                    _normalize_ar_ticker_workbook_with_styles(temp_name)
+                )
                 board_name = _extract_ar_board_name(file.filename)
                 if not board_name:
                     raise ValueError(
@@ -27462,6 +27604,15 @@ def upload_ar_ticker_file():
                 normalized_with_meta.insert(0, "Board", board_name)
                 normalized_with_meta.insert(1, "Source File", file.filename)
                 combined_formatted_frames.append(normalized_with_meta)
+                for style_map in normalized_style_rows:
+                    # Keep style keys as original normalized column names.
+                    combined_formatted_styles.append(style_map or {})
+                for h in normalized_row_heights:
+                    combined_formatted_row_heights.append(h)
+                for col_name, width in (normalized_col_widths or {}).items():
+                    prev_width = combined_formatted_col_widths.get(col_name)
+                    if prev_width is None or (width is not None and width > prev_width):
+                        combined_formatted_col_widths[col_name] = width
             finally:
                 if os.path.exists(temp_name):
                     os.remove(temp_name)
@@ -27475,6 +27626,9 @@ def upload_ar_ticker_file():
             if combined_formatted_frames
             else pd.DataFrame()
         )
+        ar_ticker_combined_formatted_styles = combined_formatted_styles
+        ar_ticker_combined_formatted_row_heights = combined_formatted_row_heights
+        ar_ticker_combined_formatted_col_widths = combined_formatted_col_widths
         ar_ticker_source_filenames = source_filenames
         ar_ticker_file_ready = True
 
@@ -27485,6 +27639,9 @@ def upload_ar_ticker_file():
     except Exception as e:
         ar_ticker_output_df = None
         ar_ticker_combined_formatted_df = None
+        ar_ticker_combined_formatted_styles = []
+        ar_ticker_combined_formatted_row_heights = []
+        ar_ticker_combined_formatted_col_widths = {}
         ar_ticker_source_filenames = []
         ar_ticker_file_ready = False
         flash(f"Error processing AR Ticker file: {str(e)}", "error")
@@ -27496,7 +27653,7 @@ def upload_ar_ticker_file():
 @admin_required
 def download_ar_ticker_output():
     """Download AR ticker processed output."""
-    global ar_ticker_output_df, ar_ticker_combined_formatted_df, ar_ticker_source_filenames
+    global ar_ticker_output_df, ar_ticker_combined_formatted_df, ar_ticker_combined_formatted_styles, ar_ticker_combined_formatted_row_heights, ar_ticker_combined_formatted_col_widths, ar_ticker_source_filenames
 
     if ar_ticker_output_df is None or ar_ticker_output_df.empty:
         flash("No AR Ticker output available. Upload a file first.", "error")
@@ -27514,14 +27671,106 @@ def download_ar_ticker_output():
         with pd.ExcelWriter(temp_path, engine="openpyxl") as writer:
             # Sheet 1: summary output
             ar_ticker_output_df.to_excel(writer, sheet_name="Summary", index=False)
+            summary_ws = writer.sheets.get("Summary")
+            if summary_ws is not None:
+                from copy import copy as _copy
+                from openpyxl.styles import Font
+
+                bold_font = Font(bold=True)
+                summary_col_index = {
+                    str(col_name): idx + 1
+                    for idx, col_name in enumerate(ar_ticker_output_df.columns)
+                }
+                boards_col_idx = summary_col_index.get("Boards")
+                if boards_col_idx:
+                    for row_idx in range(2, len(ar_ticker_output_df) + 2):
+                        boards_val = summary_ws.cell(
+                            row=row_idx, column=boards_col_idx
+                        ).value
+                        if str(boards_val).strip().lower() == "total":
+                            for col_idx in range(1, summary_ws.max_column + 1):
+                                cell = summary_ws.cell(row=row_idx, column=col_idx)
+                                base_font = _copy(cell.font) if cell.font else Font()
+                                base_font.bold = True
+                                cell.font = base_font
             # Sheet 2: combined normalized/formatted rows from all uploaded files
             if (
                 isinstance(ar_ticker_combined_formatted_df, pd.DataFrame)
                 and not ar_ticker_combined_formatted_df.empty
             ):
-                ar_ticker_combined_formatted_df.to_excel(
+                source_df = ar_ticker_combined_formatted_df
+                keep_mask = ~source_df.isna().all(axis=1)
+
+                name_col = None
+                for col in source_df.columns:
+                    if str(col).strip().lower() == "name":
+                        name_col = col
+                        break
+                if name_col is not None:
+                    name_non_blank_mask = (
+                        source_df[name_col].fillna("").astype(str).str.strip() != ""
+                    )
+                    keep_mask = keep_mask & name_non_blank_mask
+
+                kept_indices = source_df.index[keep_mask].tolist()
+                formatted_export_df = source_df.loc[keep_mask].reset_index(drop=True)
+                formatted_export_df = _format_ar_ticker_date_columns(formatted_export_df)
+                formatted_export_df.to_excel(
                     writer, sheet_name="Formatted Data", index=False
                 )
+                # Re-apply original source styling (fill/font) to preserve color coding.
+                ws = writer.sheets.get("Formatted Data")
+                if ws is not None and ar_ticker_combined_formatted_styles:
+                    from copy import copy as _copy
+
+                    col_idx_by_name = {
+                        str(col_name): idx + 1
+                        for idx, col_name in enumerate(formatted_export_df.columns)
+                    }
+                    kept_styles = [
+                        ar_ticker_combined_formatted_styles[i]
+                        if i < len(ar_ticker_combined_formatted_styles)
+                        else {}
+                        for i in kept_indices
+                    ]
+                    max_rows = min(len(kept_styles), len(formatted_export_df))
+                    for row_idx in range(max_rows):
+                        style_map = kept_styles[row_idx] or {}
+                        excel_row = row_idx + 2  # +1 for header, +1 for 1-indexed rows
+                        for col_name, style_obj in style_map.items():
+                            col_num = col_idx_by_name.get(str(col_name))
+                            if not col_num:
+                                continue
+                            cell = ws.cell(row=excel_row, column=col_num)
+                            fill_obj = style_obj.get("fill") if isinstance(style_obj, dict) else None
+                            font_obj = style_obj.get("font") if isinstance(style_obj, dict) else None
+                            if fill_obj is not None:
+                                cell.fill = _copy(fill_obj)
+                            if font_obj is not None:
+                                cell.font = _copy(font_obj)
+
+                # Preserve source column widths and row heights.
+                if ws is not None:
+                    from openpyxl.utils import get_column_letter
+
+                    if isinstance(ar_ticker_combined_formatted_col_widths, dict):
+                        for col_name, width in ar_ticker_combined_formatted_col_widths.items():
+                            col_num = col_idx_by_name.get(str(col_name))
+                            if col_num and width is not None:
+                                ws.column_dimensions[get_column_letter(col_num)].width = width
+
+                    if isinstance(ar_ticker_combined_formatted_row_heights, list):
+                        kept_row_heights = [
+                            ar_ticker_combined_formatted_row_heights[i]
+                            if i < len(ar_ticker_combined_formatted_row_heights)
+                            else None
+                            for i in kept_indices
+                        ]
+                        max_rows = min(len(kept_row_heights), len(formatted_export_df))
+                        for row_idx in range(max_rows):
+                            height = kept_row_heights[row_idx]
+                            if height is not None:
+                                ws.row_dimensions[row_idx + 2].height = height
             else:
                 pd.DataFrame(
                     [{"Info": "No combined formatted data available."}]
@@ -27543,10 +27792,13 @@ def download_ar_ticker_output():
 @admin_required
 def reset_ar_ticker():
     """Reset AR ticker upload/output state."""
-    global ar_ticker_output_df, ar_ticker_combined_formatted_df, ar_ticker_source_filenames, ar_ticker_file_ready
+    global ar_ticker_output_df, ar_ticker_combined_formatted_df, ar_ticker_combined_formatted_styles, ar_ticker_combined_formatted_row_heights, ar_ticker_combined_formatted_col_widths, ar_ticker_source_filenames, ar_ticker_file_ready
 
     ar_ticker_output_df = None
     ar_ticker_combined_formatted_df = None
+    ar_ticker_combined_formatted_styles = []
+    ar_ticker_combined_formatted_row_heights = []
+    ar_ticker_combined_formatted_col_widths = {}
     ar_ticker_source_filenames = []
     ar_ticker_file_ready = False
     flash("AR Ticker has been reset.", "success")

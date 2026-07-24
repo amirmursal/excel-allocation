@@ -30566,13 +30566,11 @@ def add_last_uploaded_time_to_summary(summary_df, work_files, agent_col="Agent")
 
 def build_ar_production_daily_summary(combined_df):
     """
-    Build AR Production Daily summary grouped by Agent Name, Status, and Category.
-    Returns a DataFrame with grouped row counts.
+    Build AR Production Daily summary grouped by Agent Name with one column per Category.
+    Includes per-agent total and a final grand-total row.
     """
     if combined_df is None or combined_df.empty:
-        return pd.DataFrame(
-            columns=["Agent Name", "Status", "Category", "Count"]
-        )
+        return pd.DataFrame(columns=["Agent Name", "Total"])
 
     def _find_col(df, target_name):
         target_norm = str(target_name).strip().lower()
@@ -30582,41 +30580,49 @@ def build_ar_production_daily_summary(combined_df):
         return None
 
     agent_col = _find_col(combined_df, "Agent Name")
-    status_col = _find_col(combined_df, "Status")
     category_col = _find_col(combined_df, "Category")
 
-    if not agent_col or not status_col or not category_col:
+    if not agent_col or not category_col:
         return pd.DataFrame(
             [
                 {
                     "Agent Name": "Validation Error",
-                    "Status": "",
-                    "Category": "",
-                    "Count": 0,
+                    "Total": 0,
                 }
             ]
         )
 
-    group_df = combined_df[[agent_col, status_col, category_col]].copy()
+    group_df = combined_df[[agent_col, category_col]].copy()
     group_df[agent_col] = group_df[agent_col].fillna("").astype(str).str.strip()
-    group_df[status_col] = group_df[status_col].fillna("").astype(str).str.strip()
     group_df[category_col] = group_df[category_col].fillna("").astype(str).str.strip()
 
-    summary_df = (
-        group_df.groupby([agent_col, status_col, category_col], dropna=False)
-        .size()
-        .reset_index(name="Count")
+    # Ignore rows where Agent Name is blank.
+    group_df = group_df[group_df[agent_col] != ""]
+    if group_df.empty:
+        return pd.DataFrame(columns=["Agent Name", "Total"])
+
+    summary_df = pd.pivot_table(
+        group_df,
+        index=agent_col,
+        columns=category_col,
+        aggfunc="size",
+        fill_value=0,
     )
-    summary_df = summary_df.rename(
-        columns={
-            agent_col: "Agent Name",
-            status_col: "Status",
-            category_col: "Category",
-        }
-    )
-    summary_df = summary_df.sort_values(
-        by=["Agent Name", "Status", "Category"], kind="stable"
-    ).reset_index(drop=True)
+    if isinstance(summary_df.columns, pd.Index):
+        summary_df.columns = [str(c).strip() if str(c).strip() else "(Blank)" for c in summary_df.columns]
+
+    summary_df.index = summary_df.index.map(lambda x: str(x).strip())
+    summary_df = summary_df.sort_index(kind="stable")
+    summary_df["Total"] = summary_df.sum(axis=1)
+    summary_df = summary_df.reset_index().rename(columns={agent_col: "Agent Name"})
+
+    grand_total_row = {"Agent Name": "Grand Total"}
+    category_columns = [c for c in summary_df.columns if c not in {"Agent Name", "Total"}]
+    for col in category_columns:
+        grand_total_row[col] = int(summary_df[col].sum())
+    grand_total_row["Total"] = int(summary_df["Total"].sum())
+
+    summary_df = pd.concat([summary_df, pd.DataFrame([grand_total_row])], ignore_index=True)
     return summary_df
 
 
@@ -31045,7 +31051,7 @@ def consolidate_files_helper_to_buffer(
                 is_ar_production_daily_consolidation = file_model == ARProductionDailyFile
                 if is_ar_production_daily_consolidation:
                     empty_summary_df = pd.DataFrame(
-                        [{"Agent Name": "No agents", "Status": "", "Category": "", "Count": 0}]
+                        [{"Agent Name": "No agents", "Total": 0}]
                     )
                 else:
                     empty_summary_df = pd.DataFrame(

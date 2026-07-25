@@ -2132,7 +2132,7 @@ def consolidate_mis_checklist_files_to_buffer(mark_consolidated=False):
             work_file.status = "consolidated"
         db.session.commit()
 
-    filename = f"consolidated_mis_checklist_files_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+    filename = f"Consolidated MIS Checklist {datetime.now().strftime('%m_%d_%Y')}.xlsx"
     return excel_buffer, filename, len(work_files)
 
 
@@ -23520,8 +23520,8 @@ def download_result():
 
     filename = request.form.get("filename", "").strip()
     if not filename:
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"processed_data_{timestamp}.xlsx"
+        date_str = datetime.now().strftime("%m_%d_%Y")
+        filename = f"Imagen Allocation {date_str}.xlsx"
 
     try:
         # Create a temporary file
@@ -23568,8 +23568,10 @@ def download_result():
                 processed_df = (
                     list(data_file_data.values())[0] if data_file_data else None
                 )
+                # Export only original uploaded sheets for Imagen Allocation download.
+                generate_tracker_sheets = False
 
-                if processed_df is not None:
+                if generate_tracker_sheets and processed_df is not None:
                     # Check if Agent Name column exists
                     agent_name_col = None
                     for col in processed_df.columns:
@@ -23670,7 +23672,7 @@ def download_result():
                         )
 
                 # Create Priority Status sheet
-                if processed_df is not None:
+                if generate_tracker_sheets and processed_df is not None:
                     # Find Priority Status column
                     priority_status_col = None
                     appointment_date_col = None
@@ -23817,7 +23819,7 @@ def download_result():
                         )
 
                 # Create Priority Remark sheet
-                if processed_df is not None:
+                if generate_tracker_sheets and processed_df is not None:
                     # Find Priority Status, Remark, and Appointment Date columns
                     priority_status_col = None
                     remark_col = None
@@ -24018,7 +24020,7 @@ def download_result():
                         )
 
                 # Create Today Allocation sheet
-                if processed_df is not None:
+                if generate_tracker_sheets and processed_df is not None:
                     # Find Agent Name, Appointment Date, and Remark columns
                     agent_name_col = None
                     appointment_date_col = None
@@ -24216,7 +24218,7 @@ def download_result():
                         )
 
                 # Create NTBP Allocation sheet
-                if processed_df is not None:
+                if generate_tracker_sheets and processed_df is not None:
                     # Find Agent Name, Appointment Date, and Remark columns
                     agent_name_col = None
                     appointment_date_col = None
@@ -24414,7 +24416,7 @@ def download_result():
                         )
 
                 # Create NTC Allocation sheet
-                if processed_df is not None:
+                if generate_tracker_sheets and processed_df is not None:
                     # Find Agent Name, Appointment Date, and Remark columns
                     agent_name_col = None
                     appointment_date_col = None
@@ -24637,7 +24639,7 @@ def download_result():
                         )
 
                 # Create NTC Insurance Name and counts sheet
-                if processed_df is not None:
+                if generate_tracker_sheets and processed_df is not None:
                     # Find Insurance Carrier and Remark columns
                     insurance_carrier_col = None
                     remark_col = None
@@ -24723,7 +24725,7 @@ def download_result():
                         )
 
                 # Create Agent \ Insurance sheet
-                if processed_df is not None:
+                if generate_tracker_sheets and processed_df is not None:
                     # Find Agent Name and Insurance Carrier columns
                     agent_name_col = None
                     insurance_carrier_col = None
@@ -24852,7 +24854,7 @@ def download_result():
 
                 # Create Agent Priority by Date sheet: First Priority rows only — one row per agent;
                 # columns = each appointment date + Total
-                if processed_df is not None:
+                if generate_tracker_sheets and processed_df is not None:
                     ap_agent_col = None
                     ap_appt_col = None
                     ap_ps_col = None
@@ -24943,7 +24945,7 @@ def download_result():
                         )
 
                 # Create Priority Appointment Pending sheet
-                if processed_df is not None:
+                if generate_tracker_sheets and processed_df is not None:
                     # Find Office Name and Appointment Date columns
                     office_name_col = None
                     appointment_date_col = None
@@ -25105,7 +25107,7 @@ def download_result():
                         )
 
                 # Create Zero Allocation Agents sheet
-                if agent_allocations_data:
+                if generate_tracker_sheets and agent_allocations_data:
                     # Filter agents with zero allocation
                     zero_allocation_agents = [
                         agent
@@ -26183,13 +26185,8 @@ def download_ev_allocation():
         return redirect("/?menu=allocations&submenu=ev-allocation")
 
     try:
-        # Create filename with timestamp
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        if ev_allocation_filename:
-            base_name = os.path.splitext(ev_allocation_filename)[0]
-            filename = f"{base_name}_ev_allocation_{timestamp}.xlsx"
-        else:
-            filename = f"ev_allocation_result_{timestamp}.xlsx"
+        date_str = datetime.now().strftime("%m_%d_%Y")
+        filename = f"EV Allocation {date_str}.xlsx"
 
         # Create a temporary file
         temp_fd, temp_path = tempfile.mkstemp(suffix=".xlsx")
@@ -26708,12 +26705,8 @@ def download_dental_bv_allocation():
         return redirect("/?menu=allocations&submenu=dental-bv-allocation")
 
     try:
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        if dental_bv_allocation_filename:
-            base_name = os.path.splitext(dental_bv_allocation_filename)[0]
-            filename = f"{base_name}_dental_bv_allocation_{timestamp}.xlsx"
-        else:
-            filename = f"dental_bv_allocation_result_{timestamp}.xlsx"
+        date_str = datetime.now().strftime("%m_%d_%Y")
+        filename = f"Dental BV Allocation {date_str}.xlsx"
 
         temp_fd, temp_path = tempfile.mkstemp(suffix=".xlsx")
 
@@ -27466,12 +27459,8 @@ def download_imagen_qc_allocation():
         return redirect("/?menu=allocations&submenu=imagen-qc-allocation")
 
     try:
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        if imagen_qc_allocation_filename:
-            base_name = os.path.splitext(imagen_qc_allocation_filename)[0]
-            filename = f"{base_name}_qc_allocation_{timestamp}.xlsx"
-        else:
-            filename = f"imagen_qc_allocation_result_{timestamp}.xlsx"
+        date_str = datetime.now().strftime("%m_%d_%Y")
+        filename = f"Imagen QC Allocation {date_str}.xlsx"
 
         temp_fd, temp_path = tempfile.mkstemp(suffix=".xlsx")
 
@@ -27659,12 +27648,8 @@ def download_ar_ticker_output():
         flash("No AR Ticker output available. Upload a file first.", "error")
         return redirect("/?menu=trackers&submenu=ar-ticker")
 
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    if len(ar_ticker_source_filenames or []) == 1:
-        base_name = os.path.splitext(ar_ticker_source_filenames[0])[0]
-    else:
-        base_name = "ar_ticker_multi"
-    filename = f"{base_name}_ar_ticker_summary_{timestamp}.xlsx"
+    date_str = datetime.now().strftime("%m_%d_%Y")
+    filename = f"AR Ticker {date_str}.xlsx"
 
     temp_fd, temp_path = tempfile.mkstemp(suffix=".xlsx")
     try:
@@ -27823,8 +27808,8 @@ def download_trackers():
 
     filename = request.form.get("filename", "").strip()
     if not filename:
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"trackers_{timestamp}.xlsx"
+        date_str = datetime.now().strftime("%m_%d_%Y")
+        filename = f"Imagen Tracker {date_str}.xlsx"
 
     try:
         # Temporarily set data_file_data to tracker_data to reuse download_result logic
@@ -27997,11 +27982,8 @@ def download_imagen_qc_trackers():
 
     filename = request.form.get("filename", "").strip()
     if not filename:
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        base = os.path.splitext(imagen_qc_tracker_filename or "qc_trackers")[0]
-        if not base:
-            base = "qc_trackers"
-        filename = f"{base}_imagen_qc_trackers_{timestamp}.xlsx"
+        date_str = datetime.now().strftime("%m_%d_%Y")
+        filename = f"Imagen QC Tracker {date_str}.xlsx"
 
     try:
         original_data_file_data = data_file_data
@@ -30782,7 +30764,7 @@ def consolidate_agent_files():
 
         # Return file for download
         filename = (
-            f"consolidated_agent_files_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+            f"Consolidated Agent Files {datetime.now().strftime('%m_%d_%Y')}.xlsx"
         )
         return send_file(
             excel_buffer,
@@ -30871,7 +30853,7 @@ def download_agent_work_file(file_id):
             if "." in work_file.filename
             else work_file.filename
         )
-        download_filename = f"{agent_name}_{original_filename}_{work_file.upload_date.strftime('%Y%m%d')}.xlsx"
+        download_filename = f"{agent_name} {original_filename} {work_file.upload_date.strftime('%m_%d_%Y')}.xlsx"
 
         return send_file(
             excel_buffer,
@@ -31083,7 +31065,7 @@ def consolidate_files_helper_to_buffer(
                 work_file.status = "consolidated"
             db.session.commit()
 
-        filename = f"consolidated_{file_type_name.lower().replace(' ', '_')}_files_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+        filename = f"Consolidated {file_type_name} {datetime.now().strftime('%m_%d_%Y')}.xlsx"
         return excel_buffer, filename, len(work_files)
     except Exception as e:
         print(f"Error consolidating {file_type_name} files: {str(e)}")
@@ -31183,7 +31165,7 @@ def download_file_helper(file_model, file_id, file_type_name):
             if "." in work_file.filename
             else work_file.filename
         )
-        download_filename = f"{agent_name}_{original_filename}_{work_file.upload_date.strftime('%Y%m%d')}.xlsx"
+        download_filename = f"{agent_name} {original_filename} {work_file.upload_date.strftime('%m_%d_%Y')}.xlsx"
 
         return send_file(
             excel_buffer,
@@ -33347,7 +33329,7 @@ def create_consolidated_data():
 
         excel_buffer.seek(0)
         filename = (
-            f"consolidated_agent_files_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+            f"Consolidated Agent Files {datetime.now().strftime('%m_%d_%Y')}.xlsx"
         )
         return excel_buffer, filename
 
@@ -36513,7 +36495,7 @@ def download_nh_allocation():
             return send_file(
                 temp_path,
                 as_attachment=True,
-                download_name=f'NH_Allocation_{datetime.now().strftime("%Y%m%d_%H%M%S")}.xlsx',
+                download_name=f'NH Allocation {datetime.now().strftime("%m_%d_%Y")}.xlsx',
                 mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             )
         finally:

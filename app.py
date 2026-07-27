@@ -27874,6 +27874,7 @@ def download_trackers():
             # Format all tracker sheets
             for sheet_name in [
                 "Agent Count Summary",
+                "Agent Remark Summary",
                 "Priority Status",
                 "Priority Remark",
                 "Today Allocation",
@@ -27885,23 +27886,28 @@ def download_trackers():
                     ws = wb[sheet_name]
                     for row_idx, row in enumerate(
                         ws.iter_rows(
-                            min_row=2, max_row=ws.max_row, min_col=1, max_col=1
+                            min_row=2, max_row=ws.max_row, min_col=1, max_col=2
                         ),
                         start=2,
                     ):
-                        cell_value = row[0].value
-                        if cell_value and isinstance(cell_value, str):
-                            cell_str = cell_value.strip()
-                            if cell_str in [
+                        cell_values = [
+                            str(c.value).strip()
+                            for c in row
+                            if c.value is not None and str(c.value).strip()
+                        ]
+                        if any(
+                            v in [
                                 "Grand Total",
                                 "First Priority",
                                 "Second Priority",
                                 "Third Priority",
-                            ]:
-                                for col_idx in range(1, ws.max_column + 1):
-                                    ws.cell(row=row_idx, column=col_idx).font = Font(
-                                        bold=True
-                                    )
+                            ]
+                            for v in cell_values
+                        ):
+                            for col_idx in range(1, ws.max_column + 1):
+                                ws.cell(row=row_idx, column=col_idx).font = Font(
+                                    bold=True
+                                )
 
             apply_comparison_tool_excel_output_styling(wb)
 
@@ -28042,6 +28048,8 @@ def download_imagen_qc_trackers():
             for sheet_name in [
                 "Auditor Count Summary",
                 "Agent Count Summary",
+                "Auditor Remark Summary",
+                "Agent Remark Summary",
                 "Priority Status",
                 "Priority Remark",
                 "Priority Appointment Pending",
@@ -28052,23 +28060,28 @@ def download_imagen_qc_trackers():
                     ws = wb[sheet_name]
                     for row_idx, row in enumerate(
                         ws.iter_rows(
-                            min_row=2, max_row=ws.max_row, min_col=1, max_col=1
+                            min_row=2, max_row=ws.max_row, min_col=1, max_col=2
                         ),
                         start=2,
                     ):
-                        cell_value = row[0].value
-                        if cell_value and isinstance(cell_value, str):
-                            cell_str = cell_value.strip()
-                            if cell_str in [
+                        cell_values = [
+                            str(c.value).strip()
+                            for c in row
+                            if c.value is not None and str(c.value).strip()
+                        ]
+                        if any(
+                            v in [
                                 "Grand Total",
                                 "First Priority",
                                 "Second Priority",
                                 "Third Priority",
-                            ]:
-                                for col_idx in range(1, ws.max_column + 1):
-                                    ws.cell(row=row_idx, column=col_idx).font = Font(
-                                        bold=True
-                                    )
+                            ]
+                            for v in cell_values
+                        ):
+                            for col_idx in range(1, ws.max_column + 1):
+                                ws.cell(row=row_idx, column=col_idx).font = Font(
+                                    bold=True
+                                )
 
             apply_comparison_tool_excel_output_styling(wb)
 
@@ -28124,6 +28137,7 @@ def generate_all_trackers_from_dataframe(
     This function contains the complete tracker generation logic extracted from download_result.
     It generates:
     1. Agent Count Summary
+    1.5 Agent Remark Summary
     2. Priority Status
     3. Priority Remark
     4. Today Allocation
@@ -28281,6 +28295,83 @@ def generate_all_trackers_from_dataframe(
             )
 
         summary_df.to_excel(writer, sheet_name=summary_sheet_name, index=False)
+
+    # ========== 1.5 Agent Remark Summary ==========
+    remark_summary_sheet_name = (
+        "Auditor Remark Summary" if count_by_auditor else "Agent Remark Summary"
+    )
+    if (
+        agent_name_col
+        and remark_col
+        and remark_summary_sheet_name not in _omit
+    ):
+        remark_counter_by_person = {}
+        all_remarks = set()
+
+        for _, row in processed_df.iterrows():
+            person_value = row.get(agent_name_col)
+            if pd.isna(person_value):
+                continue
+            person_name = str(person_value).strip()
+            if not person_name:
+                continue
+
+            # Keep parity with other tracker summaries: skip helper bucket labels.
+            person_upper = person_name.upper()
+            if person_upper == "NTC" or "NOT TO WORK" in person_upper.replace("-", " ").replace("_", " "):
+                continue
+
+            remark_value = row.get(remark_col)
+            if pd.isna(remark_value):
+                continue
+            remark_name = str(remark_value).strip()
+            if not remark_name:
+                continue
+
+            all_remarks.add(remark_name)
+            if person_name not in remark_counter_by_person:
+                remark_counter_by_person[person_name] = {}
+            remark_counter_by_person[person_name][remark_name] = (
+                remark_counter_by_person[person_name].get(remark_name, 0) + 1
+            )
+
+        sorted_remarks = sorted(all_remarks)
+        columns = ["Sr No", "Row Labels"] + sorted_remarks + ["Grand Total"]
+        rows_data = []
+
+        # Grand Total row first
+        grand_total_row = {"Sr No": "", "Row Labels": "Grand Total"}
+        overall_total = 0
+        for remark_name in sorted_remarks:
+            total_for_remark = sum(
+                remark_counter_by_person.get(person_name, {}).get(remark_name, 0)
+                for person_name in remark_counter_by_person.keys()
+            )
+            grand_total_row[remark_name] = total_for_remark
+            overall_total += total_for_remark
+        grand_total_row["Grand Total"] = overall_total
+        rows_data.append(grand_total_row)
+
+        # Person rows with numbering
+        for idx, person_name in enumerate(sorted(remark_counter_by_person.keys()), start=1):
+            row_data = {"Sr No": f"{idx}.", "Row Labels": person_name}
+            person_total = 0
+            for remark_name in sorted_remarks:
+                count_val = remark_counter_by_person[person_name].get(remark_name, 0)
+                row_data[remark_name] = count_val
+                person_total += count_val
+            row_data["Grand Total"] = person_total
+            rows_data.append(row_data)
+
+        if rows_data:
+            remark_summary_df = pd.DataFrame(rows_data, columns=columns)
+        else:
+            remark_summary_df = pd.DataFrame(
+                [{"Sr No": "", "Row Labels": "Grand Total", "Grand Total": 0}]
+            )
+        remark_summary_df.to_excel(
+            writer, sheet_name=remark_summary_sheet_name, index=False
+        )
 
     # ========== 2. Priority Status ==========
     if priority_status_col and appointment_date_col:

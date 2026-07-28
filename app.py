@@ -25923,6 +25923,210 @@ def _format_ar_ticker_date_columns(df):
     return out
 
 
+def _build_ar_ticker_date_wise_sheets(df):
+    """
+    Build one tracker dataframe per unique Date Worked value.
+    Rules:
+    - Consider rows with non-blank OC Status only
+    - Group by WAR and count rows
+    - Include a Grand Total row at the top
+    """
+    if not isinstance(df, pd.DataFrame) or df.empty:
+        return {}
+
+    cols_lower = {str(c).strip().lower(): c for c in df.columns}
+    date_worked_col = cols_lower.get("date worked")
+    war_col = cols_lower.get("war")
+    oc_status_col = cols_lower.get("oc status")
+
+    if not date_worked_col or not war_col or not oc_status_col:
+        return {}
+
+    working_df = df.copy()
+    working_df[oc_status_col] = (
+        working_df[oc_status_col].fillna("").astype(str).str.strip()
+    )
+    working_df = working_df[working_df[oc_status_col] != ""]
+    if working_df.empty:
+        return {}
+
+    # Normalize Date Worked values into stable MM_DD_YYYY keys.
+    date_keys = []
+    for value in working_df[date_worked_col]:
+        parsed = parse_excel_date(value)
+        if parsed:
+            date_keys.append(parsed.strftime("%m/%d/%Y"))
+        else:
+            raw = str(value).strip()
+            date_keys.append(raw if raw else "")
+    working_df["__date_key__"] = date_keys
+    working_df = working_df[working_df["__date_key__"] != ""]
+    if working_df.empty:
+        return {}
+
+    result = {}
+    for date_key in sorted(working_df["__date_key__"].unique()):
+        date_df = working_df[working_df["__date_key__"] == date_key].copy()
+        date_df[war_col] = date_df[war_col].fillna("").astype(str).str.strip()
+        date_df = date_df[date_df[war_col] != ""]
+
+        if date_df.empty:
+            continue
+
+        war_counts = (
+            date_df.groupby(war_col, dropna=False)
+            .size()
+            .reset_index(name="Count")
+            .rename(columns={war_col: "Row Labels"})
+            .sort_values(by=["Count", "Row Labels"], ascending=[False, True], kind="stable")
+            .reset_index(drop=True)
+        )
+
+        grand_total = int(war_counts["Count"].sum()) if not war_counts.empty else 0
+        grand_total_row = pd.DataFrame(
+            [{"Row Labels": "Grand Total", "Count": grand_total}]
+        )
+        output_df = pd.concat([grand_total_row, war_counts], ignore_index=True)
+
+        # Excel sheet names cannot contain "/" so use "-" for the sheet tab label.
+        safe_date_key = str(date_key).replace("/", "-")
+        sheet_name = f"Date Worked {safe_date_key}"[:31]
+        result[sheet_name] = output_df
+
+    return result
+
+
+def _build_ar_ticker_month_wise_sheets(df):
+    """
+    Build one tracker dataframe per month from Date Worked.
+    Rules:
+    - Consider rows with non-blank OC Status only
+    - Group by WAR and count rows
+    - Include a Grand Total row at the top
+    """
+    if not isinstance(df, pd.DataFrame) or df.empty:
+        return {}
+
+    cols_lower = {str(c).strip().lower(): c for c in df.columns}
+    date_worked_col = cols_lower.get("date worked")
+    war_col = cols_lower.get("war")
+    oc_status_col = cols_lower.get("oc status")
+
+    if not date_worked_col or not war_col or not oc_status_col:
+        return {}
+
+    working_df = df.copy()
+    working_df[oc_status_col] = (
+        working_df[oc_status_col].fillna("").astype(str).str.strip()
+    )
+    working_df = working_df[working_df[oc_status_col] != ""]
+    if working_df.empty:
+        return {}
+
+    month_keys = []
+    month_sort_keys = []
+    for value in working_df[date_worked_col]:
+        parsed = parse_excel_date(value)
+        if parsed:
+            month_keys.append(parsed.strftime("%B %Y"))
+            month_sort_keys.append(parsed.strftime("%Y-%m"))
+        else:
+            month_keys.append("")
+            month_sort_keys.append("")
+    working_df["__month_key__"] = month_keys
+    working_df["__month_sort__"] = month_sort_keys
+    working_df = working_df[working_df["__month_key__"] != ""]
+    if working_df.empty:
+        return {}
+
+    month_order = (
+        working_df[["__month_key__", "__month_sort__"]]
+        .drop_duplicates()
+        .sort_values(by="__month_sort__", kind="stable")
+    )["__month_key__"].tolist()
+
+    result = {}
+    for month_key in month_order:
+        month_df = working_df[working_df["__month_key__"] == month_key].copy()
+        month_df[war_col] = month_df[war_col].fillna("").astype(str).str.strip()
+        month_df = month_df[month_df[war_col] != ""]
+
+        if month_df.empty:
+            continue
+
+        war_counts = (
+            month_df.groupby(war_col, dropna=False)
+            .size()
+            .reset_index(name="Count")
+            .rename(columns={war_col: "Row Labels"})
+            .sort_values(by=["Count", "Row Labels"], ascending=[False, True], kind="stable")
+            .reset_index(drop=True)
+        )
+
+        grand_total = int(war_counts["Count"].sum()) if not war_counts.empty else 0
+        grand_total_row = pd.DataFrame(
+            [{"Row Labels": "Grand Total", "Count": grand_total}]
+        )
+        output_df = pd.concat([grand_total_row, war_counts], ignore_index=True)
+
+        sheet_name = f"{month_key} - Monthwise"[:31]
+        result[sheet_name] = output_df
+
+    return result
+
+
+def _build_ar_ticker_average_by_workdate_sheet(df):
+    """
+    Build one summary sheet with average count for each Date Worked.
+    Rules:
+    - Consider rows with non-blank OC Status only
+    - Average = (row count for that Date Worked) / 2
+    """
+    if not isinstance(df, pd.DataFrame) or df.empty:
+        return {}
+
+    cols_lower = {str(c).strip().lower(): c for c in df.columns}
+    date_worked_col = cols_lower.get("date worked")
+    war_col = cols_lower.get("war")
+    oc_status_col = cols_lower.get("oc status")
+
+    if not date_worked_col or not war_col or not oc_status_col:
+        return {}
+
+    working_df = df.copy()
+    working_df[oc_status_col] = (
+        working_df[oc_status_col].fillna("").astype(str).str.strip()
+    )
+    working_df = working_df[working_df[oc_status_col] != ""]
+    if working_df.empty:
+        return {}
+
+    date_keys = []
+    for value in working_df[date_worked_col]:
+        parsed = parse_excel_date(value)
+        if parsed:
+            date_keys.append(parsed.strftime("%m/%d/%Y"))
+        else:
+            raw = str(value).strip()
+            date_keys.append(raw if raw else "")
+    working_df["__date_key__"] = date_keys
+    working_df = working_df[working_df["__date_key__"] != ""]
+    if working_df.empty:
+        return {}
+
+    summary_df = (
+        working_df.groupby("__date_key__", dropna=False)
+        .size()
+        .reset_index(name="_count")
+        .rename(columns={"__date_key__": "Date Worked"})
+        .sort_values(by="Date Worked", kind="stable")
+        .reset_index(drop=True)
+    )
+    summary_df["Average"] = summary_df["_count"].apply(lambda x: round(x / 2, 2))
+    summary_df = summary_df[["Date Worked", "Average"]]
+    return summary_df
+
+
 @app.route("/upload_tracker_data", methods=["POST"])
 @admin_required
 def upload_tracker_data():
@@ -27756,6 +27960,65 @@ def download_ar_ticker_output():
                             height = kept_row_heights[row_idx]
                             if height is not None:
                                 ws.row_dimensions[row_idx + 2].height = height
+
+                # Additional AR Ticker tracker sheets: one per Date Worked.
+                date_wise_sheets = _build_ar_ticker_date_wise_sheets(formatted_export_df)
+                for sheet_name, sheet_df in date_wise_sheets.items():
+                    sheet_df.to_excel(writer, sheet_name=sheet_name, index=False)
+                    date_ws = writer.sheets.get(sheet_name)
+                    if date_ws is not None:
+                        from openpyxl.styles import Font
+
+                        # Header bold
+                        for col_idx in range(1, date_ws.max_column + 1):
+                            date_ws.cell(row=1, column=col_idx).font = Font(bold=True)
+
+                        # Grand Total row bold
+                        for row_idx in range(2, date_ws.max_row + 1):
+                            row_label = date_ws.cell(row=row_idx, column=1).value
+                            if str(row_label).strip().lower() == "grand total":
+                                for col_idx in range(1, date_ws.max_column + 1):
+                                    date_ws.cell(row=row_idx, column=col_idx).font = Font(
+                                        bold=True
+                                    )
+                                break
+
+                # Additional AR Ticker tracker sheets: one per month from Date Worked.
+                month_wise_sheets = _build_ar_ticker_month_wise_sheets(formatted_export_df)
+                for sheet_name, sheet_df in month_wise_sheets.items():
+                    sheet_df.to_excel(writer, sheet_name=sheet_name, index=False)
+                    month_ws = writer.sheets.get(sheet_name)
+                    if month_ws is not None:
+                        from openpyxl.styles import Font
+
+                        # Header bold
+                        for col_idx in range(1, month_ws.max_column + 1):
+                            month_ws.cell(row=1, column=col_idx).font = Font(bold=True)
+
+                        # Grand Total row bold
+                        for row_idx in range(2, month_ws.max_row + 1):
+                            row_label = month_ws.cell(row=row_idx, column=1).value
+                            if str(row_label).strip().lower() == "grand total":
+                                for col_idx in range(1, month_ws.max_column + 1):
+                                    month_ws.cell(row=row_idx, column=col_idx).font = Font(
+                                        bold=True
+                                    )
+                                break
+
+                # Additional AR Ticker tracker sheet: average per Date Worked.
+                average_by_date_df = _build_ar_ticker_average_by_workdate_sheet(
+                    formatted_export_df
+                )
+                if isinstance(average_by_date_df, pd.DataFrame) and not average_by_date_df.empty:
+                    avg_sheet_name = "Average - Working Date"
+                    average_by_date_df.to_excel(
+                        writer, sheet_name=avg_sheet_name, index=False
+                    )
+                    avg_ws = writer.sheets.get(avg_sheet_name)
+                    if avg_ws is not None:
+                        from openpyxl.styles import Font
+                        for col_idx in range(1, avg_ws.max_column + 1):
+                            avg_ws.cell(row=1, column=col_idx).font = Font(bold=True)
             else:
                 pd.DataFrame(
                     [{"Info": "No combined formatted data available."}]

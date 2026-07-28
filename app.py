@@ -37923,6 +37923,14 @@ AR_PRODUCTION_DAILY_REQUIRED_COLUMNS = [
     "Status",
 ]
 
+AR_PRODUCTION_DAILY_ALLOWED_CATEGORIES = [
+    "Analyse",
+    "NTC",
+    "Call",
+    "Adjusted",
+    "Web",
+]
+
 
 def _normalize_ar_production_daily_header(header):
     return " ".join(str(header).strip().lower().split())
@@ -37956,6 +37964,7 @@ def upload_ar_production_daily():
                 _normalize_ar_production_daily_header(c): c
                 for c in AR_PRODUCTION_DAILY_REQUIRED_COLUMNS
             }
+            allowed_categories = set(AR_PRODUCTION_DAILY_ALLOWED_CATEGORIES)
             valid_sheet = False
             best_missing = list(AR_PRODUCTION_DAILY_REQUIRED_COLUMNS)
             best_sheet = None
@@ -37983,6 +37992,56 @@ def upload_ar_production_daily():
                     best_sheet = sheet_name
 
                 if not missing:
+                    # Strict Category validation (case-sensitive exact match).
+                    category_col_name = None
+                    for col_name in sheet_df.columns:
+                        if _normalize_ar_production_daily_header(col_name) == "category":
+                            category_col_name = col_name
+                            break
+
+                    if category_col_name is None:
+                        if os.path.exists(filename):
+                            os.remove(filename)
+                        return jsonify(
+                            {
+                                "success": False,
+                                "message": (
+                                    f"File validation failed on sheet '{sheet_name}'. "
+                                    "Category column not found."
+                                ),
+                            }
+                        ), 400
+
+                    invalid_categories = []
+                    for raw_val in sheet_df[category_col_name]:
+                        category_val = "" if pd.isna(raw_val) else str(raw_val).strip()
+                        if category_val not in allowed_categories:
+                            invalid_categories.append(category_val)
+
+                    if invalid_categories:
+                        unique_invalid = []
+                        for val in invalid_categories:
+                            if val not in unique_invalid:
+                                unique_invalid.append(val)
+                        invalid_preview = ", ".join(
+                            [repr(v) for v in unique_invalid[:10]]
+                        )
+                        allowed_display = ", ".join(
+                            [repr(v) for v in AR_PRODUCTION_DAILY_ALLOWED_CATEGORIES]
+                        )
+                        if os.path.exists(filename):
+                            os.remove(filename)
+                        return jsonify(
+                            {
+                                "success": False,
+                                "message": (
+                                    f"File validation failed on sheet '{sheet_name}'. "
+                                    f"Invalid Category value(s): {invalid_preview}. "
+                                    f"Allowed values (case-sensitive): {allowed_display}."
+                                ),
+                            }
+                        ), 400
+
                     valid_sheet = True
                     break
 

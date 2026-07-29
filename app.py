@@ -37929,6 +37929,7 @@ AR_PRODUCTION_DAILY_ALLOWED_CATEGORIES = [
     "Call",
     "Adjusted",
     "Web",
+    "QCP",
 ]
 
 

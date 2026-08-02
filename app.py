@@ -12531,12 +12531,15 @@ def check_insurance_match(
 
 
 def is_agent_excluded_from_priority_row_assignment(agent_name):
-    """NH only: Alisha Mulani, Aliya Sayed, Khalil Patel must not receive modal-style priority rows."""
+    """NH only: these agents must not receive modal-style priority rows."""
     n = str(agent_name or "").strip().lower()
     return (
         ("alisha" in n and "mulani" in n)
         or ("aliya" in n and "sayed" in n)
         or ("khalil" in n and "patel" in n)
+        or ("safa" in n and "momin" in n)
+        or ("alfiya" in n and "kazi" in n)
+        or ("arshiya" in n and ("shaikh" in n or "sheikh" in n))
     )
 
 
@@ -34887,7 +34890,7 @@ def process_nh_allocation():
                 return False
 
         def _nh_row_remark_is_workable(idx):
-            """True when Remark is exactly 'workable' (case-insensitive). Used for Asaad's Dr. Startaloo quota."""
+            """True when Remark contains workable (case-insensitive; punctuation/spacing tolerant)."""
             if a_remark is None:
                 return False
             try:
@@ -34896,7 +34899,11 @@ def process_nh_allocation():
                 return False
             if pd.isna(val):
                 return False
-            return str(val).strip().lower() == "workable"
+            s = str(val).strip().lower()
+            if not s or s == "nan":
+                return False
+            # Accept variants like "workable - done", "workable?", "re-workable", etc.
+            return bool(re.search(r"(?<![a-z0-9])workable(?![a-z0-9])", s))
 
         def _nh_set_remark_workable_if_rule1_caller_assigned(idx):
             """After assigning a Rule 1 row (NTC / 'allocate to …') to a caller, set Remark to 'workable'."""
@@ -35056,7 +35063,7 @@ def process_nh_allocation():
             }
         )
 
-        # --- Dr. Insoft & Hurst: only Richa Yadav + Ketan Bamaniya (matches_office + caller skips + Pass 0e) ---
+        # --- Dr. Insoft & Hurst: only Richa Yadav + Nida Khan (matches_office + caller skips + Pass 0e) ---
         _NH_DR_INSOFT_HURST_EXCLUSIVE_KEYS = frozenset(
             {nh_office_key("Dr. Insoft & Hurst")}
         )
@@ -35064,6 +35071,17 @@ def process_nh_allocation():
         # --- Dr. Shawn Lehman: only Vinayak Shewale + Nazir Sheikh (matches_office + caller skips) ---
         _NH_DR_SHAWN_LEHMAN_EXCLUSIVE_KEYS = frozenset(
             {nh_office_key("Dr. Shawn Lehman")}
+        )
+        # --- Dr. Coleman Lehman variants: Nazir (DD* insurance) + Affan (remaining caller rows) ---
+        _NH_DR_COLEMAN_LEHMAN_SPECIAL_KEYS = frozenset(
+            {
+                nh_office_key("Dr. Coleman Lehman"),
+                nh_office_key("Dr. Coleman & Lehman"),
+                nh_office_key("Dr. Coleman - Lehman"),
+                nh_office_key("Dr. Coloman Lehman"),
+                nh_office_key("Dr. Coloman & Lehman"),
+                nh_office_key("Dr. Coloman - Lehman"),
+            }
         )
 
         # --- Siddhantraj Rokade: NADG-Cloud9 only (not WIP) or Dr. Hickory (Evenly Location); exact collapsed for Cloud9 ---
@@ -35230,21 +35248,16 @@ def process_nh_allocation():
         # Dr. Perez: assign to Nazir first in Pass 0f (before other Nazir priority offices); same reservation as full priority set
         _NH_DR_PEREZ_NAZIR_FIRST_KEYS = frozenset({nh_office_key("Dr. Perez")})
 
-        # --- Faisal Shaikh: only these offices (tier-1 first in 0f, then tier-2); not all NADG-* — exact NADG/NAGD + WIP pattern + listed doctors ---
+        # --- Faisal Shaikh: only these offices (tier-1 first in 0f, then tier-2) ---
         _NH_FAISAL_SHAIKH_TIER1_OFFICE_LABELS = (
-            "Dr. Kates",
             "NADG",
             "NAGD",
             "NADG WIP",
         )
         _NH_FAISAL_SHAIKH_TIER2_OFFICE_LABELS = (
-            "Dr. Mistry (Patel)",
-            "Dr. Goodnight",
-            "Dr. Saleem",
-            "Dr. Nirtnblatt",
-            "Dr. Dipak",
+            "Dr. Miller",
         )
-        _NH_FAISAL_SHAIKH_TIER1_DOCTOR_KEYS = frozenset({nh_office_key("Dr. Kates")})
+        _NH_FAISAL_SHAIKH_TIER1_DOCTOR_KEYS = frozenset()
         _NH_FAISAL_SHAIKH_TIER2_DOCTOR_KEYS = frozenset(
             nh_office_key(x) for x in _NH_FAISAL_SHAIKH_TIER2_OFFICE_LABELS
         )
@@ -35614,6 +35627,15 @@ def process_nh_allocation():
             nl = str(agent.get("name", "")).strip().lower()
             return _nh_nazir_sheikh_name_match(nl)
 
+        def _nh_is_kb_dd_team(agent):
+            nl = str(agent.get("name", "")).strip().lower()
+            return (
+                ("safa" in nl and "momin" in nl)
+                or ("alfiya" in nl and "kazi" in nl)
+                or ("aliya" in nl and "sayed" in nl)
+                or ("arshiya" in nl and ("shaikh" in nl or "sheikh" in nl))
+            )
+
         def _nh_nazir_priority_reserved():
             """While Nazir has spare TFD, priority offices are only for Nazir (matches_office + caller skip)."""
             a = _nh_nazir_sheikh_agent
@@ -35622,6 +35644,50 @@ def process_nh_allocation():
             if a["tfd"] > 0:
                 return a["assigned"] < a["tfd"]
             return False
+
+        def _nh_insurance_is_dd_prefix(val):
+            raw = str(val).strip().lower() if pd.notna(val) else ""
+            if raw and raw != "nan" and raw.startswith("dd"):
+                return True
+            formatted = format_insurance_company_name(val)
+            fmt = str(formatted).strip().lower() if formatted is not None else ""
+            if fmt and fmt != "nan" and fmt.startswith("dd"):
+                return True
+            return False
+
+        def _nh_insurance_is_kb_team_priority(val):
+            """DD* plus UCCI/MetLife/Guardian/BCBS(IL/TX/OK/NM) should route to KB team."""
+            if _nh_insurance_is_dd_prefix(val):
+                return True
+            raw = str(val).strip().lower() if pd.notna(val) else ""
+            formatted = format_insurance_company_name(val)
+            fmt = str(formatted).strip().lower() if formatted is not None else ""
+            text = f"{raw} || {fmt}"
+            if "ucci" in text:
+                return True
+            if "metlife" in text:
+                return True
+            if "guardian" in text:
+                return True
+            bcbs_tokens = (
+                "bcbs il",
+                "bcbs of il",
+                "bcbs tx",
+                "bcbs of tx",
+                "bcbs ok",
+                "bcbs of ok",
+                "bcbs nm",
+                "bcbs of nm",
+            )
+            return any(tok in text for tok in bcbs_tokens)
+
+        def _nh_row_office_is_coleman_family(row_office_val):
+            """Catches Coleman/Coloman Lehman spelling variants beyond fixed key list."""
+            k = nh_office_key(row_office_val)
+            if not k:
+                return False
+            c = re.sub(r"[^a-z0-9]", "", k)
+            return "lehman" in c and ("coleman" in c or "coloman" in c)
 
         def _nh_richa_priority_reserved():
             """While Richa has spare TFD, her allowlist offices are only assignable to Richa via matches_office."""
@@ -35669,6 +35735,8 @@ def process_nh_allocation():
 
         def _nh_skip_agent_caller_row_for_blocked_office(agent, row_office_val, row_idx=None):
             """Caller-only rows skip matches_office; honor office blocks / Siddhantraj allowlist."""
+            if _nh_is_kb_dd_team(agent) and _nh_row_office_is_coleman_family(row_office_val):
+                return True
             if _nh_siddhantraj_rokade(agent) and not _nh_siddhantraj_rokade_office_allowed(
                 row_office_val
             ):
@@ -35737,9 +35805,14 @@ def process_nh_allocation():
                     row_office_val, _NH_DR_INSOFT_HURST_EXCLUSIVE_KEYS
                 )
                 and not _nh_richa_yadav(agent)
-                and not _nh_ketan_bamaniya(agent)
+                and not _nh_nida_khan(agent)
             ):
                 return True
+            if _nh_row_office_is_coleman_family(row_office_val):
+                _ins = nh_alloc_insurance_for_match(row_idx) if row_idx is not None else ""
+                if _nh_insurance_is_dd_prefix(_ins):
+                    return not _nh_nazir_sheikh(agent)
+                return not _nh_is_affan_chowdhary(agent)
             if (
                 _nh_row_office_matches_keyset(
                     row_office_val, _NH_DR_SHAWN_LEHMAN_EXCLUSIVE_KEYS
@@ -35780,13 +35853,33 @@ def process_nh_allocation():
             row_office = str(row_office_val).strip().lower() if pd.notna(row_office_val) else ""
             if not row_office or row_office == "nan":
                 return False
+            if _nh_is_kb_dd_team(agent) and _nh_row_office_is_coleman_family(row_office_val):
+                return False
+            if row_idx is not None and row_idx in alloc_df.index:
+                _ins_for_dd_rule = nh_alloc_insurance_for_match(row_idx)
+                if _nh_insurance_is_kb_team_priority(_ins_for_dd_rule):
+                    # Coleman/Coloman Lehman special handling:
+                    # DD* -> Nazir, non-DD* -> Affan.
+                    if _nh_row_office_is_coleman_family(row_office_val):
+                        if _nh_insurance_is_dd_prefix(_ins_for_dd_rule):
+                            if not _nh_nazir_sheikh(agent):
+                                return False
+                        else:
+                            if not _nh_is_affan_chowdhary(agent):
+                                return False
+                    elif not _nh_is_kb_dd_team(agent):
+                        return False
             if _nh_pass0d_special_office_rules_active(agent) and _nh_pass0d_special_office_blocked(
                 row_office_val
             ):
                 return False
             if _nh_row_office_matches_keyset(
                 row_office_val, _NH_DR_INSOFT_HURST_EXCLUSIVE_KEYS
-            ) and not (_nh_richa_yadav(agent) or _nh_ketan_bamaniya(agent)):
+            ) and not (_nh_richa_yadav(agent) or _nh_nida_khan(agent)):
+                return False
+            if _nh_row_office_is_coleman_family(row_office_val) and not (
+                _nh_nazir_sheikh(agent) or _nh_is_affan_chowdhary(agent)
+            ):
                 return False
             if _nh_row_office_matches_keyset(
                 row_office_val, _NH_DR_SHAWN_LEHMAN_EXCLUSIVE_KEYS
@@ -36137,31 +36230,84 @@ def process_nh_allocation():
                 alloc_df.at[idx, a_agent_name] = agent["name"]
                 agent["assigned"] += 1
 
-        # --- Rule 2a0: Aarti Sharma — all DD-related insurance first (office + TFD only; then Rule 2a/2b for remainder) ---
+        # --- Workable priority pass: prefer KB team for unassigned Remark='workable' rows ---
+        kb_dd_team_agents = [a for a in agents if _nh_is_kb_dd_team(a)]
+        _nh_kb_workable_rr = 0
+        _nh_kb_workable_n = len(kb_dd_team_agents)
+        for idx in alloc_df.index:
+            if not is_row_unassigned(idx):
+                continue
+            if is_remark_excluded(idx):
+                continue
+            if not _nh_row_remark_is_workable(idx):
+                continue
+            if is_startaloo_row(idx):
+                continue
+            if _nh_kb_workable_n == 0:
+                continue
+
+            row = alloc_df.loc[idx]
+            row_is_caller_only = is_nh_caller_only_row(row)
+            for step in range(_nh_kb_workable_n):
+                ag = kb_dd_team_agents[(_nh_kb_workable_rr + step) % _nh_kb_workable_n]
+                if ag["tfd"] > 0 and ag["assigned"] >= ag["tfd"]:
+                    continue
+                if row_is_caller_only:
+                    if not ag.get("is_caller"):
+                        continue
+                    if _nh_skip_agent_caller_row_for_blocked_office(ag, row[a_office], idx):
+                        continue
+                else:
+                    if not matches_office(ag, row[a_office], idx):
+                        continue
+                    if not matches_insurance(
+                        ag, nh_alloc_insurance_for_match(idx), row[a_office]
+                    ):
+                        continue
+                if not nh_alisha_triple_may_take_row(idx, ag):
+                    continue
+                alloc_df.at[idx, a_agent_name] = ag["name"]
+                ag["assigned"] += 1
+                _nh_kb_workable_rr = (_nh_kb_workable_rr + step + 1) % _nh_kb_workable_n
+                break
+
+        # --- Rule 2a0: DD + selected insurance redistribution to KB team (round-robin; office + insurance + TFD) ---
         aarti_agent = next((a for a in agents if _nh_is_aarti_sharma_agent(a)), None)
-        if aarti_agent is not None:
-            for idx in alloc_df.index:
-                if not is_row_unassigned(idx):
+        _nh_kb_dd_rr = 0
+        _nh_kb_dd_n = len(kb_dd_team_agents)
+        for idx in alloc_df.index:
+            if not is_row_unassigned(idx):
+                continue
+            if is_remark_excluded(idx):
+                continue
+            row = alloc_df.loc[idx]
+            if is_nh_caller_only_row(row):
+                continue
+            if not _nh_insurance_is_kb_team_priority(nh_alloc_insurance_for_match(idx)):
+                continue
+            # Coleman-Lehman keeps caller remainder routing to Affan in Pass 0e1.
+            if _nh_row_office_matches_keyset(
+                row[a_office], _NH_DR_COLEMAN_LEHMAN_SPECIAL_KEYS
+            ):
+                continue
+            if _nh_kb_dd_n == 0:
+                continue
+            for step in range(_nh_kb_dd_n):
+                ag = kb_dd_team_agents[(_nh_kb_dd_rr + step) % _nh_kb_dd_n]
+                if ag["tfd"] > 0 and ag["assigned"] >= ag["tfd"]:
                     continue
-                if is_remark_excluded(idx):
+                if not matches_office(ag, row[a_office], idx):
                     continue
-                row = alloc_df.loc[idx]
-                if is_nh_caller_only_row(row):
-                    continue
-                if not is_nh_dd_related_insurance(nh_alloc_insurance_for_match(idx)):
-                    continue
-                if nh_insurance_excluded_for_aarti_sharma(
-                    nh_alloc_insurance_for_match(idx)
+                if not matches_insurance(
+                    ag, nh_alloc_insurance_for_match(idx), row[a_office]
                 ):
                     continue
-                if aarti_agent["tfd"] > 0 and aarti_agent["assigned"] >= aarti_agent["tfd"]:
+                if not nh_alisha_triple_may_take_row(idx, ag):
                     continue
-                if not matches_office(aarti_agent, row[a_office], idx):
-                    continue
-                if not nh_alisha_triple_may_take_row(idx, aarti_agent):
-                    continue
-                alloc_df.at[idx, a_agent_name] = aarti_agent["name"]
-                aarti_agent["assigned"] += 1
+                alloc_df.at[idx, a_agent_name] = ag["name"]
+                ag["assigned"] += 1
+                _nh_kb_dd_rr = (_nh_kb_dd_rr + step + 1) % _nh_kb_dd_n
+                break
 
         # --- Rule 2a: Aarti Sharma — web rows first (office + NH insurance allowlist + TFD) ---
         if aarti_agent is not None:
@@ -36335,13 +36481,13 @@ def process_nh_allocation():
                 ag["assigned"] += 1
                 break
 
-        # --- Pass 0e: Dr. Insoft & Hurst → Richa first until TFD, then Ketan (exclusive; incl. caller-only rows) ---
-        insoft_ketan = next(
+        # --- Pass 0e: Dr. Insoft & Hurst → Richa first until TFD, then Nida (exclusive; incl. caller-only rows) ---
+        insoft_nida = next(
             (
                 a
                 for a in agents
-                if "ketan" in str(a["name"]).strip().lower()
-                and "bamaniya" in str(a["name"]).strip().lower()
+                if "nida" in str(a["name"]).strip().lower()
+                and "khan" in str(a["name"]).strip().lower()
             ),
             None,
         )
@@ -36354,7 +36500,7 @@ def process_nh_allocation():
                 alloc_df.at[idx, a_office], _NH_DR_INSOFT_HURST_EXCLUSIVE_KEYS
             ):
                 continue
-            for agent in (_nh_richa_yadav_agent, insoft_ketan):
+            for agent in (_nh_richa_yadav_agent, insoft_nida):
                 if agent is None:
                     continue
                 if agent["tfd"] > 0 and agent["assigned"] >= agent["tfd"]:
@@ -36370,6 +36516,74 @@ def process_nh_allocation():
                 alloc_df.at[idx, a_agent_name] = agent["name"]
                 agent["assigned"] += 1
                 break
+
+        # --- Pass 0e1: Dr. Coleman Lehman variants — DD* -> Nazir; remaining -> Affan ---
+        for idx in alloc_df.index:
+            if not is_row_unassigned(idx):
+                continue
+            if is_remark_excluded(idx):
+                continue
+            if not _nh_row_office_is_coleman_family(alloc_df.at[idx, a_office]):
+                continue
+            if not _nh_insurance_is_dd_prefix(nh_alloc_insurance_for_match(idx)):
+                continue
+            if _nh_nazir_sheikh_agent is None:
+                continue
+            if (
+                _nh_nazir_sheikh_agent["tfd"] > 0
+                and _nh_nazir_sheikh_agent["assigned"] >= _nh_nazir_sheikh_agent["tfd"]
+            ):
+                continue
+            if not matches_office(_nh_nazir_sheikh_agent, alloc_df.at[idx, a_office], idx):
+                continue
+            if not matches_insurance(
+                _nh_nazir_sheikh_agent,
+                nh_alloc_insurance_for_match(idx),
+                alloc_df.at[idx, a_office],
+            ):
+                continue
+            if not nh_alisha_triple_may_take_row(idx, _nh_nazir_sheikh_agent):
+                continue
+            alloc_df.at[idx, a_agent_name] = _nh_nazir_sheikh_agent["name"]
+            _nh_nazir_sheikh_agent["assigned"] += 1
+
+        for idx in alloc_df.index:
+            if not is_row_unassigned(idx):
+                continue
+            if is_remark_excluded(idx):
+                continue
+            if not _nh_row_office_is_coleman_family(alloc_df.at[idx, a_office]):
+                continue
+            if _nh_insurance_is_dd_prefix(nh_alloc_insurance_for_match(idx)):
+                continue
+            if _nh_affan_chowdhary_agent is None:
+                continue
+            if (
+                _nh_affan_chowdhary_agent["tfd"] > 0
+                and _nh_affan_chowdhary_agent["assigned"] >= _nh_affan_chowdhary_agent["tfd"]
+            ):
+                continue
+            row = alloc_df.loc[idx]
+            if is_nh_caller_only_row(row):
+                if _nh_skip_agent_caller_row_for_blocked_office(
+                    _nh_affan_chowdhary_agent, row[a_office], idx
+                ):
+                    continue
+            else:
+                if not matches_office(_nh_affan_chowdhary_agent, row[a_office], idx):
+                    continue
+                if not matches_insurance(
+                    _nh_affan_chowdhary_agent,
+                    nh_alloc_insurance_for_match(idx),
+                    row[a_office],
+                ):
+                    continue
+            if not nh_alisha_triple_may_take_row(idx, _nh_affan_chowdhary_agent):
+                continue
+            alloc_df.at[idx, a_agent_name] = _nh_affan_chowdhary_agent["name"]
+            _nh_affan_chowdhary_agent["assigned"] += 1
+            if is_nh_caller_only_row(row):
+                _nh_set_remark_workable_if_rule1_caller_assigned(idx)
 
         # --- Richa Yadav: all is_startaloo_row first (allowlist + insurance + TFD), then other allowlist offices ---
         richa_agent = _nh_richa_yadav_agent

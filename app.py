@@ -31466,6 +31466,40 @@ def format_ar_production_daily_dates(df):
     return out
 
 
+def reorder_ar_production_daily_columns(df):
+    """Club duplicate columns and apply required AR Production Daily column order."""
+    if not isinstance(df, pd.DataFrame) or df.empty:
+        return df
+
+    # Club duplicate-named columns by taking the first non-empty value row-wise.
+    col_positions = {}
+    for idx, col in enumerate(df.columns):
+        col_positions.setdefault(col, []).append(idx)
+
+    merged_data = {}
+    merged_order = []
+    for col_name, positions in col_positions.items():
+        merged_order.append(col_name)
+        if len(positions) == 1:
+            merged_data[col_name] = df.iloc[:, positions[0]]
+            continue
+
+        # Coalesce duplicates from left to right, preserving the first non-empty value.
+        candidates = [df.iloc[:, pos] for pos in positions]
+        combined = candidates[0].copy()
+        for candidate in candidates[1:]:
+            combined = combined.where(
+                combined.notna() & (combined.astype(str).str.strip() != ""),
+                candidate,
+            )
+        merged_data[col_name] = combined
+
+    merged_df = pd.DataFrame(merged_data, columns=merged_order)
+    preferred = [col for col in AR_PRODUCTION_DAILY_REQUIRED_COLUMNS if col in merged_df.columns]
+    remaining = [col for col in merged_df.columns if col not in preferred]
+    return merged_df[preferred + remaining]
+
+
 @app.route("/consolidate_agent_files", methods=["POST"])
 @admin_required
 def consolidate_agent_files():
@@ -31848,6 +31882,7 @@ def consolidate_files_helper_to_buffer(
 
                 if is_ar_production_daily_consolidation:
                     combined_df = format_ar_production_daily_dates(combined_df)
+                    combined_df = reorder_ar_production_daily_columns(combined_df)
 
                 # Internal metadata column used only for Summary calculations
                 if "__uploaded_at__" in combined_df.columns:
@@ -31970,11 +32005,15 @@ def download_file_helper(file_model, file_id, file_type_name):
                             sheet_data_copy = format_ar_production_daily_dates(
                                 sheet_data_copy
                             )
+                            sheet_data_copy = reorder_ar_production_daily_columns(
+                                sheet_data_copy
+                            )
                         sheet_data_copy.to_excel(writer, sheet_name=sheet_name, index=False)
             elif isinstance(file_data, pd.DataFrame):
                 file_data_copy = file_data.copy()
                 if file_model == ARProductionDailyFile:
                     file_data_copy = format_ar_production_daily_dates(file_data_copy)
+                    file_data_copy = reorder_ar_production_daily_columns(file_data_copy)
                 file_data_copy.to_excel(writer, sheet_name="Sheet1", index=False)
             else:
                 pd.DataFrame([{"Message": "No data available"}]).to_excel(

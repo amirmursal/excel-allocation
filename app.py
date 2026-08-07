@@ -23547,18 +23547,25 @@ def download_result():
                                 df_copy[col], errors="coerce"
                             ).dt.strftime("%m/%d/%Y")
 
-                    # Reorder columns to place Supervisor right after Agent Name
+                    # Reorder columns to place Shift and Supervisor right after Agent Name
                     if (
                         "Agent Name" in df_copy.columns
                         and "Supervisor" in df_copy.columns
                     ):
                         # Get the index of Agent Name column
                         agent_name_idx = df_copy.columns.get_loc("Agent Name")
-                        # Remove Supervisor from its current position
+                        # Remove target columns from current position(s)
                         cols = df_copy.columns.tolist()
+                        has_shift = "Shift" in cols
+                        if has_shift:
+                            cols.remove("Shift")
                         cols.remove("Supervisor")
-                        # Insert Supervisor right after Agent Name
-                        cols.insert(agent_name_idx + 1, "Supervisor")
+                        # Insert Shift and Supervisor right after Agent Name
+                        insert_at = agent_name_idx + 1
+                        if has_shift:
+                            cols.insert(insert_at, "Shift")
+                            insert_at += 1
+                        cols.insert(insert_at, "Supervisor")
                         # Reorder the dataframe
                         df_copy = df_copy[cols]
 
@@ -28101,15 +28108,22 @@ def download_trackers():
                                 df_copy[col], errors="coerce"
                             ).dt.strftime("%m/%d/%Y")
 
-                    # Reorder columns if needed
+                    # Reorder columns if needed (Agent Name -> Shift -> Supervisor)
                     if (
                         "Agent Name" in df_copy.columns
                         and "Supervisor" in df_copy.columns
                     ):
                         agent_name_idx = df_copy.columns.get_loc("Agent Name")
                         cols = df_copy.columns.tolist()
+                        has_shift = "Shift" in cols
+                        if has_shift:
+                            cols.remove("Shift")
                         cols.remove("Supervisor")
-                        cols.insert(agent_name_idx + 1, "Supervisor")
+                        insert_at = agent_name_idx + 1
+                        if has_shift:
+                            cols.insert(insert_at, "Shift")
+                            insert_at += 1
+                        cols.insert(insert_at, "Supervisor")
                         df_copy = df_copy[cols]
 
                     if (
@@ -28282,8 +28296,15 @@ def download_imagen_qc_trackers():
                     ):
                         agent_name_idx = df_copy.columns.get_loc("Agent Name")
                         cols = df_copy.columns.tolist()
+                        has_shift = "Shift" in cols
+                        if has_shift:
+                            cols.remove("Shift")
                         cols.remove("Supervisor")
-                        cols.insert(agent_name_idx + 1, "Supervisor")
+                        insert_at = agent_name_idx + 1
+                        if has_shift:
+                            cols.insert(insert_at, "Shift")
+                            insert_at += 1
+                        cols.insert(insert_at, "Supervisor")
                         df_copy = df_copy[cols]
 
                     if (

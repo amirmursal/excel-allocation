@@ -1461,6 +1461,11 @@ tracker_file_ready = False
 tracker_processed_df = None
 tracker_processed_sheet = None
 
+# NH BV Tracker data storage
+nh_bv_tracker_data = None
+nh_bv_tracker_filename = None
+nh_bv_tracker_file_ready = False
+
 # Imagen QC Tracker — allocation workbook upload → same tracker sheets as main flow
 imagen_qc_tracker_data = None  # dict: sheet name -> DataFrame (full workbook for download)
 imagen_qc_tracker_filename = None
@@ -4153,7 +4158,8 @@ HTML_TEMPLATE = """
                 'mis-checklist-consolidate': 'MIS Checklist',
                 'imagen-tracker': 'Imagen Tracker',
                 'imagen-qc-tracker': 'Imagen QC Tracker',
-                'ar-ticker': 'AR Ticker'
+                'ar-ticker': 'AR Ticker',
+                'nh-bv-tracker': 'NH BV Tracker'
             };
             return names[submenuName] || submenuName;
         }
@@ -4348,6 +4354,11 @@ HTML_TEMPLATE = """
                     <li>
                         <div class="submenu-item {% if current_submenu == 'ar-ticker' %}active{% endif %}" onclick="switchAdminMenu('trackers', 'ar-ticker')">
                             <i class="fas fa-columns"></i> AR Ticker
+                        </div>
+                    </li>
+                    <li>
+                        <div class="submenu-item {% if current_submenu == 'nh-bv-tracker' %}active{% endif %}" onclick="switchAdminMenu('trackers', 'nh-bv-tracker')">
+                            <i class="fas fa-table"></i> NH BV Tracker
                         </div>
                     </li>
                 </ul>
@@ -6584,6 +6595,63 @@ HTML_TEMPLATE = """
                         </div>
                     </div>
                 </div>
+
+                <!-- NH BV Tracker Content -->
+                <div id="nh-bv-tracker-content" class="admin-menu-content" style="display: {% if current_menu == 'trackers' and current_submenu == 'nh-bv-tracker' %}block{% else %}none{% endif %};">
+                    <div class="section">
+                        <h3>📊 NH BV Tracker</h3>
+                        <p>Upload an allocation file to generate a status summary tracker.</p>
+
+                        <div class="upload-card" style="max-width: 600px; margin: 20px auto;">
+                            <form action="/upload_nh_bv_tracker_file" method="post" enctype="multipart/form-data" id="nh-bv-tracker-upload-form">
+                                <div class="form-group">
+                                    <label for="nh_bv_tracker_file" style="display: block; margin-bottom: 8px; font-weight: 600; color: #555;">
+                                        <i class="fas fa-file-excel"></i> Upload NH allocation file:
+                                    </label>
+                                    <input type="file" id="nh_bv_tracker_file" name="file" accept=".xlsx,.xls" required style="width: 100%; padding: 12px; border: 2px solid #ddd; border-radius: 8px; font-size: 16px;">
+                                </div>
+                                <button type="submit" id="nh-bv-tracker-upload-btn" class="process-btn" style="width: 100%;">
+                                    <i class="fas fa-upload"></i> Upload NH BV File
+                                </button>
+                            </form>
+                        </div>
+
+                        {% with messages = get_flashed_messages(with_categories=true) %}
+                            {% if messages %}
+                                {% for category, message in messages %}
+                                    {% if 'nh bv tracker' in message.lower() %}
+                                    <div class="status-message" style="margin-top: 20px; {% if category == 'success' %}background: #d4edda; color: #155724; border: 1px solid #c3e6cb;{% elif category == 'error' %}background: #f8d7da; color: #721c24; border: 1px solid #f5c6cb;{% else %}background: #d1ecf1; color: #0c5460; border: 1px solid #bee5eb;{% endif %}">
+                                        {{ message | safe }}
+                                    </div>
+                                    {% endif %}
+                                {% endfor %}
+                            {% endif %}
+                        {% endwith %}
+
+                        {% if nh_bv_tracker_file_ready %}
+                        <div class="section" style="margin-top: 20px;">
+                            <h3>💾 Download NH BV Tracker</h3>
+                            <form action="/download_nh_bv_tracker" method="post" id="nh-bv-tracker-download-form">
+                                <input type="hidden" name="current_menu" value="trackers">
+                                <input type="hidden" name="current_submenu" value="nh-bv-tracker">
+                                <button type="submit" id="nh-bv-tracker-download-btn" class="process-btn" style="background: linear-gradient(135deg, #3498db, #2980b9);">
+                                    <i class="fas fa-download"></i> Download NH BV Tracker
+                                </button>
+                            </form>
+                        </div>
+                        {% endif %}
+                    </div>
+                    <div class="processing-status" id="nh-bv-tracker-processing-status" style="display: none;">
+                        <div class="processing-content">
+                            <div class="spinner"></div>
+                            <h3 id="nh-bv-tracker-processing-title">Processing...</h3>
+                            <div class="progress-container">
+                                <div class="progress-bar" id="nh-bv-tracker-progress-bar" style="width: 100%;">Processing...</div>
+                            </div>
+                            <div class="progress-text" id="nh-bv-tracker-progress-text">Please wait...</div>
+                        </div>
+                    </div>
+                </div>
                 
             </div>
         </div>
@@ -8342,6 +8410,20 @@ HTML_TEMPLATE = """
             const modal = document.getElementById('ar-ticker-processing-status');
             if (modal) modal.style.display = 'none';
         }
+
+        function showNHBVTrackerProcessingModal(title, message) {
+            const modal = document.getElementById('nh-bv-tracker-processing-status');
+            const titleEl = document.getElementById('nh-bv-tracker-processing-title');
+            const textEl = document.getElementById('nh-bv-tracker-progress-text');
+            if (titleEl) titleEl.textContent = title;
+            if (textEl) textEl.textContent = message;
+            if (modal) modal.style.display = 'flex';
+        }
+
+        function hideNHBVTrackerProcessingModal() {
+            const modal = document.getElementById('nh-bv-tracker-processing-status');
+            if (modal) modal.style.display = 'none';
+        }
         
         const imagenQCTrackerUploadForm = document.getElementById('imagen-qc-tracker-upload-form');
         if (imagenQCTrackerUploadForm) {
@@ -8422,6 +8504,25 @@ HTML_TEMPLATE = """
                 );
             });
         }
+
+        const nhBVTrackerUploadForm = document.getElementById('nh-bv-tracker-upload-form');
+        if (nhBVTrackerUploadForm) {
+            nhBVTrackerUploadForm.addEventListener('submit', function() {
+                const btn = document.getElementById('nh-bv-tracker-upload-btn');
+                const fileInput = document.getElementById('nh_bv_tracker_file');
+                if (!fileInput || !fileInput.files || !fileInput.files.length) {
+                    return;
+                }
+                if (btn) {
+                    btn.disabled = true;
+                    btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Uploading...';
+                }
+                showNHBVTrackerProcessingModal(
+                    'Uploading NH BV file',
+                    'Reading workbook and preparing tracker data. Please wait...'
+                );
+            });
+        }
         
         // Agent upload form handler
         const agentUploadForm = document.getElementById('agentUploadForm');
@@ -8438,6 +8539,7 @@ HTML_TEMPLATE = """
             hideTrackerProcessingModal();
             hideImagenQCTrackerProcessingModal();
             hideARTickerProcessingModal();
+            hideNHBVTrackerProcessingModal();
             hideAgentConsolidationProcessingModal();
             bindAgentConsolidationExcelDownloads();
 
@@ -8529,6 +8631,17 @@ HTML_TEMPLATE = """
                 bodyMsg: 'Building AR Ticker workbook. Please wait…',
                 defaultBtnHtml:
                     '<i class="fas fa-download"></i> Download AR Ticker Summary',
+            });
+            bindFileDownloadFormWithModal({
+                formId: 'nh-bv-tracker-download-form',
+                btnId: 'nh-bv-tracker-download-btn',
+                modalId: 'nh-bv-tracker-processing-status',
+                titleId: 'nh-bv-tracker-processing-title',
+                textId: 'nh-bv-tracker-progress-text',
+                titleMsg: 'Preparing download',
+                bodyMsg: 'Building NH BV tracker workbook. Please wait…',
+                defaultBtnHtml:
+                    '<i class="fas fa-download"></i> Download NH BV Tracker',
             });
             
             // Check if Imagen Allocation content is visible and initialize it
@@ -20813,6 +20926,7 @@ def index():
     global auditor_email_staff_data, auditor_email_staff_filename
     global auditor_email_allocation_data, auditor_email_allocation_filename, auditor_email_agents_list, auditor_email_sent
     global tracker_data, tracker_filename, tracker_file_ready
+    global nh_bv_tracker_data, nh_bv_tracker_filename, nh_bv_tracker_file_ready
     global imagen_qc_tracker_data, imagen_qc_tracker_filename, imagen_qc_tracker_file_ready
     global ar_ticker_output_df, ar_ticker_combined_formatted_df, ar_ticker_source_filenames, ar_ticker_file_ready
     global ev_staff_data, ev_staff_filename, ev_allocation_data, ev_allocation_filename, ev_processing_result
@@ -20940,6 +21054,9 @@ def index():
         auditor_email_sent=list(auditor_email_sent) if auditor_email_sent else [],
         tracker_file_ready=(
             tracker_file_ready if "tracker_file_ready" in globals() else False
+        ),
+        nh_bv_tracker_file_ready=(
+            nh_bv_tracker_file_ready if "nh_bv_tracker_file_ready" in globals() else False
         ),
         imagen_qc_tracker_file_ready=(
             imagen_qc_tracker_file_ready
@@ -26277,6 +26394,65 @@ def upload_tracker_data():
         return redirect("/")
 
 
+@app.route("/upload_nh_bv_tracker_file", methods=["POST"])
+@admin_required
+def upload_nh_bv_tracker_file():
+    """Upload NH allocation file and prepare NH BV tracker generation."""
+    global nh_bv_tracker_data, nh_bv_tracker_filename, nh_bv_tracker_file_ready
+
+    if "file" not in request.files:
+        flash("NH BV Tracker: No file provided.", "error")
+        return redirect("/?menu=trackers&submenu=nh-bv-tracker")
+
+    file = request.files["file"]
+    if file.filename == "":
+        flash("NH BV Tracker: No file selected.", "error")
+        return redirect("/?menu=trackers&submenu=nh-bv-tracker")
+
+    try:
+        filename = secure_filename(file.filename)
+        file.save(filename)
+        all_sheets = pd.read_excel(filename, sheet_name=None, parse_dates=False)
+        if os.path.exists(filename):
+            os.remove(filename)
+
+        if not all_sheets:
+            flash("NH BV Tracker: File appears to be empty.", "error")
+            return redirect("/?menu=trackers&submenu=nh-bv-tracker")
+
+        first_sheet_name = list(all_sheets.keys())[0]
+        source_df = all_sheets[first_sheet_name]
+
+        status_col = None
+        for col in source_df.columns:
+            if str(col).strip().lower() == "status":
+                status_col = col
+                break
+        if status_col is None:
+            flash("NH BV Tracker: 'Status' column not found.", "error")
+            nh_bv_tracker_data = None
+            nh_bv_tracker_filename = None
+            nh_bv_tracker_file_ready = False
+            return redirect("/?menu=trackers&submenu=nh-bv-tracker")
+
+        nh_bv_tracker_data = source_df.copy()
+        nh_bv_tracker_filename = file.filename
+        nh_bv_tracker_file_ready = True
+        flash(
+            f"✅ NH BV Tracker file uploaded successfully (sheet: '{first_sheet_name}').",
+            "success",
+        )
+        return redirect("/?menu=trackers&submenu=nh-bv-tracker")
+    except Exception as e:
+        if "filename" in locals() and os.path.exists(filename):
+            os.remove(filename)
+        nh_bv_tracker_data = None
+        nh_bv_tracker_filename = None
+        nh_bv_tracker_file_ready = False
+        flash(f"NH BV Tracker: Error processing file: {str(e)}", "error")
+        return redirect("/?menu=trackers&submenu=nh-bv-tracker")
+
+
 @app.route("/upload_imagen_qc_tracker_allocation", methods=["POST"])
 @admin_required
 def upload_imagen_qc_tracker_allocation():
@@ -28234,6 +28410,277 @@ def download_trackers():
         if current_submenu:
             redirect_url += f"&submenu={current_submenu}"
         return redirect(redirect_url)
+
+
+@app.route("/download_nh_bv_tracker", methods=["POST"])
+@admin_required
+def download_nh_bv_tracker():
+    """Download NH BV tracker with Status summary sheet."""
+    global nh_bv_tracker_data, nh_bv_tracker_file_ready
+
+    if nh_bv_tracker_data is None or nh_bv_tracker_data.empty or not nh_bv_tracker_file_ready:
+        flash("NH BV Tracker: No tracker data available. Please upload a file first.", "error")
+        return redirect("/?menu=trackers&submenu=nh-bv-tracker")
+
+    status_col = None
+    agent_col = None
+    remark_col = None
+    work_date_col = None
+    for col in nh_bv_tracker_data.columns:
+        if str(col).strip().lower() == "agent name":
+            agent_col = col
+        if str(col).strip().lower() == "status":
+            status_col = col
+        if str(col).strip().lower() in ("remark", "remarks", "remark(s)"):
+            remark_col = col
+        col_norm = str(col).strip().lower()
+        if col_norm == "work date":
+            work_date_col = col
+        if (
+            work_date_col is None
+            and "date" in col_norm
+            and "work" in col_norm
+        ):
+            work_date_col = col
+        if (
+            agent_col is not None
+            and status_col is not None
+            and remark_col is not None
+            and work_date_col is not None
+        ):
+            break
+    if status_col is None:
+        flash("NH BV Tracker: 'Status' column not found.", "error")
+        return redirect("/?menu=trackers&submenu=nh-bv-tracker")
+
+    status_series = nh_bv_tracker_data[status_col].fillna("").astype(str).str.strip()
+    status_series = status_series[status_series != ""]
+
+    if status_series.empty:
+        summary_df = pd.DataFrame([{"Row Labels": "Grand Total", "Count of Status": 0}])
+    else:
+        counts_df = status_series.groupby(status_series, sort=False).size().reset_index(name="Count of Status")
+        counts_df.columns = ["Row Labels", "Count of Status"]
+        grand_total = int(counts_df["Count of Status"].sum())
+        summary_df = pd.concat(
+            [counts_df, pd.DataFrame([{"Row Labels": "Grand Total", "Count of Status": grand_total}])],
+            ignore_index=True,
+        )
+
+    # Agent-wise status count sheet
+    if agent_col is None:
+        agent_wise_df = pd.DataFrame([{"Row Labels": "Grand Total", "Grand Total": 0}])
+    else:
+        agent_status_df = nh_bv_tracker_data[[agent_col, status_col]].copy()
+        agent_status_df[agent_col] = (
+            agent_status_df[agent_col].fillna("").astype(str).str.strip()
+        )
+        agent_status_df[status_col] = (
+            agent_status_df[status_col].fillna("").astype(str).str.strip()
+        )
+        agent_status_df = agent_status_df[
+            (agent_status_df[agent_col] != "") & (agent_status_df[status_col] != "")
+        ]
+
+        if agent_status_df.empty:
+            agent_wise_df = pd.DataFrame([{"Row Labels": "Grand Total", "Grand Total": 0}])
+        else:
+            status_order = agent_status_df[status_col].drop_duplicates().tolist()
+            pivot_df = pd.pivot_table(
+                agent_status_df,
+                index=agent_col,
+                columns=status_col,
+                aggfunc="size",
+                fill_value=0,
+                sort=False,
+            ).reset_index()
+            pivot_df = pivot_df.rename(columns={agent_col: "Row Labels"})
+            ordered_cols = ["Row Labels"] + status_order
+            pivot_df = pivot_df[ordered_cols]
+            pivot_df["Grand Total"] = pivot_df[status_order].sum(axis=1)
+
+            grand_total_row = {"Row Labels": "Grand Total"}
+            for c in status_order + ["Grand Total"]:
+                grand_total_row[c] = int(pivot_df[c].sum())
+
+            agent_wise_df = pd.concat(
+                [pivot_df, pd.DataFrame([grand_total_row])], ignore_index=True
+            )
+
+    # Yesterday allocated counts (Agent vs Remark)
+    if agent_col is None or remark_col is None:
+        remark_wise_df = pd.DataFrame([{"Agent": "Grand Total", "Grand Total": 0}])
+    else:
+        agent_remark_df = nh_bv_tracker_data[[agent_col, remark_col]].copy()
+        agent_remark_df[agent_col] = (
+            agent_remark_df[agent_col].fillna("").astype(str).str.strip()
+        )
+        agent_remark_df[remark_col] = (
+            agent_remark_df[remark_col].fillna("").astype(str).str.strip()
+        )
+        agent_remark_df = agent_remark_df[
+            (agent_remark_df[agent_col] != "") & (agent_remark_df[remark_col] != "")
+        ]
+
+        if agent_remark_df.empty:
+            remark_wise_df = pd.DataFrame([{"Agent": "Grand Total", "Grand Total": 0}])
+        else:
+            remark_order = agent_remark_df[remark_col].drop_duplicates().tolist()
+            pivot_df = pd.pivot_table(
+                agent_remark_df,
+                index=agent_col,
+                columns=remark_col,
+                aggfunc="size",
+                fill_value=0,
+                sort=False,
+            ).reset_index()
+            pivot_df = pivot_df.rename(columns={agent_col: "Agent"})
+            ordered_cols = ["Agent"] + remark_order
+            pivot_df = pivot_df[ordered_cols]
+            pivot_df["Grand Total"] = pivot_df[remark_order].sum(axis=1)
+
+            grand_total_row = {"Agent": "Grand Total"}
+            for c in remark_order + ["Grand Total"]:
+                grand_total_row[c] = int(pivot_df[c].sum())
+
+            remark_wise_df = pd.concat(
+                [pivot_df, pd.DataFrame([grand_total_row])], ignore_index=True
+            )
+
+    # Date-wise counts (Work Date -> Agent vs Remark)
+    if agent_col is None or remark_col is None or work_date_col is None:
+        date_wise_df = pd.DataFrame([{"Date": "Grand Total", "Grand Total": 0}])
+    else:
+        date_agent_remark_df = nh_bv_tracker_data[[work_date_col, agent_col, remark_col]].copy()
+        date_agent_remark_df[work_date_col] = (
+            date_agent_remark_df[work_date_col].fillna("").astype(str).str.strip()
+        )
+        date_agent_remark_df[agent_col] = (
+            date_agent_remark_df[agent_col].fillna("").astype(str).str.strip()
+        )
+        date_agent_remark_df[remark_col] = (
+            date_agent_remark_df[remark_col].fillna("").astype(str).str.strip()
+        )
+        date_agent_remark_df = date_agent_remark_df[
+            (date_agent_remark_df[work_date_col] != "")
+            & (date_agent_remark_df[agent_col] != "")
+            & (date_agent_remark_df[remark_col] != "")
+        ]
+
+        if date_agent_remark_df.empty:
+            date_wise_df = pd.DataFrame([{"Row Labels": "Grand Total", "Grand Total": 0}])
+        else:
+            # Keep original text when parsing fails; otherwise normalize to MM/DD/YYYY.
+            parsed_dates = pd.to_datetime(
+                date_agent_remark_df[work_date_col], errors="coerce"
+            )
+            formatted_dates = parsed_dates.dt.strftime("%m/%d/%Y")
+            date_agent_remark_df["__date_key__"] = date_agent_remark_df[
+                work_date_col
+            ].where(parsed_dates.isna(), formatted_dates)
+
+            remark_order_date = date_agent_remark_df[remark_col].drop_duplicates().tolist()
+
+            pivot_df = pd.pivot_table(
+                date_agent_remark_df,
+                index=["__date_key__", agent_col],
+                columns=remark_col,
+                aggfunc="size",
+                fill_value=0,
+                sort=False,
+            ).reset_index()
+            pivot_df = pivot_df.rename(columns={"__date_key__": "Date", agent_col: "Agent"})
+            ordered_cols = ["Date", "Agent"] + remark_order_date
+            pivot_df = pivot_df[ordered_cols]
+            pivot_df["Grand Total"] = pivot_df[remark_order_date].sum(axis=1)
+
+            # Format as:
+            # Row Labels | <remark values> | Grand Total
+            # <work_date>
+            # <agent_name> ...
+            row_records = []
+            grand_totals_acc = {c: 0 for c in remark_order_date + ["Grand Total"]}
+            for date_key in pivot_df["Date"].drop_duplicates().tolist():
+                date_slice = pivot_df[pivot_df["Date"] == date_key]
+                date_header = {"Row Labels": date_key}
+                for c in remark_order_date + ["Grand Total"]:
+                    date_header[c] = ""
+                row_records.append(date_header)
+
+                for _, r in date_slice.iterrows():
+                    agent_row = {"Row Labels": r["Agent"]}
+                    for c in remark_order_date:
+                        v = int(r[c])
+                        agent_row[c] = v
+                        grand_totals_acc[c] += v
+                    gt = int(r["Grand Total"])
+                    agent_row["Grand Total"] = gt
+                    grand_totals_acc["Grand Total"] += gt
+                    row_records.append(agent_row)
+
+            grand_total_row = {"Row Labels": "Grand Total"}
+            for c in remark_order_date + ["Grand Total"]:
+                grand_total_row[c] = int(grand_totals_acc[c])
+            row_records.append(grand_total_row)
+
+            date_wise_df = pd.DataFrame(row_records, columns=["Row Labels"] + remark_order_date + ["Grand Total"])
+
+    date_str = datetime.now().strftime("%m_%d_%Y")
+    filename = f"NH BV Tracker {date_str}.xlsx"
+    sheet_name = "Consolidated NH (Yesterday Merged file)"[:31]
+
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        summary_df.to_excel(writer, sheet_name=sheet_name, index=False)
+        agent_wise_sheet_name = "Agent Wise Count"[:31]
+        agent_wise_df.to_excel(writer, sheet_name=agent_wise_sheet_name, index=False)
+        yesterday_sheet_name = "Yesterday allocated counts"[:31]
+        remark_wise_df.to_excel(writer, sheet_name=yesterday_sheet_name, index=False)
+        date_wise_sheet_name = "Date wise counts"[:31]
+        date_wise_df.to_excel(writer, sheet_name=date_wise_sheet_name, index=False)
+        ws = writer.sheets[sheet_name]
+        ws_agent = writer.sheets[agent_wise_sheet_name]
+        ws_yesterday = writer.sheets[yesterday_sheet_name]
+        ws_date_wise = writer.sheets[date_wise_sheet_name]
+        from openpyxl.styles import Font
+
+        for col_idx in range(1, ws.max_column + 1):
+            ws.cell(row=1, column=col_idx).font = Font(bold=True)
+        for row_idx in range(2, ws.max_row + 1):
+            row_label = ws.cell(row=row_idx, column=1).value
+            if str(row_label).strip().lower() == "grand total":
+                for col_idx in range(1, ws.max_column + 1):
+                    ws.cell(row=row_idx, column=col_idx).font = Font(bold=True)
+                break
+
+        for col_idx in range(1, ws_agent.max_column + 1):
+            ws_agent.cell(row=1, column=col_idx).font = Font(bold=True)
+        for row_idx in range(2, ws_agent.max_row + 1):
+            row_label = ws_agent.cell(row=row_idx, column=1).value
+            if str(row_label).strip().lower() == "grand total":
+                for col_idx in range(1, ws_agent.max_column + 1):
+                    ws_agent.cell(row=row_idx, column=col_idx).font = Font(bold=True)
+                break
+
+        for col_idx in range(1, ws_yesterday.max_column + 1):
+            ws_yesterday.cell(row=1, column=col_idx).font = Font(bold=True)
+        for row_idx in range(2, ws_yesterday.max_row + 1):
+            row_label = ws_yesterday.cell(row=row_idx, column=1).value
+            if str(row_label).strip().lower() == "grand total":
+                for col_idx in range(1, ws_yesterday.max_column + 1):
+                    ws_yesterday.cell(row=row_idx, column=col_idx).font = Font(bold=True)
+                break
+
+        for col_idx in range(1, ws_date_wise.max_column + 1):
+            ws_date_wise.cell(row=1, column=col_idx).font = Font(bold=True)
+        for row_idx in range(2, ws_date_wise.max_row + 1):
+            row_label = ws_date_wise.cell(row=row_idx, column=1).value
+            if str(row_label).strip().lower() == "grand total":
+                for col_idx in range(1, ws_date_wise.max_column + 1):
+                    ws_date_wise.cell(row=row_idx, column=col_idx).font = Font(bold=True)
+
+    output.seek(0)
+    return send_file(output, as_attachment=True, download_name=filename)
 
 
 # Sheets omitted from Imagen QC Tracker workbook (remark-based allocation tabs)
@@ -34405,6 +34852,7 @@ def reset_app():
     global email_allocation_data, email_allocation_filename, email_allocation_agents_list
     global tracker_data, tracker_filename, tracker_file_ready
     global tracker_processed_df, tracker_processed_sheet
+    global nh_bv_tracker_data, nh_bv_tracker_filename, nh_bv_tracker_file_ready
     global imagen_qc_tracker_data, imagen_qc_tracker_filename, imagen_qc_tracker_file_ready
     global imagen_qc_tracker_processed_df, imagen_qc_tracker_sheet_name
     global ar_ticker_output_df, ar_ticker_combined_formatted_df, ar_ticker_source_filenames, ar_ticker_file_ready
@@ -34437,6 +34885,9 @@ def reset_app():
         tracker_file_ready = False
         tracker_processed_df = None
         tracker_processed_sheet = None
+        nh_bv_tracker_data = None
+        nh_bv_tracker_filename = None
+        nh_bv_tracker_file_ready = False
         imagen_qc_tracker_data = None
         imagen_qc_tracker_filename = None
         imagen_qc_tracker_file_ready = False

@@ -26019,11 +26019,73 @@ def _build_ar_ticker_output(board_counts):
 
 
 AR_TICKER_DATE_COLUMNS = {
+    "date of service",
     "date worked",
     "follow up date",
     "last paid date",
     "import date",
 }
+
+
+AR_TICKER_EXPORT_COLUMN_ORDER = [
+    "Board",
+    "Source File",
+    "Name",
+    "Subitems",
+    "Chart ID",
+    "Doctor Name",
+    "Carrier Name",
+    "OSI Rep",
+    "Date Of Service",
+    "Date Worked",
+    "Reason Code",
+    "Action Code",
+    "Quick Win",
+    "Follow Up Date",
+    "Dup. of Action Code",
+    "Note",
+    "OSI Notes",
+    "Last Paid Date",
+    "Last Paid Amount",
+    "Import Date",
+    "PM System",
+    "Location Name",
+    "PFS Rep",
+    "Dup. of Reason Code",
+    "GoTech",
+    "Who Works",
+    "Balance",
+    "Ins Current",
+    "Ins 30 Day",
+    "Ins 60 Day",
+    "Ins 90 Day",
+    "Ins 120 Day",
+    "Sum of 60+90 Day",
+    "Total AR",
+    "WAR",
+    "OC Status",
+    "PP",
+    "CF",
+    "Priority Work",
+    "Practice ID",
+    "KeyID",
+    "Last updated",
+    "Item ID (auto generated)",
+    ">60 Day",
+    "Site",
+    "Agent Name",
+    "Category",
+    "Status",
+]
+
+
+def _reorder_ar_ticker_export_columns(df):
+    """Apply strict AR Ticker export column order and keep extra columns at end."""
+    if not isinstance(df, pd.DataFrame) or df.empty:
+        return df
+    preferred = [c for c in AR_TICKER_EXPORT_COLUMN_ORDER if c in df.columns]
+    remaining = [c for c in df.columns if c not in preferred]
+    return df[preferred + remaining]
 
 
 def _format_ar_ticker_date_columns(df):
@@ -28087,9 +28149,27 @@ def download_ar_ticker_output():
                     )
                     keep_mask = keep_mask & name_non_blank_mask
 
+                doctor_name_col = None
+                for col in source_df.columns:
+                    if str(col).strip().lower() == "doctor name":
+                        doctor_name_col = col
+                        break
+                if doctor_name_col is not None:
+                    doctor_values = (
+                        source_df[doctor_name_col].fillna("").astype(str).str.strip()
+                    )
+                    doctor_non_blank_mask = doctor_values != ""
+                    doctor_not_header_mask = (
+                        doctor_values.str.lower() != "doctor name"
+                    )
+                    keep_mask = keep_mask & doctor_non_blank_mask & doctor_not_header_mask
+
                 kept_indices = source_df.index[keep_mask].tolist()
                 formatted_export_df = source_df.loc[keep_mask].reset_index(drop=True)
                 formatted_export_df = _format_ar_ticker_date_columns(formatted_export_df)
+                formatted_export_df = _reorder_ar_ticker_export_columns(
+                    formatted_export_df
+                )
                 formatted_export_df.to_excel(
                     writer, sheet_name="Formatted Data", index=False
                 )
@@ -28146,28 +28226,6 @@ def download_ar_ticker_output():
                             height = kept_row_heights[row_idx]
                             if height is not None:
                                 ws.row_dimensions[row_idx + 2].height = height
-
-                # Additional AR Ticker tracker sheets: one per Date Worked.
-                date_wise_sheets = _build_ar_ticker_date_wise_sheets(formatted_export_df)
-                for sheet_name, sheet_df in date_wise_sheets.items():
-                    sheet_df.to_excel(writer, sheet_name=sheet_name, index=False)
-                    date_ws = writer.sheets.get(sheet_name)
-                    if date_ws is not None:
-                        from openpyxl.styles import Font
-
-                        # Header bold
-                        for col_idx in range(1, date_ws.max_column + 1):
-                            date_ws.cell(row=1, column=col_idx).font = Font(bold=True)
-
-                        # Grand Total row bold
-                        for row_idx in range(2, date_ws.max_row + 1):
-                            row_label = date_ws.cell(row=row_idx, column=1).value
-                            if str(row_label).strip().lower() == "grand total":
-                                for col_idx in range(1, date_ws.max_column + 1):
-                                    date_ws.cell(row=row_idx, column=col_idx).font = Font(
-                                        bold=True
-                                    )
-                                break
 
                 # Additional AR Ticker tracker sheets: one per month from Date Worked.
                 month_wise_sheets = _build_ar_ticker_month_wise_sheets(formatted_export_df)

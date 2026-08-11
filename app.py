@@ -26316,6 +26316,204 @@ def _build_ar_ticker_average_by_workdate_sheet(df):
     return summary_df
 
 
+def _build_ar_ticker_date_wise_from_note_sheet(df):
+    """
+    Build AR Ticker 'Date wise' sheet from Note column pattern:
+    "<agent_name>. <MMDDYYYY>" at end of note text.
+    Output columns: Agent, Date, Total Worked
+    """
+    if not isinstance(df, pd.DataFrame) or df.empty:
+        return pd.DataFrame(columns=["Agent", "Date", "Total Worked"])
+
+    note_col = None
+    for col in df.columns:
+        if str(col).strip().lower() == "note":
+            note_col = col
+            break
+    if note_col is None:
+        return pd.DataFrame(columns=["Agent", "Date", "Total Worked"])
+
+    extracted_rows = []
+    # Accept endings like:
+    # 1) "... <AGENT>.<MMDDYYYY>"
+    # 2) "... <AGENT> <MMDDYYYY>"
+    # Optional trailing quote (") is allowed.
+    # Agent token is captured as the token immediately before the final date.
+    pattern = re.compile(r"([A-Za-z][A-Za-z0-9_/-]*)\s*\.?\s*(\d{8})\"?\s*$")
+    for raw_note in df[note_col]:
+        if pd.isna(raw_note):
+            continue
+        note_text = str(raw_note).strip()
+        if not note_text:
+            continue
+        m = pattern.search(note_text)
+        if not m:
+            continue
+
+        agent_chunk = m.group(1).strip()
+        date_digits = m.group(2).strip()
+        if not agent_chunk:
+            continue
+        agent_name = agent_chunk
+
+        try:
+            parsed_dt = datetime.strptime(date_digits, "%m%d%Y")
+            date_text = parsed_dt.strftime("%m/%d/%Y")
+        except Exception:
+            # Skip malformed date tails even if they matched 8 digits.
+            continue
+
+        extracted_rows.append({"Agent": agent_name, "Date": date_text})
+
+    if not extracted_rows:
+        return pd.DataFrame(columns=["Agent", "Date", "Total Worked"])
+
+    out = (
+        pd.DataFrame(extracted_rows)
+        .groupby(["Agent", "Date"], as_index=False)
+        .size()
+        .rename(columns={"size": "Total Worked"})
+        .sort_values(by=["Agent", "Date"], kind="stable")
+        .reset_index(drop=True)
+    )
+    return out
+
+
+def _build_ar_ticker_monthly_from_note_sheets(df):
+    """
+    Build monthly note-based tracker sheets.
+    Returns dict: sheet_name -> DataFrame(Agent, Total Worked)
+    Sheet name format: Monthly - <Month_Name>
+    """
+    if not isinstance(df, pd.DataFrame) or df.empty:
+        return {}
+
+    note_col = None
+    for col in df.columns:
+        if str(col).strip().lower() == "note":
+            note_col = col
+            break
+    if note_col is None:
+        return {}
+
+    pattern = re.compile(r"([A-Za-z][A-Za-z0-9_/-]*)\s*\.?\s*(\d{8})\"?\s*$")
+    extracted_rows = []
+    for raw_note in df[note_col]:
+        if pd.isna(raw_note):
+            continue
+        note_text = str(raw_note).strip()
+        if not note_text:
+            continue
+        m = pattern.search(note_text)
+        if not m:
+            continue
+        agent_name = m.group(1).strip()
+        date_digits = m.group(2).strip()
+        if not agent_name:
+            continue
+        try:
+            parsed_dt = datetime.strptime(date_digits, "%m%d%Y")
+        except Exception:
+            continue
+        extracted_rows.append({"Agent": agent_name, "ParsedDate": parsed_dt})
+
+    if not extracted_rows:
+        return {}
+
+    working_df = pd.DataFrame(extracted_rows)
+    working_df["MonthKey"] = working_df["ParsedDate"].dt.strftime("%B %Y")
+
+    monthly_sheets = {}
+    for month_key in working_df["MonthKey"].drop_duplicates().tolist():
+        month_df = working_df[working_df["MonthKey"] == month_key]
+        out = (
+            month_df.assign(Date=month_df["ParsedDate"].dt.strftime("%m/%d/%Y"))
+            .groupby(["Agent", "Date"], as_index=False)
+            .size()
+            .rename(columns={"size": "Total Worked"})
+            .sort_values(by=["Agent", "Date"], kind="stable")
+            .reset_index(drop=True)
+        )
+        sheet_name = f"Monthly - {month_key}"[:31]
+        monthly_sheets[sheet_name] = out
+
+    return monthly_sheets
+
+
+def _build_ar_ticker_average_from_note_sheet(df):
+    """
+    Build AR Ticker 'Average' sheet from Note suffix pattern.
+    Columns:
+      Agent | Month | Total Count | Total worked days | Average
+    """
+    if not isinstance(df, pd.DataFrame) or df.empty:
+        return pd.DataFrame(
+            columns=["Agent", "Month", "Total Count", "Total worked days", "Average"]
+        )
+
+    note_col = None
+    for col in df.columns:
+        if str(col).strip().lower() == "note":
+            note_col = col
+            break
+    if note_col is None:
+        return pd.DataFrame(
+            columns=["Agent", "Month", "Total Count", "Total worked days", "Average"]
+        )
+
+    pattern = re.compile(r"([A-Za-z][A-Za-z0-9_/-]*)\s*\.?\s*(\d{8})\"?\s*$")
+    extracted_rows = []
+    for raw_note in df[note_col]:
+        if pd.isna(raw_note):
+            continue
+        note_text = str(raw_note).strip()
+        if not note_text:
+            continue
+        m = pattern.search(note_text)
+        if not m:
+            continue
+        agent_name = m.group(1).strip()
+        date_digits = m.group(2).strip()
+        if not agent_name:
+            continue
+        try:
+            parsed_dt = datetime.strptime(date_digits, "%m%d%Y")
+        except Exception:
+            continue
+        extracted_rows.append({"Agent": agent_name, "ParsedDate": parsed_dt})
+
+    if not extracted_rows:
+        return pd.DataFrame(
+            columns=["Agent", "Month", "Total Count", "Total worked days", "Average"]
+        )
+
+    working_df = pd.DataFrame(extracted_rows)
+    working_df["Month"] = working_df["ParsedDate"].dt.strftime("%B %Y")
+    grouped = (
+        working_df.groupby(["Agent", "Month"], as_index=False)
+        .agg(
+            **{
+                "Total Count": ("ParsedDate", "size"),
+                "Total worked days": ("ParsedDate", lambda s: s.dt.date.nunique()),
+            }
+        )
+        .sort_values(by=["Agent", "Month"], kind="stable")
+        .reset_index(drop=True)
+    )
+    grouped["Average"] = grouped.apply(
+        lambda r: round(
+            float(r["Total Count"]) / float(r["Total worked days"])
+            if float(r["Total worked days"]) > 0
+            else 0.0,
+            2,
+        ),
+        axis=1,
+    )
+    return grouped[
+        ["Agent", "Month", "Total Count", "Total worked days", "Average"]
+    ]
+
+
 @app.route("/upload_tracker_data", methods=["POST"])
 @admin_required
 def upload_tracker_data():
@@ -28227,42 +28425,78 @@ def download_ar_ticker_output():
                             if height is not None:
                                 ws.row_dimensions[row_idx + 2].height = height
 
-                # Additional AR Ticker tracker sheets: one per month from Date Worked.
-                month_wise_sheets = _build_ar_ticker_month_wise_sheets(formatted_export_df)
-                for sheet_name, sheet_df in month_wise_sheets.items():
-                    sheet_df.to_excel(writer, sheet_name=sheet_name, index=False)
-                    month_ws = writer.sheets.get(sheet_name)
-                    if month_ws is not None:
-                        from openpyxl.styles import Font
-
-                        # Header bold
-                        for col_idx in range(1, month_ws.max_column + 1):
-                            month_ws.cell(row=1, column=col_idx).font = Font(bold=True)
-
-                        # Grand Total row bold
-                        for row_idx in range(2, month_ws.max_row + 1):
-                            row_label = month_ws.cell(row=row_idx, column=1).value
-                            if str(row_label).strip().lower() == "grand total":
-                                for col_idx in range(1, month_ws.max_column + 1):
-                                    month_ws.cell(row=row_idx, column=col_idx).font = Font(
-                                        bold=True
-                                    )
-                                break
-
-                # Additional AR Ticker tracker sheet: average per Date Worked.
-                average_by_date_df = _build_ar_ticker_average_by_workdate_sheet(
+                # New AR Ticker tracker sheet: Date wise (from Note suffix pattern).
+                note_date_wise_df = _build_ar_ticker_date_wise_from_note_sheet(
                     formatted_export_df
                 )
-                if isinstance(average_by_date_df, pd.DataFrame) and not average_by_date_df.empty:
-                    avg_sheet_name = "Average - Working Date"
-                    average_by_date_df.to_excel(
-                        writer, sheet_name=avg_sheet_name, index=False
+                date_wise_sheet_name = "Date wise"
+                if (
+                    isinstance(note_date_wise_df, pd.DataFrame)
+                    and not note_date_wise_df.empty
+                ):
+                    note_date_wise_df.to_excel(
+                        writer, sheet_name=date_wise_sheet_name, index=False
                     )
-                    avg_ws = writer.sheets.get(avg_sheet_name)
-                    if avg_ws is not None:
+                else:
+                    pd.DataFrame(
+                        [
+                            {
+                                "Agent": "",
+                                "Date": "",
+                                "Total Worked": 0,
+                            }
+                        ]
+                    ).to_excel(
+                        writer, sheet_name=date_wise_sheet_name, index=False
+                    )
+                date_wise_ws = writer.sheets.get(date_wise_sheet_name)
+                if date_wise_ws is not None:
+                    from openpyxl.styles import Font
+                    for col_idx in range(1, date_wise_ws.max_column + 1):
+                        date_wise_ws.cell(row=1, column=col_idx).font = Font(bold=True)
+
+                # Monthly sheets derived from Note-end agent/date pattern.
+                monthly_note_sheets = _build_ar_ticker_monthly_from_note_sheets(
+                    formatted_export_df
+                )
+                for monthly_sheet_name, monthly_df in monthly_note_sheets.items():
+                    monthly_df.to_excel(
+                        writer, sheet_name=monthly_sheet_name, index=False
+                    )
+                    monthly_ws = writer.sheets.get(monthly_sheet_name)
+                    if monthly_ws is not None:
                         from openpyxl.styles import Font
-                        for col_idx in range(1, avg_ws.max_column + 1):
-                            avg_ws.cell(row=1, column=col_idx).font = Font(bold=True)
+                        for col_idx in range(1, monthly_ws.max_column + 1):
+                            monthly_ws.cell(row=1, column=col_idx).font = Font(bold=True)
+
+                # New AR Ticker tracker sheet: Average (note-derived monthly metrics).
+                average_df = _build_ar_ticker_average_from_note_sheet(
+                    formatted_export_df
+                )
+                average_sheet_name = "Average"
+                if isinstance(average_df, pd.DataFrame) and not average_df.empty:
+                    average_df.to_excel(
+                        writer, sheet_name=average_sheet_name, index=False
+                    )
+                else:
+                    pd.DataFrame(
+                        [
+                            {
+                                "Agent": "",
+                                "Month": "",
+                                "Total Count": 0,
+                                "Total worked days": 0,
+                                "Average": 0,
+                            }
+                        ]
+                    ).to_excel(
+                        writer, sheet_name=average_sheet_name, index=False
+                    )
+                average_ws = writer.sheets.get(average_sheet_name)
+                if average_ws is not None:
+                    from openpyxl.styles import Font
+                    for col_idx in range(1, average_ws.max_column + 1):
+                        average_ws.cell(row=1, column=col_idx).font = Font(bold=True)
             else:
                 pd.DataFrame(
                     [{"Info": "No combined formatted data available."}]

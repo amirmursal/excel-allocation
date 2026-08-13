@@ -26340,6 +26340,10 @@ def _build_ar_ticker_date_wise_from_note_sheet(df):
     # Optional trailing quote (") is allowed.
     # Agent token is captured as the token immediately before the final date.
     pattern = re.compile(r"([A-Za-z][A-Za-z0-9_/-]*)\s*\.?\s*(\d{8})\"?\s*$")
+    now_dt = datetime.now()
+    current_year = now_dt.year
+    current_month = now_dt.month
+
     for raw_note in df[note_col]:
         if pd.isna(raw_note):
             continue
@@ -26361,6 +26365,10 @@ def _build_ar_ticker_date_wise_from_note_sheet(df):
             date_text = parsed_dt.strftime("%m/%d/%Y")
         except Exception:
             # Skip malformed date tails even if they matched 8 digits.
+            continue
+
+        # Ignore previous-month (and any non-current-month) dates.
+        if parsed_dt.year != current_year or parsed_dt.month != current_month:
             continue
 
         extracted_rows.append({"Agent": agent_name, "Date": date_text})
@@ -26398,6 +26406,10 @@ def _build_ar_ticker_monthly_from_note_sheets(df):
 
     pattern = re.compile(r"([A-Za-z][A-Za-z0-9_/-]*)\s*\.?\s*(\d{8})\"?\s*$")
     extracted_rows = []
+    now_dt = datetime.now()
+    current_year = now_dt.year
+    current_month = now_dt.month
+
     for raw_note in df[note_col]:
         if pd.isna(raw_note):
             continue
@@ -26414,6 +26426,9 @@ def _build_ar_ticker_monthly_from_note_sheets(df):
         try:
             parsed_dt = datetime.strptime(date_digits, "%m%d%Y")
         except Exception:
+            continue
+        # Ignore previous-month (and any non-current-month) dates.
+        if parsed_dt.year != current_year or parsed_dt.month != current_month:
             continue
         extracted_rows.append({"Agent": agent_name, "ParsedDate": parsed_dt})
 
@@ -26463,6 +26478,10 @@ def _build_ar_ticker_average_from_note_sheet(df):
 
     pattern = re.compile(r"([A-Za-z][A-Za-z0-9_/-]*)\s*\.?\s*(\d{8})\"?\s*$")
     extracted_rows = []
+    now_dt = datetime.now()
+    current_year = now_dt.year
+    current_month = now_dt.month
+
     for raw_note in df[note_col]:
         if pd.isna(raw_note):
             continue
@@ -26479,6 +26498,9 @@ def _build_ar_ticker_average_from_note_sheet(df):
         try:
             parsed_dt = datetime.strptime(date_digits, "%m%d%Y")
         except Exception:
+            continue
+        # Ignore previous-month (and any non-current-month) dates.
+        if parsed_dt.year != current_year or parsed_dt.month != current_month:
             continue
         extracted_rows.append({"Agent": agent_name, "ParsedDate": parsed_dt})
 

@@ -14749,6 +14749,33 @@ def process_allocation_files_with_dates(
                                 ]
                                 .tolist()
                             )
+                            # Enforce OON priority order: First -> Second -> Third.
+                            # This prevents lower-priority OON rows from consuming OON capacity first.
+                            oon_index_position = {
+                                idx: pos for pos, idx in enumerate(processed_df.index)
+                            }
+
+                            def _oon_priority_rank(idx):
+                                if (
+                                    priority_status_col_name
+                                    and priority_status_col_name in processed_df.columns
+                                    and idx in processed_df.index
+                                ):
+                                    pv = processed_df.at[idx, priority_status_col_name]
+                                    if pd.notna(pv):
+                                        ps = str(pv).strip().upper()
+                                        if ps == "FIRST PRIORITY":
+                                            return 0
+                                        if ps == "SECOND PRIORITY":
+                                            return 1
+                                        if ps == "THIRD PRIORITY":
+                                            return 2
+                                return 99
+
+                            oon_row_indices = sorted(
+                                oon_row_indices,
+                                key=lambda i: (_oon_priority_rank(i), oon_index_position.get(i, 10**9)),
+                            )
                             oon_agents = [
                                 a
                                 for a in agent_allocations
@@ -20464,6 +20491,358 @@ def process_allocation_files_with_dates(
                                 f"✅ [Validation] All NTC rows are correctly allocated to valid NTC preference agents (Sec+NTC, Sec+Mix+NTC, Mix+NTC, or NTC)"
                             )
 
+                    # Step 5.9: Deterministic top-up pass
+                    # Goal: For each agent, keep allocating eligible unassigned rows until target
+                    # capacity is reached or genuinely no eligible rows remain.
+                    def _row_is_currently_assigned(row_idx):
+                        for _ag in agent_allocations:
+                            if row_idx in _ag.get("row_indices", []):
+                                return True
+                        return False
+
+                    def _agent_can_take_row(
+                        _ag, _idx, strict_insurance=True, enforce_date_cap=True
+                    ):
+                        if _idx not in processed_df.index:
+                            return False, "invalid-row"
+                        if (_ag["capacity"] - _ag["allocated"]) <= 0:
+                            return False, "agent-at-capacity"
+                        if should_skip_row_for_allocation(_idx, processed_df, remark_col):
+                            return False, "special-remark-skip"
+
+                        if (
+                            priority_status_col_name
+                            and priority_status_col_name in processed_df.columns
+                        ):
+                            _rp = processed_df.at[_idx, priority_status_col_name]
+                            if pd.notna(_rp) and str(_rp).strip():
+                                if not can_agent_work_with_priority(_ag, _rp):
+                                    return False, "priority-mismatch"
+
+                        if (
+                            strict_insurance
+                            and insurance_carrier_col
+                            and insurance_carrier_col in processed_df.columns
+                        ):
+                            _ri = processed_df.at[_idx, insurance_carrier_col]
+                            if not can_agent_work_with_insurance(_ag, _ri):
+                                return False, "insurance-mismatch"
+
+                            blocked = False
+                            if _ag.get("insurance_do_not_allocate"):
+                                _ri_s = str(_ri).strip() if pd.notna(_ri) else ""
+                                for _deny in _ag["insurance_do_not_allocate"]:
+                                    _deny_s = str(_deny).strip() if _deny else ""
+                                    if (
+                                        _ri_s
+                                        and _deny_s
+                                        and (
+                                            _ri_s.lower() in _deny_s.lower()
+                                            or _deny_s.lower() in _ri_s.lower()
+                                            or _ri_s == _deny_s
+                                        )
+                                    ):
+                                        blocked = True
+                                        break
+                            if blocked:
+                                return False, "do-not-allocate"
+
+                            needs_training = False
+                            if _ag.get("insurance_needs_training"):
+                                _ri_s = str(_ri).strip() if pd.notna(_ri) else ""
+                                for _tr in _ag["insurance_needs_training"]:
+                                    _tr_s = str(_tr).strip() if _tr else ""
+                                    if (
+                                        _ri_s
+                                        and _tr_s
+                                        and (
+                                            _ri_s.lower() in _tr_s.lower()
+                                            or _tr_s.lower() in _ri_s.lower()
+                                            or _ri_s == _tr_s
+                                        )
+                                    ):
+                                        needs_training = True
+                                        break
+                            if needs_training:
+                                return False, "needs-training"
+
+                        # In relaxed-insurance mode, do not pass primary insurance column into
+                        # row-level check, so Single-carrier lock doesn't block top-up.
+                        row_level_ins_col = (
+                            insurance_carrier_col if strict_insurance else None
+                        )
+                        if not can_allocate_row_to_agent(
+                            _ag,
+                            _idx,
+                            processed_df,
+                            secondary_insurance_col,
+                            row_level_ins_col,
+                        ):
+                            return False, "row-level-rule"
+
+                        if enforce_date_cap:
+                            if (
+                                appointment_date_col
+                                and appointment_date_col in processed_df.columns
+                                and not can_allocate_row_by_appointment_date_peek(
+                                    _ag, _idx, processed_df, appointment_date_col
+                                )
+                            ):
+                                return False, "appointment-date-cap"
+
+                        return True, "eligible"
+
+                    # Deterministic order: larger shortfall first, then agent name.
+                    agent_allocations.sort(
+                        key=lambda a: (
+                            -(max(0, a["capacity"] - a["allocated"])),
+                            str(a.get("name", "")).lower(),
+                        )
+                    )
+                    topup_total_assigned = 0
+                    for agent in agent_allocations:
+                        shortfall = max(0, agent["capacity"] - agent["allocated"])
+                        if shortfall <= 0:
+                            continue
+
+                        # Re-scan all unassigned rows for each agent to avoid unfair depletion.
+                        for idx in processed_df.index:
+                            if shortfall <= 0:
+                                break
+                            if _row_is_currently_assigned(idx):
+                                continue
+                            ok, _ = _agent_can_take_row(agent, idx, strict_insurance=True)
+                            if not ok:
+                                continue
+                            ac = safe_extend_row_indices(
+                                agent,
+                                [idx],
+                                processed_df,
+                                remark_col,
+                                agent["name"],
+                                appointment_date_col=appointment_date_col,
+                                insurance_carrier_col=insurance_carrier_col,
+                            )
+                            if ac > 0:
+                                shortfall -= 1
+                                topup_total_assigned += ac
+
+                        # Stage 2 (relaxed insurance): if still below target and rows remain,
+                        # keep core row-level rules, priority, OON restriction, and date cap,
+                        # but do not block solely due to insurance mismatch.
+                        if shortfall > 0:
+                            for idx in processed_df.index:
+                                if shortfall <= 0:
+                                    break
+                                if _row_is_currently_assigned(idx):
+                                    continue
+                                ok, _ = _agent_can_take_row(
+                                    agent,
+                                    idx,
+                                    strict_insurance=False,
+                                    enforce_date_cap=False,
+                                )
+                                if not ok:
+                                    continue
+                                ac = safe_extend_row_indices(
+                                    agent,
+                                    [idx],
+                                    processed_df,
+                                    remark_col,
+                                    agent["name"],
+                                    appointment_date_col=None,
+                                    insurance_carrier_col=None,
+                                )
+                                if ac > 0:
+                                    shortfall -= 1
+                                    topup_total_assigned += ac
+
+                    if topup_total_assigned > 0:
+                        print(
+                            f"✅ [TopUp] Deterministic top-up assigned {topup_total_assigned} additional row(s)."
+                        )
+
+                    # Exhaustive row-centric sweep:
+                    # Ensure every currently unallocated row is checked against every agent.
+                    # Repeats until no further assignments are possible.
+                    exhaustive_assigned = 0
+                    while True:
+                        progress = False
+                        unassigned_rows = [
+                            idx
+                            for idx in processed_df.index
+                            if not _row_is_currently_assigned(idx)
+                        ]
+                        if not unassigned_rows:
+                            break
+
+                        # Deterministic agent order for reproducibility.
+                        ordered_agents = sorted(
+                            agent_allocations,
+                            key=lambda a: (
+                                -(max(0, a["capacity"] - a["allocated"])),
+                                str(a.get("name", "")).lower(),
+                            ),
+                        )
+
+                        for idx in unassigned_rows:
+                            assigned_this_row = False
+
+                            # Strict criteria pass first (including insurance).
+                            for ag in ordered_agents:
+                                ok, _ = _agent_can_take_row(
+                                    ag, idx, strict_insurance=True
+                                )
+                                if not ok:
+                                    continue
+                                ac = safe_extend_row_indices(
+                                    ag,
+                                    [idx],
+                                    processed_df,
+                                    remark_col,
+                                    ag["name"],
+                                    appointment_date_col=appointment_date_col,
+                                    insurance_carrier_col=insurance_carrier_col,
+                                )
+                                if ac > 0:
+                                    exhaustive_assigned += ac
+                                    progress = True
+                                    assigned_this_row = True
+                                    break
+
+                            if assigned_this_row:
+                                continue
+
+                            # Relaxed-insurance pass (retain other rules).
+                            for ag in ordered_agents:
+                                ok, _ = _agent_can_take_row(
+                                    ag,
+                                    idx,
+                                    strict_insurance=False,
+                                    enforce_date_cap=False,
+                                )
+                                if not ok:
+                                    continue
+                                ac = safe_extend_row_indices(
+                                    ag,
+                                    [idx],
+                                    processed_df,
+                                    remark_col,
+                                    ag["name"],
+                                    appointment_date_col=None,
+                                    insurance_carrier_col=None,
+                                )
+                                if ac > 0:
+                                    exhaustive_assigned += ac
+                                    progress = True
+                                    break
+
+                        if not progress:
+                            break
+
+                    if exhaustive_assigned > 0:
+                        print(
+                            f"✅ [TopUp] Exhaustive row-agent sweep assigned {exhaustive_assigned} additional row(s)."
+                        )
+
+                    # Reconciliation diagnostics for below-target agents.
+                    reconciliation_rows = []
+                    alisha_debug = None
+                    for agent in sorted(
+                        agent_allocations, key=lambda a: str(a.get("name", "")).lower()
+                    ):
+                        target = int(agent.get("capacity", 0) or 0)
+                        allocated_now = int(agent.get("allocated", 0) or 0)
+                        shortfall = max(0, target - allocated_now)
+                        if shortfall <= 0:
+                            continue
+
+                        eligible_available = 0
+                        eligible_available_relaxed = 0
+                        reason_counts = {}
+                        strict_reason_counts = {}
+                        for idx in processed_df.index:
+                            if _row_is_currently_assigned(idx):
+                                continue
+                            ok, reason = _agent_can_take_row(
+                                agent, idx, strict_insurance=True
+                            )
+                            if ok:
+                                eligible_available += 1
+                            else:
+                                reason_counts[reason] = reason_counts.get(reason, 0) + 1
+                                strict_reason_counts[reason] = (
+                                    strict_reason_counts.get(reason, 0) + 1
+                                )
+                            ok_relaxed, _ = _agent_can_take_row(
+                                agent,
+                                idx,
+                                strict_insurance=False,
+                                enforce_date_cap=False,
+                            )
+                            if ok_relaxed:
+                                eligible_available_relaxed += 1
+
+                        if eligible_available > 0:
+                            reason_text = "eligible rows remain (top-up constrained by global competition)"
+                        elif eligible_available_relaxed > 0:
+                            reason_text = "strict insurance mismatch (relaxed pass can allocate)"
+                        else:
+                            reason_text = (
+                                max(reason_counts.items(), key=lambda kv: kv[1])[0]
+                                if reason_counts
+                                else "no-eligible-rows"
+                            )
+                        reconciliation_rows.append(
+                            {
+                                "agent": agent.get("name", ""),
+                                "target": target,
+                                "allocated": allocated_now,
+                                "eligible_available": eligible_available,
+                                "eligible_available_relaxed": eligible_available_relaxed,
+                                "shortfall": shortfall,
+                                "reason": reason_text,
+                            }
+                        )
+
+                        # Focused diagnostic for the reported agent.
+                        if str(agent.get("name", "")).strip().lower() == "alisha palker":
+                            alisha_debug = {
+                                "target": target,
+                                "allocated": allocated_now,
+                                "shortfall": shortfall,
+                                "eligible_available": eligible_available,
+                                "eligible_available_relaxed": eligible_available_relaxed,
+                                "strict_reason_counts": strict_reason_counts,
+                                "insurance_companies": [
+                                    str(x).strip()
+                                    for x in agent.get("insurance_companies", [])[:25]
+                                    if x is not None and not pd.isna(x)
+                                ],
+                                "do_not_allocate": [
+                                    str(x).strip()
+                                    for x in agent.get("insurance_do_not_allocate", [])[:25]
+                                    if x is not None and not pd.isna(x)
+                                ],
+                                "needs_training": [
+                                    str(x).strip()
+                                    for x in agent.get("insurance_needs_training", [])[:25]
+                                    if x is not None and not pd.isna(x)
+                                ],
+                                "allocation_preference": str(
+                                    agent.get("allocation_preference_raw") or ""
+                                ).strip(),
+                                "assigned_insurance": str(
+                                    agent.get("assigned_insurance") or ""
+                                ).strip(),
+                                "priority_status": str(
+                                    agent.get("priority_status") or ""
+                                ).strip(),
+                                "is_oon_agent": bool(
+                                    agent.get("has_oon20_location_access", False)
+                                ),
+                            }
+
                     # Sort agents by name for display
                     dedup_start_time = time.time()
                     print(
@@ -20705,6 +21084,32 @@ def process_allocation_files_with_dates(
                         oon_indices_to_fix = processed_df.index[
                             oon_needs_reassign_mask
                         ].tolist()
+                        # Reassign in OON priority order: First -> Second -> Third.
+                        oon_index_position = {
+                            idx: pos for pos, idx in enumerate(processed_df.index)
+                        }
+
+                        def _oon_priority_rank(idx):
+                            if (
+                                priority_status_col_name
+                                and priority_status_col_name in processed_df.columns
+                                and idx in processed_df.index
+                            ):
+                                pv = processed_df.at[idx, priority_status_col_name]
+                                if pd.notna(pv):
+                                    ps = str(pv).strip().upper()
+                                    if ps == "FIRST PRIORITY":
+                                        return 0
+                                    if ps == "SECOND PRIORITY":
+                                        return 1
+                                    if ps == "THIRD PRIORITY":
+                                        return 2
+                            return 99
+
+                        oon_indices_to_fix = sorted(
+                            oon_indices_to_fix,
+                            key=lambda i: (_oon_priority_rank(i), oon_index_position.get(i, 10**9)),
+                        )
 
                         # Candidate pool: OON-enabled agents only
                         oon_agents_pool = [
@@ -20931,6 +21336,11 @@ def process_allocation_files_with_dates(
                                 oon20_row_mask
                                 & processed_df["Agent Name"].fillna("").astype(str).str.strip().eq("")
                             ].tolist()
+                            # Capacity fill also respects OON priority order.
+                            oon_unallocated_indices = sorted(
+                                oon_unallocated_indices,
+                                key=lambda i: (_oon_priority_rank(i), oon_index_position.get(i, 10**9)),
+                            )
                             oon_agents_with_capacity = [
                                 a
                                 for a in oon_agents_pool
@@ -20979,6 +21389,75 @@ def process_allocation_files_with_dates(
 
                             if not progress_made:
                                 break
+
+                        # Priority preemption:
+                        # If First Priority OON rows are still unassigned while OON agents are full,
+                        # replace assigned lower-priority (Second/Third) OON rows with First Priority OON rows.
+                        first_unassigned = [
+                            idx
+                            for idx in processed_df.index
+                            if (
+                                idx in processed_df.index
+                                and oon20_row_mask.get(idx, False)
+                                and _oon_priority_rank(idx) == 0
+                                and str(processed_df.at[idx, "Agent Name"]).strip() == ""
+                            )
+                        ]
+                        if first_unassigned:
+                            first_unassigned = sorted(
+                                first_unassigned,
+                                key=lambda i: oon_index_position.get(i, 10**9),
+                            )
+
+                            # Build donor pool of assigned lower-priority OON rows on OON agents.
+                            donor_rows = []
+                            for ag in oon_agents_pool:
+                                for ridx in ag.get("row_indices", []):
+                                    if ridx not in processed_df.index:
+                                        continue
+                                    if not oon20_row_mask.get(ridx, False):
+                                        continue
+                                    pr = _oon_priority_rank(ridx)
+                                    if pr in (1, 2):  # Second/Third only
+                                        donor_rows.append((pr, oon_index_position.get(ridx, 10**9), ag, ridx))
+
+                            # Prefer removing Third first, then Second.
+                            donor_rows.sort(key=lambda x: (-x[0], x[1]))
+
+                            swap_count = 0
+                            while first_unassigned and donor_rows:
+                                _, _, donor_agent, donor_idx = donor_rows.pop(0)
+                                first_idx = first_unassigned.pop(0)
+
+                                # Remove donor row from same agent
+                                if donor_idx in donor_agent.get("row_indices", []):
+                                    donor_agent["row_indices"] = [
+                                        x for x in donor_agent["row_indices"] if x != donor_idx
+                                    ]
+                                processed_df.at[donor_idx, "Agent Name"] = ""
+                                if "Supervisor" in processed_df.columns:
+                                    processed_df.at[donor_idx, "Supervisor"] = ""
+                                if "Team Leader" in processed_df.columns:
+                                    processed_df.at[donor_idx, "Team Leader"] = ""
+
+                                # Assign first-priority row to donor agent
+                                donor_agent["row_indices"].append(first_idx)
+                                processed_df.at[first_idx, "Agent Name"] = donor_agent["name"]
+                                if "Supervisor" in processed_df.columns:
+                                    processed_df.at[first_idx, "Supervisor"] = donor_agent.get(
+                                        "supervisor", ""
+                                    )
+                                if "Team Leader" in processed_df.columns:
+                                    processed_df.at[first_idx, "Team Leader"] = donor_agent.get(
+                                        "team_leader", ""
+                                    )
+                                donor_agent["allocated"] = len(donor_agent["row_indices"])
+                                swap_count += 1
+
+                            if swap_count > 0:
+                                print(
+                                    f"✅ [Validation] OON priority preemption swapped {swap_count} lower-priority OON row(s) to First Priority OON."
+                                )
 
                         # Final strict cleanup: remove any remaining OON->non-OON assignment.
                         assigned_agent_norm = (
@@ -21343,6 +21822,83 @@ def process_allocation_files_with_dates(
                             agent_summary += """
 <div style="margin-top:10px;padding:10px;background:#d4edda;border-radius:6px;border:1px solid #c3e6cb;font-size:12px;">
     <strong>✅ OON 20% Validation:</strong> All OON 20% rows are assigned only to OON20%=YES agents.
+</div>"""
+
+                    if "reconciliation_rows" in locals() and reconciliation_rows:
+                        recon_html = """
+<div style="margin-top:12px;padding:10px;background:#fff;border:1px solid #dee2e6;border-radius:6px;">
+    <strong>🔎 Target Reconciliation (Below Target Agents)</strong>
+    <table style="width:100%;border-collapse:collapse;margin-top:8px;font-size:12px;">
+        <thead>
+            <tr style="background:#f8f9fa;">
+                <th style="padding:6px;border:1px solid #e9ecef;text-align:left;">Agent</th>
+                <th style="padding:6px;border:1px solid #e9ecef;text-align:center;">Target</th>
+                <th style="padding:6px;border:1px solid #e9ecef;text-align:center;">Allocated</th>
+                <th style="padding:6px;border:1px solid #e9ecef;text-align:center;">Eligible Available</th>
+                <th style="padding:6px;border:1px solid #e9ecef;text-align:center;">Eligible (Relaxed Insurance)</th>
+                <th style="padding:6px;border:1px solid #e9ecef;text-align:center;">Shortfall</th>
+                <th style="padding:6px;border:1px solid #e9ecef;text-align:left;">Reason</th>
+            </tr>
+        </thead>
+        <tbody>
+"""
+                        for rr in reconciliation_rows:
+                            recon_html += f"""
+            <tr>
+                <td style="padding:6px;border:1px solid #e9ecef;">{rr['agent']}</td>
+                <td style="padding:6px;border:1px solid #e9ecef;text-align:center;">{rr['target']}</td>
+                <td style="padding:6px;border:1px solid #e9ecef;text-align:center;">{rr['allocated']}</td>
+                <td style="padding:6px;border:1px solid #e9ecef;text-align:center;">{rr['eligible_available']}</td>
+                <td style="padding:6px;border:1px solid #e9ecef;text-align:center;">{rr['eligible_available_relaxed']}</td>
+                <td style="padding:6px;border:1px solid #e9ecef;text-align:center;">{rr['shortfall']}</td>
+                <td style="padding:6px;border:1px solid #e9ecef;">{rr['reason']}</td>
+            </tr>
+"""
+                        recon_html += """
+        </tbody>
+    </table>
+</div>"""
+                        agent_summary += recon_html
+
+                    if alisha_debug:
+                        sorted_reasons = sorted(
+                            alisha_debug["strict_reason_counts"].items(),
+                            key=lambda kv: kv[1],
+                            reverse=True,
+                        )
+                        reason_lines = (
+                            ", ".join([f"{k}: {v}" for k, v in sorted_reasons[:8]])
+                            if sorted_reasons
+                            else "None"
+                        )
+                        insurance_lines = (
+                            ", ".join(alisha_debug["insurance_companies"])
+                            if alisha_debug["insurance_companies"]
+                            else "None"
+                        )
+                        dna_lines = (
+                            ", ".join(alisha_debug["do_not_allocate"])
+                            if alisha_debug["do_not_allocate"]
+                            else "None"
+                        )
+                        training_lines = (
+                            ", ".join(alisha_debug["needs_training"])
+                            if alisha_debug["needs_training"]
+                            else "None"
+                        )
+                        agent_summary += f"""
+<div style="margin-top:12px;padding:10px;background:#fff;border:1px solid #cfe2ff;border-radius:6px;font-size:12px;">
+    <strong>🧪 Debug - Alisha Palker</strong><br>
+    Target: {alisha_debug['target']} | Allocated: {alisha_debug['allocated']} | Shortfall: {alisha_debug['shortfall']}<br>
+    Eligible (Strict): {alisha_debug['eligible_available']} | Eligible (Relaxed Insurance): {alisha_debug['eligible_available_relaxed']}<br>
+    OON Agent: {"Yes" if alisha_debug['is_oon_agent'] else "No"}<br>
+    Allocation Preference: {alisha_debug['allocation_preference'] or '-'} |
+    Assigned Insurance Lock: {alisha_debug['assigned_insurance'] or '-'} |
+    Priority Capability: {alisha_debug['priority_status'] or '-'}<br>
+    Strict skip reasons: {reason_lines}<br>
+    Insurance List: {insurance_lines}<br>
+    Do Not Allocate: {dna_lines}<br>
+    Needs Training: {training_lines}
 </div>"""
 
                     if insurance_carrier_col and unmatched_insurance_companies:
@@ -24321,11 +24877,8 @@ def download_result():
         filename = f"Imagen Allocation {date_str}.xlsx"
 
     try:
-        # Create a temporary file
-        temp_fd, temp_path = tempfile.mkstemp(suffix=".xlsx")
-
-        try:
-            with pd.ExcelWriter(temp_path, engine="openpyxl") as writer:
+        output_buffer = io.BytesIO()
+        with pd.ExcelWriter(output_buffer, engine="openpyxl") as writer:
                 # Write all existing sheets
                 for sheet_name, df in data_file_data.items():
                     # Create a copy of the dataframe to avoid modifying the original
@@ -24372,6 +24925,88 @@ def download_result():
                 processed_df = (
                     list(data_file_data.values())[0] if data_file_data else None
                 )
+                # Create per-agent allocation sheets
+                if processed_df is not None:
+                    agent_name_col = None
+                    for col in processed_df.columns:
+                        if "agent" in str(col).lower() and "name" in str(col).lower():
+                            agent_name_col = col
+                            break
+
+                    if agent_name_col and agent_name_col in processed_df.columns:
+                        used_sheet_names = set(writer.sheets.keys())
+
+                        def make_agent_sheet_name(agent_name):
+                            # Excel sheet name rules: max 31 chars, no []:*?/\
+                            clean = re.sub(r"[\[\]\:\*\?\/\\]", " ", str(agent_name))
+                            clean = re.sub(r"\s+", " ", clean).strip()
+                            if not clean:
+                                clean = "Unassigned"
+                            base = f"Agent - {clean}"[:31]
+                            candidate = base
+                            n = 2
+                            while candidate in used_sheet_names:
+                                suffix = f" ({n})"
+                                candidate = f"{base[: 31 - len(suffix)]}{suffix}"
+                                n += 1
+                            used_sheet_names.add(candidate)
+                            return candidate
+
+                        unique_agents = (
+                            processed_df[agent_name_col]
+                            .fillna("")
+                            .astype(str)
+                            .str.strip()
+                        )
+                        unique_agents = [
+                            a
+                            for a in sorted(unique_agents.unique(), key=lambda x: x.lower())
+                            if a != ""
+                        ]
+
+                        for agent_name in unique_agents:
+                            agent_df = processed_df[
+                                processed_df[agent_name_col]
+                                .fillna("")
+                                .astype(str)
+                                .str.strip()
+                                == agent_name
+                            ].copy()
+                            if agent_df.empty:
+                                continue
+
+                            # Keep same export formatting used for primary sheets
+                            for col in agent_df.columns:
+                                if ("appointment" in col.lower() and "date" in col.lower()) or (
+                                    "receive" in col.lower() and "date" in col.lower()
+                                ):
+                                    agent_df[col] = pd.to_datetime(
+                                        agent_df[col], errors="coerce"
+                                    ).dt.strftime("%m/%d/%Y")
+
+                            if (
+                                "Agent Name" in agent_df.columns
+                                and "Supervisor" in agent_df.columns
+                            ):
+                                agent_name_idx = agent_df.columns.get_loc("Agent Name")
+                                cols = agent_df.columns.tolist()
+                                has_shift = "Shift" in cols
+                                if has_shift:
+                                    cols.remove("Shift")
+                                cols.remove("Supervisor")
+                                insert_at = agent_name_idx + 1
+                                if has_shift:
+                                    cols.insert(insert_at, "Shift")
+                                    insert_at += 1
+                                cols.insert(insert_at, "Supervisor")
+                                agent_df = agent_df[cols]
+
+                            agent_df = drop_auditors_column_from_export_df(agent_df)
+                            agent_sheet_name = make_agent_sheet_name(agent_name)
+                            agent_df.to_excel(
+                                writer, sheet_name=agent_sheet_name, index=False
+                            )
+
                 # Export only original uploaded sheets for Imagen Allocation download.
                 generate_tracker_sheets = False
 
@@ -25976,11 +26611,13 @@ def download_result():
                             index=False,
                         )
 
-            # Apply formatting to make certain text bold
-            from openpyxl import load_workbook
-            from openpyxl.styles import Font
+        # Apply formatting to make certain text bold
+        from openpyxl import load_workbook
+        from openpyxl.styles import Font
 
-            wb = load_workbook(temp_path)
+        output_buffer.seek(0)
+        wb = load_workbook(output_buffer)
+        if True:
 
             # Format Agent Count Summary sheet
             if "Agent Count Summary" in wb.sheetnames:
@@ -26168,16 +26805,17 @@ def download_result():
 
             apply_comparison_tool_excel_output_styling(wb)
 
-            wb.save(temp_path)
+            final_buffer = io.BytesIO()
+            wb.save(final_buffer)
             wb.close()
+            final_buffer.seek(0)
 
-            return send_file(temp_path, as_attachment=True, download_name=filename)
-
-        finally:
-            # Clean up temporary file
-            os.close(temp_fd)
-            if os.path.exists(temp_path):
-                os.unlink(temp_path)
+            return send_file(
+                final_buffer,
+                mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                as_attachment=True,
+                download_name=filename,
+            )
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500

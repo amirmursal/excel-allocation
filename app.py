@@ -27705,7 +27705,7 @@ def _build_ar_ticker_date_wise_from_note_sheet(df):
 def _build_ar_ticker_monthly_from_note_sheets(df):
     """
     Build monthly note-based tracker sheets.
-    Returns dict: sheet_name -> DataFrame(Agent, Total Worked)
+    Returns dict: sheet_name -> DataFrame(Agent, Date, Total Worked, Average)
     Sheet name format: Monthly - <Month_Name>
     """
     if not isinstance(df, pd.DataFrame) or df.empty:
@@ -27757,11 +27757,25 @@ def _build_ar_ticker_monthly_from_note_sheets(df):
     for month_key in working_df["MonthKey"].drop_duplicates().tolist():
         month_df = working_df[working_df["MonthKey"] == month_key]
         out = (
-            month_df.assign(Date=month_df["ParsedDate"].dt.strftime("%m/%d/%Y"))
-            .groupby(["Agent", "Date"], as_index=False)
-            .size()
-            .rename(columns={"size": "Total Worked"})
-            .sort_values(by=["Agent", "Date"], kind="stable")
+            month_df.groupby("Agent", as_index=False).agg(
+                **{
+                    "Total Worked": ("ParsedDate", "size"),
+                    "_agent_worked_dates": ("ParsedDate", lambda s: s.dt.date.nunique()),
+                }
+            )
+        )
+        out["Average"] = out.apply(
+            lambda r: round(
+                float(r["Total Worked"]) / float(r["_agent_worked_dates"])
+                if r["_agent_worked_dates"]
+                else 0.0,
+                2,
+            ),
+            axis=1,
+        )
+        out = (
+            out[["Agent", "Total Worked", "Average"]]
+            .sort_values(by=["Agent"], kind="stable")
             .reset_index(drop=True)
         )
         sheet_name = f"Monthly - {month_key}"[:31]
@@ -35879,6 +35893,21 @@ def daily_consolidate_all_subtabs_and_email():
 
     try:
         with app.app_context():
+            def ensure_required_recipient(existing_value, required_email):
+                """
+                Merge required_email into a comma-separated recipient list,
+                preserving existing recipients and avoiding duplicates.
+                """
+                recipients = []
+                for part in str(existing_value or "").split(","):
+                    email = part.strip()
+                    if email:
+                        recipients.append(email)
+                req = str(required_email or "").strip()
+                if req and req.lower() not in {x.lower() for x in recipients}:
+                    recipients.append(req)
+                return ", ".join(recipients)
+
             try:
                 maybe_send_management_outbound_upload_digest()
             except Exception as digest_exc:
@@ -35908,6 +35937,13 @@ def daily_consolidate_all_subtabs_and_email():
             ar_production_daily_consolidation_email = os.environ.get(
                 "AR_PRODUCTION_DAILY_CONSOLIDATION_EMAIL",
                 "Sunil.yadav.mnc@gmail.com",
+            )
+            # Always include AR tracker mailbox on these two streams.
+            web_ar_payment_pp_consolidation_email = ensure_required_recipient(
+                web_ar_payment_pp_consolidation_email, "ar.tracker.mnc@gmail.com"
+            )
+            ar_production_daily_consolidation_email = ensure_required_recipient(
+                ar_production_daily_consolidation_email, "ar.tracker.mnc@gmail.com"
             )
 
             subtab_configs = [

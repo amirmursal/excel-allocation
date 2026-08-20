@@ -12411,6 +12411,25 @@ def safe_extend_row_indices(
             secondary_insurance_col = col_name
             break
 
+    # Defensive fallback:
+    # Some allocation paths may omit insurance_carrier_col when calling this helper.
+    # For Junior/non-senior agents, we must still enforce strict insurance matching.
+    if (not insurance_carrier_col or insurance_carrier_col not in processed_df.columns) and not agent.get(
+        "is_senior", False
+    ):
+        insurance_fallback_candidates = [
+            "Insurance Carrier",
+            "Insurance Carrier Name",
+            "Carrier Name",
+            "Insurance",
+            "Primary Insurance",
+            "Ins Carrier",
+        ]
+        for col_name in insurance_fallback_candidates:
+            if col_name in processed_df.columns:
+                insurance_carrier_col = col_name
+                break
+
     # First filter: Remove secondary insurance rows for "Single" preference agents
     # Also check assigned insurance company for "Single" preference agents
     pre_filtered_indices = []
@@ -12457,7 +12476,7 @@ def safe_extend_row_indices(
                     ):
                         validated_indices.append(idx)
     else:
-        # If no insurance column, use filtered_indices as-is (backward compatibility)
+        # If insurance column truly does not exist, keep backward-compatible behavior.
         validated_indices = filtered_indices
 
     if validated_indices:
@@ -13991,7 +14010,7 @@ def process_allocation_files_with_dates(
                         insurance_companies = []
                         is_senior = False
 
-                        # Check if agent is senior based on Category column (priority) or Insurance List
+                        # Check if agent is senior based on Category column (source of truth).
                         if category_col and pd.notna(row[category_col]):
                             agent_category = str(row[category_col]).strip().lower()
                             if "senior" in agent_category:
@@ -14009,12 +14028,6 @@ def process_allocation_files_with_dates(
                                 .split(";")
                                 if comp.strip()
                             ]
-
-                            # Check if agent is senior (if not already determined by Category)
-                            if not is_senior and any(
-                                "senior" in comp.lower() for comp in companies
-                            ):
-                                is_senior = True
 
                             if is_senior:
                                 # For senior agents, they can work with any insurance company
@@ -14816,7 +14829,8 @@ def process_allocation_files_with_dates(
                                                     continue
 
                                         if (
-                                            insurance_carrier_col
+                                            not ag.get("is_senior", False)
+                                            and insurance_carrier_col
                                             and insurance_carrier_col
                                             in processed_df.columns
                                         ):
@@ -15807,6 +15821,7 @@ def process_allocation_files_with_dates(
                                                 remark_col,
                                                 agent["name"],
                                                 appointment_date_col,
+                                                insurance_carrier_col=insurance_carrier_col,
                                             )
                                             allocated_count += take
                                             remaining_capacity = (
@@ -16326,6 +16341,7 @@ def process_allocation_files_with_dates(
                                                                     processed_df,
                                                                     remark_col,
                                                                     agent["name"],
+                                                                    insurance_carrier_col=insurance_carrier_col,
                                                                 )
                                                             )
                                                             allocated_count += take
@@ -17260,6 +17276,7 @@ def process_allocation_files_with_dates(
                                                                     processed_df,
                                                                     remark_col,
                                                                     agent["name"],
+                                                                    insurance_carrier_col=insurance_carrier_col,
                                                                 )
                                                                 allocated_count += take  # Move forward in the list by take positions
                                                                 agent[
@@ -17390,6 +17407,7 @@ def process_allocation_files_with_dates(
                                                 remark_col,
                                                 agent["name"],
                                                 appointment_date_col,
+                                                insurance_carrier_col=insurance_carrier_col,
                                             )
                                             allocated_count += take
                                             remaining_capacity = (
@@ -17847,6 +17865,7 @@ def process_allocation_files_with_dates(
                                                         processed_df,
                                                         remark_col,
                                                         agent["name"],
+                                                        insurance_carrier_col=insurance_carrier_col,
                                                     )
                                                 )
                                                 allocated_count += take
@@ -18009,6 +18028,7 @@ def process_allocation_files_with_dates(
                                                 remark_col,
                                                 agent["name"],
                                                 appointment_date_col,
+                                                insurance_carrier_col=insurance_carrier_col,
                                             )
                                             allocated_count += take
                                             remaining_capacity = (
@@ -19372,6 +19392,7 @@ def process_allocation_files_with_dates(
                                                                     processed_df,
                                                                     remark_col,
                                                                     agent["name"],
+                                                                    insurance_carrier_col=insurance_carrier_col,
                                                                 )
                                                             )
                                                             # Set assigned insurance if not set
@@ -19576,6 +19597,7 @@ def process_allocation_files_with_dates(
                                                             processed_df,
                                                             remark_col,
                                                             agent["name"],
+                                                            insurance_carrier_col=insurance_carrier_col,
                                                         )
                                                     )
 
@@ -19707,6 +19729,7 @@ def process_allocation_files_with_dates(
                                                                     processed_df,
                                                                     remark_col,
                                                                     agent["name"],
+                                                                    insurance_carrier_col=insurance_carrier_col,
                                                                 )
                                                             )
                                                         # Do NOT change assigned_insurance here (keep original primary)
@@ -19866,6 +19889,7 @@ def process_allocation_files_with_dates(
                                         processed_df,
                                         remark_col,
                                         agent["name"],
+                                        insurance_carrier_col=insurance_carrier_col,
                                     )
                                     row_idx += actual_allocation
 
@@ -20491,6 +20515,47 @@ def process_allocation_files_with_dates(
                                 f"✅ [Validation] All NTC rows are correctly allocated to valid NTC preference agents (Sec+NTC, Sec+Mix+NTC, Mix+NTC, or NTC)"
                             )
 
+                    # Hard validation gate:
+                    # Enforce insurance compatibility on all already-assigned rows before any top-up.
+                    # This guarantees no pass can leave a Junior/non-senior agent with out-of-list insurance.
+                    if insurance_carrier_col and insurance_carrier_col in processed_df.columns:
+                        agent_by_name_norm = {
+                            str(a.get("name", "")).strip().lower(): a
+                            for a in agent_allocations
+                            if str(a.get("name", "")).strip()
+                        }
+                        invalid_assigned_indices = []
+                        invalid_counts_by_agent = {}
+                        for idx in processed_df.index:
+                            assigned_name = str(processed_df.at[idx, "Agent Name"]).strip()
+                            if not assigned_name:
+                                continue
+                            ag = agent_by_name_norm.get(assigned_name.lower())
+                            if not ag:
+                                continue
+                            row_insurance = processed_df.at[idx, insurance_carrier_col]
+                            if not can_agent_work_with_insurance(ag, row_insurance):
+                                invalid_assigned_indices.append((idx, ag))
+
+                        if invalid_assigned_indices:
+                            for idx, ag in invalid_assigned_indices:
+                                if idx in ag.get("row_indices", []):
+                                    ag["row_indices"] = [
+                                        x for x in ag.get("row_indices", []) if x != idx
+                                    ]
+                                ag["allocated"] = len(ag.get("row_indices", []))
+                                invalid_counts_by_agent[ag.get("name", "")] = (
+                                    invalid_counts_by_agent.get(ag.get("name", ""), 0) + 1
+                                )
+                                processed_df.at[idx, "Agent Name"] = ""
+                                if "Supervisor" in processed_df.columns:
+                                    processed_df.at[idx, "Supervisor"] = ""
+                                if "Team Leader" in processed_df.columns:
+                                    processed_df.at[idx, "Team Leader"] = ""
+                            print(
+                                f"🛡️ [Validation] Removed {len(invalid_assigned_indices)} invalid insurance assignment(s): {invalid_counts_by_agent}"
+                            )
+
                     # Step 5.9: Deterministic top-up pass
                     # Goal: For each agent, keep allocating eligible unassigned rows until target
                     # capacity is reached or genuinely no eligible rows remain.
@@ -20519,8 +20584,12 @@ def process_allocation_files_with_dates(
                                 if not can_agent_work_with_priority(_ag, _rp):
                                     return False, "priority-mismatch"
 
+                        # Category rule:
+                        # - Junior/non-senior: strict insurance matching always.
+                        # - Senior: no insurance matching (can work any insurance).
+                        enforce_insurance_for_agent = not _ag.get("is_senior", False)
                         if (
-                            strict_insurance
+                            enforce_insurance_for_agent
                             and insurance_carrier_col
                             and insurance_carrier_col in processed_df.columns
                         ):
@@ -20566,10 +20635,10 @@ def process_allocation_files_with_dates(
                             if needs_training:
                                 return False, "needs-training"
 
-                        # In relaxed-insurance mode, do not pass primary insurance column into
-                        # row-level check, so Single-carrier lock doesn't block top-up.
+                        # Keep row-level insurance lock for Junior/non-senior agents.
+                        # For Senior agents, insurance lock is not enforced.
                         row_level_ins_col = (
-                            insurance_carrier_col if strict_insurance else None
+                            insurance_carrier_col if enforce_insurance_for_agent else None
                         )
                         if not can_allocate_row_to_agent(
                             _ag,
@@ -20651,7 +20720,7 @@ def process_allocation_files_with_dates(
                                     remark_col,
                                     agent["name"],
                                     appointment_date_col=None,
-                                    insurance_carrier_col=None,
+                                    insurance_carrier_col=insurance_carrier_col,
                                 )
                                 if ac > 0:
                                     shortfall -= 1
@@ -20730,7 +20799,7 @@ def process_allocation_files_with_dates(
                                     remark_col,
                                     ag["name"],
                                     appointment_date_col=None,
-                                    insurance_carrier_col=None,
+                                    insurance_carrier_col=insurance_carrier_col,
                                 )
                                 if ac > 0:
                                     exhaustive_assigned += ac
@@ -21147,7 +21216,8 @@ def process_allocation_files_with_dates(
 
                                 # Keep existing strict insurance behavior.
                                 if (
-                                    insurance_carrier_col
+                                    not ag.get("is_senior", False)
+                                    and insurance_carrier_col
                                     and insurance_carrier_col in processed_df.columns
                                 ):
                                     row_insurance = processed_df.at[idx, insurance_carrier_col]
@@ -21256,7 +21326,7 @@ def process_allocation_files_with_dates(
                             # Fallback (OON-only, capacity-first):
                             # If strict checks could not assign this OON row, but OON agents still
                             # have free capacity, assign by OON-only pool while preserving hard OON rule.
-                            # This intentionally relaxes insurance/priority/date-cap filtering for OON rows.
+                            # Keep insurance validation on every pass; only date-cap can be relaxed here.
                             if not assigned:
                                 relaxed_candidates = [
                                     a
@@ -21284,7 +21354,7 @@ def process_allocation_files_with_dates(
                                         remark_col,
                                         ag["name"],
                                         appointment_date_col=None,  # bypass date cap in fallback
-                                        insurance_carrier_col=None,  # bypass strict insurance match in fallback
+                                        insurance_carrier_col=insurance_carrier_col,
                                     )
                                     if ac > 0:
                                         assigned = True
@@ -21497,6 +21567,353 @@ def process_allocation_files_with_dates(
                     # Calculate allocation statistics FIRST
                     # CRITICAL: Calculate total_allocated based on unique row indices to avoid duplicates
                     # Collect all unique row indices across all agents
+                    # FINAL HARD GUARD (all passes):
+                    # Before preparing final counts/summary, remove any assignment that violates
+                    # agent-insurance compatibility. This guarantees final output never contains
+                    # out-of-list insurance for Junior/non-senior agents, even if a prior pass
+                    # assigned a row directly.
+                    if insurance_carrier_col and insurance_carrier_col in processed_df.columns and "Agent Name" in processed_df.columns:
+                        agent_by_name_norm = {
+                            str(a.get("name", "")).strip().lower(): a
+                            for a in agent_allocations
+                            if str(a.get("name", "")).strip()
+                        }
+                        invalid_final_assignments = []
+                        invalid_by_agent = {}
+                        for idx in processed_df.index:
+                            assigned_name = str(processed_df.at[idx, "Agent Name"]).strip()
+                            if not assigned_name:
+                                continue
+                            ag = agent_by_name_norm.get(assigned_name.lower())
+                            if not ag:
+                                continue
+                            row_insurance = processed_df.at[idx, insurance_carrier_col]
+                            if not can_agent_work_with_insurance(ag, row_insurance):
+                                invalid_final_assignments.append((idx, ag))
+
+                        for idx, ag in invalid_final_assignments:
+                            if idx in ag.get("row_indices", []):
+                                ag["row_indices"] = [
+                                    x for x in ag.get("row_indices", []) if x != idx
+                                ]
+                            ag["allocated"] = len(ag.get("row_indices", []))
+                            invalid_by_agent[ag.get("name", "")] = (
+                                invalid_by_agent.get(ag.get("name", ""), 0) + 1
+                            )
+                            processed_df.at[idx, "Agent Name"] = ""
+                            if "Supervisor" in processed_df.columns:
+                                processed_df.at[idx, "Supervisor"] = ""
+                            if "Team Leader" in processed_df.columns:
+                                processed_df.at[idx, "Team Leader"] = ""
+
+                        if invalid_final_assignments:
+                            print(
+                                f"🛡️ [Final Validation] Removed {len(invalid_final_assignments)} invalid insurance assignment(s): {invalid_by_agent}"
+                            )
+
+                    # Final OON refill pass:
+                    # After hard validation cleanup, refill OON agents from remaining unassigned OON rows
+                    # to maximize OON capacity utilization while preserving strict insurance validation.
+                    if (
+                        "Agent Name" in processed_df.columns
+                        and "oon_agents_pool" in locals()
+                        and "oon20_row_mask" in locals()
+                        and oon_agents_pool
+                    ):
+                        oon_refill_assigned = 0
+                        while True:
+                            oon_unassigned = processed_df.index[
+                                oon20_row_mask
+                                & processed_df["Agent Name"].fillna("").astype(str).str.strip().eq("")
+                            ].tolist()
+                            if not oon_unassigned:
+                                break
+
+                            # First Priority OON rows first, then Second/Third.
+                            if "_oon_priority_rank" in locals():
+                                oon_unassigned = sorted(
+                                    oon_unassigned,
+                                    key=lambda i: _oon_priority_rank(i),
+                                )
+
+                            progress = False
+                            for idx in oon_unassigned:
+                                candidates = [
+                                    ag
+                                    for ag in oon_agents_pool
+                                    if (ag.get("capacity", 0) - ag.get("allocated", 0)) > 0
+                                ]
+                                if not candidates:
+                                    break
+                                candidates.sort(
+                                    key=lambda a: (
+                                        a.get("allocated", 0),
+                                        str(a.get("name", "")).lower(),
+                                    )
+                                )
+                                for ag in candidates:
+                                    ac = safe_extend_row_indices(
+                                        ag,
+                                        [idx],
+                                        processed_df,
+                                        remark_col,
+                                        ag["name"],
+                                        appointment_date_col=None,  # allow OON fill independent of date cap
+                                        insurance_carrier_col=insurance_carrier_col,
+                                    )
+                                    if ac > 0:
+                                        oon_refill_assigned += ac
+                                        progress = True
+                                        break
+                            if not progress:
+                                break
+
+                        if oon_refill_assigned > 0:
+                            print(
+                                f"✅ [OON Refill] Assigned {oon_refill_assigned} additional OON row(s) after validation cleanup."
+                            )
+
+                        # Final OON first-priority enforcement:
+                        # Ensure First Priority OON rows are assigned ahead of lower-priority OON rows.
+                        # If capacity is full, preempt Second/Third OON rows (same agent swap) while
+                        # still enforcing insurance validation through safe_extend_row_indices.
+                        oon_first_priority_swaps = 0
+                        while True:
+                            first_unassigned_oon = processed_df.index[
+                                oon20_row_mask
+                                & processed_df["Agent Name"].fillna("").astype(str).str.strip().eq("")
+                            ].tolist()
+                            if "_oon_priority_rank" in locals():
+                                first_unassigned_oon = [
+                                    i for i in first_unassigned_oon if _oon_priority_rank(i) == 0
+                                ]
+                            if not first_unassigned_oon:
+                                break
+
+                            progress = False
+                            for first_idx in first_unassigned_oon:
+                                # 1) Try direct assignment to any OON agent with capacity.
+                                capacity_candidates = [
+                                    ag
+                                    for ag in oon_agents_pool
+                                    if (ag.get("capacity", 0) - ag.get("allocated", 0)) > 0
+                                ]
+                                capacity_candidates.sort(
+                                    key=lambda a: (
+                                        a.get("allocated", 0),
+                                        str(a.get("name", "")).lower(),
+                                    )
+                                )
+                                assigned = False
+                                for ag in capacity_candidates:
+                                    ac = safe_extend_row_indices(
+                                        ag,
+                                        [first_idx],
+                                        processed_df,
+                                        remark_col,
+                                        ag["name"],
+                                        appointment_date_col=None,
+                                        insurance_carrier_col=insurance_carrier_col,
+                                    )
+                                    if ac > 0:
+                                        assigned = True
+                                        progress = True
+                                        break
+                                if assigned:
+                                    continue
+
+                                # 2) Capacity full or direct match failed:
+                                # preempt a lower-priority OON row on an OON agent and try swap.
+                                donor_candidates = []
+                                for ag in oon_agents_pool:
+                                    for ridx in ag.get("row_indices", []):
+                                        if ridx not in processed_df.index:
+                                            continue
+                                        if not oon20_row_mask.get(ridx, False):
+                                            continue
+                                        if "_oon_priority_rank" in locals():
+                                            pr = _oon_priority_rank(ridx)
+                                            if pr <= 0:
+                                                continue
+                                        else:
+                                            continue
+                                        donor_candidates.append((pr, ag, ridx))
+
+                                # Prefer replacing Third first, then Second.
+                                donor_candidates.sort(
+                                    key=lambda x: (
+                                        -x[0],
+                                        str(x[1].get("name", "")).lower(),
+                                    )
+                                )
+
+                                for _, donor_ag, donor_idx in donor_candidates:
+                                    # Remove donor row from this agent first.
+                                    if donor_idx in donor_ag.get("row_indices", []):
+                                        donor_ag["row_indices"] = [
+                                            x
+                                            for x in donor_ag.get("row_indices", [])
+                                            if x != donor_idx
+                                        ]
+                                    donor_ag["allocated"] = len(donor_ag.get("row_indices", []))
+                                    processed_df.at[donor_idx, "Agent Name"] = ""
+                                    if "Supervisor" in processed_df.columns:
+                                        processed_df.at[donor_idx, "Supervisor"] = ""
+                                    if "Team Leader" in processed_df.columns:
+                                        processed_df.at[donor_idx, "Team Leader"] = ""
+
+                                    # Try assigning First Priority row to same donor agent.
+                                    ac = safe_extend_row_indices(
+                                        donor_ag,
+                                        [first_idx],
+                                        processed_df,
+                                        remark_col,
+                                        donor_ag["name"],
+                                        appointment_date_col=None,
+                                        insurance_carrier_col=insurance_carrier_col,
+                                    )
+                                    if ac > 0:
+                                        oon_first_priority_swaps += 1
+                                        progress = True
+                                        assigned = True
+                                        break
+
+                                    # Roll back donor row if swap failed.
+                                    donor_ag["row_indices"].append(donor_idx)
+                                    donor_ag["allocated"] = len(donor_ag.get("row_indices", []))
+                                    processed_df.at[donor_idx, "Agent Name"] = donor_ag["name"]
+                                    if "Supervisor" in processed_df.columns:
+                                        processed_df.at[donor_idx, "Supervisor"] = donor_ag.get(
+                                            "supervisor", ""
+                                        )
+                                    if "Team Leader" in processed_df.columns:
+                                        processed_df.at[donor_idx, "Team Leader"] = donor_ag.get(
+                                            "team_leader", ""
+                                        )
+
+                                if assigned:
+                                    continue
+
+                            if not progress:
+                                break
+
+                        if oon_first_priority_swaps > 0:
+                            print(
+                                f"✅ [OON Priority] Promoted {oon_first_priority_swaps} First Priority OON row(s) via lower-priority swaps."
+                            )
+
+                        # Final OON capacity-closure pass:
+                        # Goal: fill each OON agent to capacity from currently unallocated OON rows.
+                        # Keeps strict insurance validation; only OON rows are considered.
+                        oon_closure_assigned = 0
+                        if "Agent Name" in processed_df.columns:
+                            oon_unassigned_pool = processed_df.index[
+                                oon20_row_mask
+                                & processed_df["Agent Name"].fillna("").astype(str).str.strip().eq("")
+                            ].tolist()
+
+                            if "_oon_priority_rank" in locals():
+                                oon_unassigned_pool = sorted(
+                                    oon_unassigned_pool,
+                                    key=lambda i: _oon_priority_rank(i),
+                                )
+
+                            # Fill larger shortfalls first.
+                            oon_agents_by_shortfall = sorted(
+                                oon_agents_pool,
+                                key=lambda a: (
+                                    -max(
+                                        0,
+                                        int(a.get("capacity", 0) or 0)
+                                        - int(a.get("allocated", 0) or 0),
+                                    ),
+                                    str(a.get("name", "")).lower(),
+                                ),
+                            )
+
+                            for ag in oon_agents_by_shortfall:
+                                shortfall = max(
+                                    0,
+                                    int(ag.get("capacity", 0) or 0)
+                                    - int(ag.get("allocated", 0) or 0),
+                                )
+                                if shortfall <= 0 or not oon_unassigned_pool:
+                                    continue
+
+                                remaining_pool = []
+                                for idx in oon_unassigned_pool:
+                                    if shortfall <= 0:
+                                        remaining_pool.append(idx)
+                                        continue
+
+                                    # Safety: skip rows excluded from allocation.
+                                    if should_skip_row_for_allocation(
+                                        idx, processed_df, remark_col
+                                    ):
+                                        remaining_pool.append(idx)
+                                        continue
+
+                                    # Hard insurance check for this OON agent.
+                                    if (
+                                        insurance_carrier_col
+                                        and insurance_carrier_col in processed_df.columns
+                                    ):
+                                        row_insurance = processed_df.at[
+                                            idx, insurance_carrier_col
+                                        ]
+                                        if not can_agent_work_with_insurance(
+                                            ag, row_insurance
+                                        ):
+                                            remaining_pool.append(idx)
+                                            continue
+
+                                    # Try normal safe assignment first.
+                                    ac = safe_extend_row_indices(
+                                        ag,
+                                        [idx],
+                                        processed_df,
+                                        remark_col,
+                                        ag["name"],
+                                        appointment_date_col=None,
+                                        insurance_carrier_col=insurance_carrier_col,
+                                    )
+                                    if ac > 0:
+                                        shortfall -= ac
+                                        oon_closure_assigned += ac
+                                        continue
+
+                                    # Final fallback for OON closure:
+                                    # if helper-level row lock blocks, still allow assignment
+                                    # when OON + insurance + capacity are valid.
+                                    if (
+                                        (ag.get("capacity", 0) - ag.get("allocated", 0))
+                                        > 0
+                                        and str(processed_df.at[idx, "Agent Name"]).strip()
+                                        == ""
+                                    ):
+                                        ag["row_indices"].append(idx)
+                                        ag["allocated"] = len(ag.get("row_indices", []))
+                                        processed_df.at[idx, "Agent Name"] = ag["name"]
+                                        if "Supervisor" in processed_df.columns:
+                                            processed_df.at[idx, "Supervisor"] = ag.get(
+                                                "supervisor", ""
+                                            )
+                                        if "Team Leader" in processed_df.columns:
+                                            processed_df.at[idx, "Team Leader"] = ag.get(
+                                                "team_leader", ""
+                                            )
+                                        shortfall -= 1
+                                        oon_closure_assigned += 1
+                                    else:
+                                        remaining_pool.append(idx)
+
+                                oon_unassigned_pool = remaining_pool
+
+                        if oon_closure_assigned > 0:
+                            print(
+                                f"✅ [OON Closure] Assigned {oon_closure_assigned} OON row(s) to close OON agent capacity."
+                            )
+
                     # Also filter out "Not to work" rows from the count
                     all_allocated_indices = set()
                     for agent in agent_allocations:

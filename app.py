@@ -19401,14 +19401,11 @@ def process_allocation_files_with_dates(
                                                                     "assigned_insurance"
                                                                 )
                                                                 is None
+                                                                and actual_allocated > 0
                                                             ):
                                                                 agent[
                                                                     "assigned_insurance"
                                                                 ] = carrier
-                                                            for idx in slice_rows:
-                                                                processed_df.at[
-                                                                    idx, "Agent Name"
-                                                                ] = agent["name"]
                                                             row_pos += take
 
                                                     # Remove allocated rows from the list
@@ -19622,6 +19619,7 @@ def process_allocation_files_with_dates(
                                                     if (
                                                         agent.get("assigned_insurance")
                                                         is None
+                                                        and actual_allocated > 0
                                                     ):
                                                         agent["assigned_insurance"] = (
                                                             carrier
@@ -20559,6 +20557,78 @@ def process_allocation_files_with_dates(
                     # Step 5.9: Deterministic top-up pass
                     # Goal: For each agent, keep allocating eligible unassigned rows until target
                     # capacity is reached or genuinely no eligible rows remain.
+                    # Reset stale insurance lock for Single agents with zero allocated rows.
+                    # This prevents lock poisoning (e.g., lock set during failed attempts).
+                    for _ag in agent_allocations:
+                        if (
+                            (_ag.get("has_single_preference", False) or _ag.get("has_sec_single_preference", False))
+                            and int(_ag.get("allocated", 0) or 0) <= 0
+                        ):
+                            _ag["assigned_insurance"] = None
+
+                    # Minimal lock dead-end recovery for Single agents:
+                    # If a Single agent still has shortfall, and no unassigned row remains for their
+                    # current assigned_insurance lock (with current priority/remark rules), release the
+                    # lock so they can continue allocation on other allowed insurance values.
+                    if insurance_carrier_col and insurance_carrier_col in processed_df.columns:
+                        for _ag in agent_allocations:
+                            if not (
+                                _ag.get("has_single_preference", False)
+                                or _ag.get("has_sec_single_preference", False)
+                            ):
+                                continue
+                            if int(_ag.get("capacity", 0) or 0) - int(_ag.get("allocated", 0) or 0) <= 0:
+                                continue
+                            _lock_val = str(_ag.get("assigned_insurance") or "").strip()
+                            if not _lock_val:
+                                continue
+
+                            has_remaining_for_lock = False
+                            for _idx in processed_df.index:
+                                # skip assigned rows
+                                _already_assigned = False
+                                for __ag in agent_allocations:
+                                    if _idx in __ag.get("row_indices", []):
+                                        _already_assigned = True
+                                        break
+                                if _already_assigned:
+                                    continue
+                                # skip globally excluded rows
+                                if should_skip_row_for_allocation(_idx, processed_df, remark_col):
+                                    continue
+                                # priority eligibility
+                                if (
+                                    priority_status_col_name
+                                    and priority_status_col_name in processed_df.columns
+                                ):
+                                    _rp = processed_df.at[_idx, priority_status_col_name]
+                                    if pd.notna(_rp) and str(_rp).strip():
+                                        if not can_agent_work_with_priority(_ag, _rp):
+                                            continue
+                                # must match current single lock
+                                _ri = processed_df.at[_idx, insurance_carrier_col]
+                                if not check_single_agent_assigned_insurance_match(
+                                    _ag, _ri, insurance_carrier_col
+                                ):
+                                    continue
+                                # and still be valid against row-level constraints
+                                if not can_allocate_row_to_agent(
+                                    _ag,
+                                    _idx,
+                                    processed_df,
+                                    secondary_insurance_col,
+                                    insurance_carrier_col,
+                                ):
+                                    continue
+                                has_remaining_for_lock = True
+                                break
+
+                            if not has_remaining_for_lock:
+                                _ag["assigned_insurance"] = None
+                                print(
+                                    f"🔓 [Single Lock] Released '{_lock_val}' for {_ag.get('name','Unknown')} due to shortfall and no remaining eligible rows for current lock."
+                                )
+
                     def _row_is_currently_assigned(row_idx):
                         for _ag in agent_allocations:
                             if row_idx in _ag.get("row_indices", []):
@@ -20817,6 +20887,8 @@ def process_allocation_files_with_dates(
                     # Reconciliation diagnostics for below-target agents.
                     reconciliation_rows = []
                     alisha_debug = None
+                    ayan_debug = None
+                    mubin_debug = None
                     for agent in sorted(
                         agent_allocations, key=lambda a: str(a.get("name", "")).lower()
                     ):
@@ -20910,6 +20982,152 @@ def process_allocation_files_with_dates(
                                 "is_oon_agent": bool(
                                     agent.get("has_oon20_location_access", False)
                                 ),
+                            }
+                        if str(agent.get("name", "")).strip().lower() == "ayan shaikh":
+                            matching_insurance_priority_unassigned = 0
+                            matching_insurance_priority_block_reasons = {}
+                            for _idx in processed_df.index:
+                                if _row_is_currently_assigned(_idx):
+                                    continue
+                                # Focus on rows that match Ayan's explicit complaint:
+                                # insurance-compatible + Third Priority.
+                                _rpv = (
+                                    str(processed_df.at[_idx, priority_status_col_name]).strip()
+                                    if priority_status_col_name
+                                    and priority_status_col_name in processed_df.columns
+                                    and pd.notna(processed_df.at[_idx, priority_status_col_name])
+                                    else ""
+                                )
+                                if _rpv.upper() != "THIRD PRIORITY":
+                                    continue
+                                if (
+                                    insurance_carrier_col
+                                    and insurance_carrier_col in processed_df.columns
+                                ):
+                                    _ri = processed_df.at[_idx, insurance_carrier_col]
+                                    if not can_agent_work_with_insurance(agent, _ri):
+                                        continue
+                                matching_insurance_priority_unassigned += 1
+                                _ok, _reason = _agent_can_take_row(
+                                    agent, _idx, strict_insurance=True
+                                )
+                                if not _ok:
+                                    matching_insurance_priority_block_reasons[_reason] = (
+                                        matching_insurance_priority_block_reasons.get(_reason, 0)
+                                        + 1
+                                    )
+
+                            ayan_debug = {
+                                "target": target,
+                                "allocated": allocated_now,
+                                "shortfall": shortfall,
+                                "eligible_available": eligible_available,
+                                "eligible_available_relaxed": eligible_available_relaxed,
+                                "strict_reason_counts": strict_reason_counts,
+                                "insurance_companies": [
+                                    str(x).strip()
+                                    for x in agent.get("insurance_companies", [])[:25]
+                                    if x is not None and not pd.isna(x)
+                                ],
+                                "do_not_allocate": [
+                                    str(x).strip()
+                                    for x in agent.get("insurance_do_not_allocate", [])[:25]
+                                    if x is not None and not pd.isna(x)
+                                ],
+                                "needs_training": [
+                                    str(x).strip()
+                                    for x in agent.get("insurance_needs_training", [])[:25]
+                                    if x is not None and not pd.isna(x)
+                                ],
+                                "allocation_preference": str(
+                                    agent.get("allocation_preference_raw") or ""
+                                ).strip(),
+                                "assigned_insurance": str(
+                                    agent.get("assigned_insurance") or ""
+                                ).strip(),
+                                "priority_status": str(
+                                    agent.get("priority_status") or ""
+                                ).strip(),
+                                "is_oon_agent": bool(
+                                    agent.get("has_oon20_location_access", False)
+                                ),
+                                "insurance_filter_active": (
+                                    "No" if agent.get("is_senior", False) else "Yes"
+                                ),
+                                "matching_insurance_priority_unassigned": matching_insurance_priority_unassigned,
+                                "matching_insurance_priority_block_reasons": matching_insurance_priority_block_reasons,
+                            }
+                        if str(agent.get("name", "")).strip().lower() == "mubin mujawar":
+                            mubin_matching_insurance_priority_unassigned = 0
+                            mubin_matching_insurance_priority_block_reasons = {}
+                            for _idx in processed_df.index:
+                                if _row_is_currently_assigned(_idx):
+                                    continue
+                                _rpv = (
+                                    str(processed_df.at[_idx, priority_status_col_name]).strip()
+                                    if priority_status_col_name
+                                    and priority_status_col_name in processed_df.columns
+                                    and pd.notna(processed_df.at[_idx, priority_status_col_name])
+                                    else ""
+                                )
+                                if _rpv.upper() != "THIRD PRIORITY":
+                                    continue
+                                if (
+                                    insurance_carrier_col
+                                    and insurance_carrier_col in processed_df.columns
+                                ):
+                                    _ri = processed_df.at[_idx, insurance_carrier_col]
+                                    if not can_agent_work_with_insurance(agent, _ri):
+                                        continue
+                                mubin_matching_insurance_priority_unassigned += 1
+                                _ok, _reason = _agent_can_take_row(
+                                    agent, _idx, strict_insurance=True
+                                )
+                                if not _ok:
+                                    mubin_matching_insurance_priority_block_reasons[_reason] = (
+                                        mubin_matching_insurance_priority_block_reasons.get(_reason, 0)
+                                        + 1
+                                    )
+
+                            mubin_debug = {
+                                "target": target,
+                                "allocated": allocated_now,
+                                "shortfall": shortfall,
+                                "eligible_available": eligible_available,
+                                "eligible_available_relaxed": eligible_available_relaxed,
+                                "strict_reason_counts": strict_reason_counts,
+                                "insurance_companies": [
+                                    str(x).strip()
+                                    for x in agent.get("insurance_companies", [])[:25]
+                                    if x is not None and not pd.isna(x)
+                                ],
+                                "do_not_allocate": [
+                                    str(x).strip()
+                                    for x in agent.get("insurance_do_not_allocate", [])[:25]
+                                    if x is not None and not pd.isna(x)
+                                ],
+                                "needs_training": [
+                                    str(x).strip()
+                                    for x in agent.get("insurance_needs_training", [])[:25]
+                                    if x is not None and not pd.isna(x)
+                                ],
+                                "allocation_preference": str(
+                                    agent.get("allocation_preference_raw") or ""
+                                ).strip(),
+                                "assigned_insurance": str(
+                                    agent.get("assigned_insurance") or ""
+                                ).strip(),
+                                "priority_status": str(
+                                    agent.get("priority_status") or ""
+                                ).strip(),
+                                "is_oon_agent": bool(
+                                    agent.get("has_oon20_location_access", False)
+                                ),
+                                "insurance_filter_active": (
+                                    "No" if agent.get("is_senior", False) else "Yes"
+                                ),
+                                "matching_insurance_priority_unassigned": mubin_matching_insurance_priority_unassigned,
+                                "matching_insurance_priority_block_reasons": mubin_matching_insurance_priority_block_reasons,
                             }
 
                     # Sort agents by name for display
@@ -22316,6 +22534,112 @@ def process_allocation_files_with_dates(
     Insurance List: {insurance_lines}<br>
     Do Not Allocate: {dna_lines}<br>
     Needs Training: {training_lines}
+</div>"""
+
+                    if ayan_debug:
+                        ayan_sorted_reasons = sorted(
+                            ayan_debug["strict_reason_counts"].items(),
+                            key=lambda kv: kv[1],
+                            reverse=True,
+                        )
+                        ayan_reason_lines = (
+                            ", ".join([f"{k}: {v}" for k, v in ayan_sorted_reasons[:8]])
+                            if ayan_sorted_reasons
+                            else "None"
+                        )
+                        ayan_block_reasons_sorted = sorted(
+                            ayan_debug["matching_insurance_priority_block_reasons"].items(),
+                            key=lambda kv: kv[1],
+                            reverse=True,
+                        )
+                        ayan_block_reason_lines = (
+                            ", ".join([f"{k}: {v}" for k, v in ayan_block_reasons_sorted[:8]])
+                            if ayan_block_reasons_sorted
+                            else "None"
+                        )
+                        ayan_insurance_lines = (
+                            ", ".join(ayan_debug["insurance_companies"])
+                            if ayan_debug["insurance_companies"]
+                            else "None"
+                        )
+                        ayan_dna_lines = (
+                            ", ".join(ayan_debug["do_not_allocate"])
+                            if ayan_debug["do_not_allocate"]
+                            else "None"
+                        )
+                        ayan_training_lines = (
+                            ", ".join(ayan_debug["needs_training"])
+                            if ayan_debug["needs_training"]
+                            else "None"
+                        )
+                        agent_summary += f"""
+<div style="margin-top:12px;padding:10px;background:#fff;border:1px solid #cfe2ff;border-radius:6px;font-size:12px;">
+    <strong>🧪 Debug - Ayan Shaikh</strong><br>
+    Target: {ayan_debug['target']} | Allocated: {ayan_debug['allocated']} | Shortfall: {ayan_debug['shortfall']}<br>
+    Eligible (Strict): {ayan_debug['eligible_available']} | Eligible (Relaxed Insurance): {ayan_debug['eligible_available_relaxed']}<br>
+    OON Agent: {"Yes" if ayan_debug['is_oon_agent'] else "No"} | Insurance Filter Active: {ayan_debug['insurance_filter_active']}<br>
+    Allocation Preference: {ayan_debug['allocation_preference'] or '-'} |
+    Assigned Insurance Lock: {ayan_debug['assigned_insurance'] or '-'} |
+    Priority Capability: {ayan_debug['priority_status'] or '-'}<br>
+    Unassigned rows matching (Insurance + Third Priority): {ayan_debug['matching_insurance_priority_unassigned']}<br>
+    Block reasons on those matching rows: {ayan_block_reason_lines}<br>
+    Strict skip reasons (all unassigned rows): {ayan_reason_lines}<br>
+    Insurance List: {ayan_insurance_lines}<br>
+    Do Not Allocate: {ayan_dna_lines}<br>
+    Needs Training: {ayan_training_lines}
+</div>"""
+
+                    if mubin_debug:
+                        mubin_sorted_reasons = sorted(
+                            mubin_debug["strict_reason_counts"].items(),
+                            key=lambda kv: kv[1],
+                            reverse=True,
+                        )
+                        mubin_reason_lines = (
+                            ", ".join([f"{k}: {v}" for k, v in mubin_sorted_reasons[:8]])
+                            if mubin_sorted_reasons
+                            else "None"
+                        )
+                        mubin_block_reasons_sorted = sorted(
+                            mubin_debug["matching_insurance_priority_block_reasons"].items(),
+                            key=lambda kv: kv[1],
+                            reverse=True,
+                        )
+                        mubin_block_reason_lines = (
+                            ", ".join([f"{k}: {v}" for k, v in mubin_block_reasons_sorted[:8]])
+                            if mubin_block_reasons_sorted
+                            else "None"
+                        )
+                        mubin_insurance_lines = (
+                            ", ".join(mubin_debug["insurance_companies"])
+                            if mubin_debug["insurance_companies"]
+                            else "None"
+                        )
+                        mubin_dna_lines = (
+                            ", ".join(mubin_debug["do_not_allocate"])
+                            if mubin_debug["do_not_allocate"]
+                            else "None"
+                        )
+                        mubin_training_lines = (
+                            ", ".join(mubin_debug["needs_training"])
+                            if mubin_debug["needs_training"]
+                            else "None"
+                        )
+                        agent_summary += f"""
+<div style="margin-top:12px;padding:10px;background:#fff;border:1px solid #cfe2ff;border-radius:6px;font-size:12px;">
+    <strong>🧪 Debug - Mubin Mujawar</strong><br>
+    Target: {mubin_debug['target']} | Allocated: {mubin_debug['allocated']} | Shortfall: {mubin_debug['shortfall']}<br>
+    Eligible (Strict): {mubin_debug['eligible_available']} | Eligible (Relaxed Insurance): {mubin_debug['eligible_available_relaxed']}<br>
+    OON Agent: {"Yes" if mubin_debug['is_oon_agent'] else "No"} | Insurance Filter Active: {mubin_debug['insurance_filter_active']}<br>
+    Allocation Preference: {mubin_debug['allocation_preference'] or '-'} |
+    Assigned Insurance Lock: {mubin_debug['assigned_insurance'] or '-'} |
+    Priority Capability: {mubin_debug['priority_status'] or '-'}<br>
+    Unassigned rows matching (Insurance + Third Priority): {mubin_debug['matching_insurance_priority_unassigned']}<br>
+    Block reasons on those matching rows: {mubin_block_reason_lines}<br>
+    Strict skip reasons (all unassigned rows): {mubin_reason_lines}<br>
+    Insurance List: {mubin_insurance_lines}<br>
+    Do Not Allocate: {mubin_dna_lines}<br>
+    Needs Training: {mubin_training_lines}
 </div>"""
 
                     if insurance_carrier_col and unmatched_insurance_companies:

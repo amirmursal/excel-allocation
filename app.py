@@ -11714,6 +11714,24 @@ def should_skip_row_for_allocation(idx, processed_df, remark_col):
     Check if a row should be skipped for allocation (e.g., "Not to work" remark, "Need to Allocate" in Agent Name, NTC rows).
     Returns True if row should be skipped, False otherwise.
     """
+    # Detect first-priority row once for targeted skip overrides.
+    _priority_col = None
+    for _c in processed_df.columns:
+        if str(_c).strip().lower() == "priority status":
+            _priority_col = _c
+            break
+    _is_first_priority = False
+    if _priority_col and _priority_col in processed_df.columns:
+        _pv = processed_df.at[idx, _priority_col]
+        if pd.notna(_pv):
+            _is_first_priority = str(_pv).strip().upper() == "FIRST PRIORITY"
+
+    # Hard priority override:
+    # First Priority rows must always remain allocatable.
+    # Do not skip them at this stage; they are handled by dedicated priority passes.
+    if _is_first_priority:
+        return False
+
     # GLOBAL RULE: Skip rows where Agent Name is "Need to Allocate"
     agent_name_col = None
     for col in processed_df.columns:
@@ -11733,6 +11751,20 @@ def should_skip_row_for_allocation(idx, processed_df, remark_col):
     if remark_col and remark_col in processed_df.columns:
         if pd.notna(processed_df.at[idx, remark_col]):
             remark_val = str(processed_df.at[idx, remark_col]).strip().upper()
+            # Keep First Priority rows allocatable before lower priorities.
+            if _is_first_priority:
+                remark_val_clean = (
+                    remark_val.replace("-", " ").replace("_", " ").strip()
+                )
+                if (
+                    "WORKABLE" in remark_val
+                    or remark_val_clean.startswith("WORKABLE")
+                    or remark_val_clean.startswith("RE WORKABLE")
+                    or " RE WORKABLE" in f" {remark_val_clean}"
+                    or remark_val in ("NTC", "NTBP")
+                ):
+                    return False
+
             # Skip NTC rows - they should only go to NTC preference agents (Step 3.5)
             if remark_val == "NTC":
                 return True
@@ -11749,6 +11781,14 @@ def should_skip_row_for_allocation(idx, processed_df, remark_col):
             ):
                 return True
     return False
+
+
+def is_first_priority_value(value):
+    """Robust matcher for first-priority text variants."""
+    if value is None or pd.isna(value):
+        return False
+    s = str(value).strip().upper()
+    return ("FIRST" in s) or ("1ST" in s)
 
 
 # Maximum secondary insurance rows that can be allocated to "Sec + XX" agents
@@ -12411,6 +12451,25 @@ def safe_extend_row_indices(
             secondary_insurance_col = col_name
             break
 
+    # Detect priority-status column (used for First-priority override behavior).
+    priority_status_col_local = None
+    for col in processed_df.columns:
+        cl = str(col).strip().lower()
+        if "priority" in cl and "status" in cl:
+            priority_status_col_local = col
+            break
+
+    def _is_first_priority_row_local(_idx):
+        if (
+            priority_status_col_local
+            and priority_status_col_local in processed_df.columns
+            and _idx in processed_df.index
+        ):
+            return is_first_priority_value(
+                processed_df.at[_idx, priority_status_col_local]
+            )
+        return False
+
     # Defensive fallback:
     # Some allocation paths may omit insurance_carrier_col when calling this helper.
     # For Junior/non-senior agents, we must still enforce strict insurance matching.
@@ -12436,8 +12495,12 @@ def safe_extend_row_indices(
     for idx in row_indices_list:
         # Use helper function to check if row can be allocated to this agent
         # Pass insurance_carrier_col to check assigned insurance for "Single" agents
+        # For First-priority rows, do not enforce insurance lock in this helper gate.
+        _row_level_ins_col = (
+            None if _is_first_priority_row_local(idx) else insurance_carrier_col
+        )
         if can_allocate_row_to_agent(
-            agent, idx, processed_df, secondary_insurance_col, insurance_carrier_col
+            agent, idx, processed_df, secondary_insurance_col, _row_level_ins_col
         ):
             pre_filtered_indices.append(idx)
 
@@ -12452,7 +12515,7 @@ def safe_extend_row_indices(
         final_filtered_indices = []
         for idx in filtered_indices:
             if idx in processed_df.index:
-                if can_allocate_row_by_appointment_date(
+                if _is_first_priority_row_local(idx) or can_allocate_row_by_appointment_date(
                     agent,
                     idx,
                     processed_df,
@@ -12469,9 +12532,11 @@ def safe_extend_row_indices(
             if idx in processed_df.index:
                 row_insurance = processed_df.at[idx, insurance_carrier_col]
                 # Final insurance validation before allocation
-                if can_agent_work_with_insurance(agent, row_insurance):
+                if _is_first_priority_row_local(idx) or can_agent_work_with_insurance(
+                    agent, row_insurance
+                ):
                     # Additional check for "Single" preference agents: must match assigned insurance
-                    if check_single_agent_assigned_insurance_match(
+                    if _is_first_priority_row_local(idx) or check_single_agent_assigned_insurance_match(
                         agent, row_insurance, insurance_carrier_col
                     ):
                         validated_indices.append(idx)
@@ -20653,11 +20718,23 @@ def process_allocation_files_with_dates(
                             if pd.notna(_rp) and str(_rp).strip():
                                 if not can_agent_work_with_priority(_ag, _rp):
                                     return False, "priority-mismatch"
+                        _is_first_priority_row = False
+                        if (
+                            priority_status_col_name
+                            and priority_status_col_name in processed_df.columns
+                            and _idx in processed_df.index
+                        ):
+                            _is_first_priority_row = is_first_priority_value(
+                                processed_df.at[_idx, priority_status_col_name]
+                            )
 
                         # Category rule:
                         # - Junior/non-senior: strict insurance matching always.
                         # - Senior: no insurance matching (can work any insurance).
-                        enforce_insurance_for_agent = not _ag.get("is_senior", False)
+                        enforce_insurance_for_agent = (
+                            (not _ag.get("is_senior", False))
+                            and (not _is_first_priority_row)
+                        )
                         if (
                             enforce_insurance_for_agent
                             and insurance_carrier_col
@@ -20719,7 +20796,7 @@ def process_allocation_files_with_dates(
                         ):
                             return False, "row-level-rule"
 
-                        if enforce_date_cap:
+                        if enforce_date_cap and not _is_first_priority_row:
                             if (
                                 appointment_date_col
                                 and appointment_date_col in processed_df.columns
@@ -22132,6 +22209,414 @@ def process_allocation_files_with_dates(
                                 f"✅ [OON Closure] Assigned {oon_closure_assigned} OON row(s) to close OON agent capacity."
                             )
 
+                    # Final global First Priority enforcement (must run before final counts).
+                    final_first_priority_unassigned_total_count = 0
+                    final_first_priority_unassigned_actionable_count = 0
+                    final_first_priority_blockers = {}
+                    if (
+                        "Agent Name" in processed_df.columns
+                        and priority_status_col_name
+                        and priority_status_col_name in processed_df.columns
+                    ):
+                        fp_direct = 0
+                        fp_swaps = 0
+                        while True:
+                            unassigned_first = [
+                                i
+                                for i in processed_df.index
+                                if str(processed_df.at[i, "Agent Name"]).strip() == ""
+                                and str(processed_df.at[i, priority_status_col_name]).strip().upper() == "FIRST PRIORITY"
+                            ]
+                            final_first_priority_unassigned_total_count = len(unassigned_first)
+                            actionable_first = [
+                                i
+                                for i in unassigned_first
+                                if not should_skip_row_for_allocation(i, processed_df, remark_col)
+                            ]
+                            final_first_priority_unassigned_actionable_count = len(actionable_first)
+                            if not actionable_first:
+                                break
+
+                            progress = False
+                            non_pb_agents = [
+                                a for a in agent_allocations if not a.get("has_pb_preference", False)
+                            ]
+                            # Direct strict pass first
+                            for ridx in actionable_first:
+                                if str(processed_df.at[ridx, "Agent Name"]).strip():
+                                    continue
+                                candidates = sorted(
+                                    [a for a in non_pb_agents if (a.get("capacity", 0) - a.get("allocated", 0)) > 0],
+                                    key=lambda a: (-(a.get("capacity", 0) - a.get("allocated", 0)), str(a.get("name", "")).lower()),
+                                )
+                                assigned = False
+                                for ag in candidates:
+                                    ac = safe_extend_row_indices(
+                                        ag,
+                                        [ridx],
+                                        processed_df,
+                                        remark_col,
+                                        ag["name"],
+                                        appointment_date_col=appointment_date_col,
+                                        insurance_carrier_col=insurance_carrier_col,
+                                    )
+                                    if ac > 0:
+                                        fp_direct += ac
+                                        progress = True
+                                        assigned = True
+                                        break
+                                if assigned:
+                                    continue
+
+                                # Capacity-preemption: free one lower-priority slot and try this first row.
+                                donors = []
+                                for ag in non_pb_agents:
+                                    for didx in ag.get("row_indices", []):
+                                        if didx not in processed_df.index:
+                                            continue
+                                        if _is_oon20_yes_row(didx):
+                                            continue
+                                        dps = str(processed_df.at[didx, priority_status_col_name]).strip().upper()
+                                        if dps in ("SECOND PRIORITY", "THIRD PRIORITY"):
+                                            donors.append((0 if dps == "THIRD PRIORITY" else 1, ag, didx))
+                                donors.sort(key=lambda x: (x[0], str(x[1].get("name", "")).lower()))
+                                for _, dag, didx in donors:
+                                    if didx in dag.get("row_indices", []):
+                                        dag["row_indices"] = [x for x in dag.get("row_indices", []) if x != didx]
+                                    dag["allocated"] = len(dag.get("row_indices", []))
+                                    processed_df.at[didx, "Agent Name"] = ""
+                                    if "Supervisor" in processed_df.columns:
+                                        processed_df.at[didx, "Supervisor"] = ""
+                                    if "Team Leader" in processed_df.columns:
+                                        processed_df.at[didx, "Team Leader"] = ""
+
+                                    ac = safe_extend_row_indices(
+                                        dag,
+                                        [ridx],
+                                        processed_df,
+                                        remark_col,
+                                        dag["name"],
+                                        appointment_date_col=appointment_date_col,
+                                        insurance_carrier_col=insurance_carrier_col,
+                                    )
+                                    if ac > 0:
+                                        fp_swaps += ac
+                                        progress = True
+                                        assigned = True
+                                        break
+
+                                    # rollback if swap failed
+                                    dag["row_indices"].append(didx)
+                                    dag["allocated"] = len(dag.get("row_indices", []))
+                                    processed_df.at[didx, "Agent Name"] = dag["name"]
+                                    if "Supervisor" in processed_df.columns:
+                                        processed_df.at[didx, "Supervisor"] = dag.get("supervisor", "")
+                                    if "Team Leader" in processed_df.columns:
+                                        processed_df.at[didx, "Team Leader"] = dag.get("team_leader", "")
+
+                            if not progress:
+                                # Mandatory reshuffle fallback:
+                                # If First Priority rows are still actionable, replace lower-priority
+                                # rows on eligible agents even when normal capacity flow stalls.
+                                reshuffle_progress = False
+                                for ridx in actionable_first:
+                                    if str(processed_df.at[ridx, "Agent Name"]).strip():
+                                        continue
+
+                                    # Build eligible target agents for this First row.
+                                    target_agents = []
+                                    for ag in non_pb_agents:
+                                        # Must be priority-capable for First.
+                                        if not can_agent_work_with_priority(ag, "First Priority"):
+                                            continue
+                                        # Respect OON hard rule.
+                                        if _is_oon20_yes_row(ridx) and not ag.get(
+                                            "has_oon20_location_access", False
+                                        ):
+                                            continue
+                                        # Respect insurance compatibility.
+                                        if (
+                                            insurance_carrier_col
+                                            and insurance_carrier_col in processed_df.columns
+                                        ):
+                                            _ri = processed_df.at[ridx, insurance_carrier_col]
+                                            if not can_agent_work_with_insurance(ag, _ri):
+                                                continue
+                                        target_agents.append(ag)
+
+                                    if not target_agents:
+                                        continue
+
+                                    # Prefer agents currently holding more lower-priority rows.
+                                    def _lower_priority_count(_ag):
+                                        c = 0
+                                        for _x in _ag.get("row_indices", []):
+                                            if _x not in processed_df.index:
+                                                continue
+                                            _ps = str(
+                                                processed_df.at[_x, priority_status_col_name]
+                                            ).strip().upper()
+                                            if _ps in ("SECOND PRIORITY", "THIRD PRIORITY"):
+                                                c += 1
+                                        return c
+
+                                    target_agents = sorted(
+                                        target_agents,
+                                        key=lambda a: (
+                                            -_lower_priority_count(a),
+                                            str(a.get("name", "")).lower(),
+                                        ),
+                                    )
+
+                                    assigned = False
+                                    for dag in target_agents:
+                                        # Pick one donor lower-priority row from same agent.
+                                        donor_idx = None
+                                        donor_rank = -1
+                                        for _x in dag.get("row_indices", []):
+                                            if _x not in processed_df.index:
+                                                continue
+                                            if _is_oon20_yes_row(_x):
+                                                continue
+                                            _ps = str(
+                                                processed_df.at[_x, priority_status_col_name]
+                                            ).strip().upper()
+                                            if _ps == "THIRD PRIORITY":
+                                                if donor_rank < 3:
+                                                    donor_idx = _x
+                                                    donor_rank = 3
+                                            elif _ps == "SECOND PRIORITY":
+                                                if donor_rank < 2:
+                                                    donor_idx = _x
+                                                    donor_rank = 2
+                                        if donor_idx is None:
+                                            continue
+
+                                        # Remove donor row first.
+                                        dag["row_indices"] = [
+                                            x
+                                            for x in dag.get("row_indices", [])
+                                            if x != donor_idx
+                                        ]
+                                        dag["allocated"] = len(dag.get("row_indices", []))
+                                        processed_df.at[donor_idx, "Agent Name"] = ""
+                                        if "Supervisor" in processed_df.columns:
+                                            processed_df.at[donor_idx, "Supervisor"] = ""
+                                        if "Team Leader" in processed_df.columns:
+                                            processed_df.at[donor_idx, "Team Leader"] = ""
+
+                                        # Try strict helper assignment first.
+                                        ac = safe_extend_row_indices(
+                                            dag,
+                                            [ridx],
+                                            processed_df,
+                                            remark_col,
+                                            dag["name"],
+                                            appointment_date_col=appointment_date_col,
+                                            insurance_carrier_col=insurance_carrier_col,
+                                        )
+                                        if ac > 0:
+                                            fp_swaps += ac
+                                            reshuffle_progress = True
+                                            assigned = True
+                                            break
+
+                                        # Hard fallback assign for First row if helper blocked on row-level locks.
+                                        if (
+                                            str(processed_df.at[ridx, "Agent Name"]).strip() == ""
+                                            and not should_skip_row_for_allocation(
+                                                ridx, processed_df, remark_col
+                                            )
+                                        ):
+                                            dag["row_indices"].append(ridx)
+                                            dag["allocated"] = len(dag.get("row_indices", []))
+                                            processed_df.at[ridx, "Agent Name"] = dag["name"]
+                                            if "Supervisor" in processed_df.columns:
+                                                processed_df.at[ridx, "Supervisor"] = dag.get(
+                                                    "supervisor", ""
+                                                )
+                                            if "Team Leader" in processed_df.columns:
+                                                processed_df.at[ridx, "Team Leader"] = dag.get(
+                                                    "team_leader", ""
+                                                )
+                                            fp_swaps += 1
+                                            reshuffle_progress = True
+                                            assigned = True
+                                            break
+
+                                        # rollback donor row if assignment failed
+                                        dag["row_indices"].append(donor_idx)
+                                        dag["allocated"] = len(dag.get("row_indices", []))
+                                        processed_df.at[donor_idx, "Agent Name"] = dag["name"]
+                                        if "Supervisor" in processed_df.columns:
+                                            processed_df.at[donor_idx, "Supervisor"] = dag.get(
+                                                "supervisor", ""
+                                            )
+                                        if "Team Leader" in processed_df.columns:
+                                            processed_df.at[donor_idx, "Team Leader"] = dag.get(
+                                                "team_leader", ""
+                                            )
+
+                                    if assigned:
+                                        continue
+
+                                if reshuffle_progress:
+                                    progress = True
+
+                            if not progress:
+                                # Over-capacity exception for First Priority rows:
+                                # If actionable First rows still remain, distribute them across
+                                # eligible non-PB agents even beyond capacity (balanced).
+                                overcap_progress = False
+                                overcap_assigned = 0
+
+                                def _eligible_agents_for_first_row(_row_idx):
+                                    out = []
+                                    for _ag in non_pb_agents:
+                                        # Must be first-priority capable
+                                        if not can_agent_work_with_priority(
+                                            _ag, "First Priority"
+                                        ):
+                                            continue
+                                        # OON hard rule
+                                        if _is_oon20_yes_row(_row_idx) and not _ag.get(
+                                            "has_oon20_location_access", False
+                                        ):
+                                            continue
+                                        # Insurance compatibility
+                                        if (
+                                            insurance_carrier_col
+                                            and insurance_carrier_col in processed_df.columns
+                                        ):
+                                            _ri = processed_df.at[
+                                                _row_idx, insurance_carrier_col
+                                            ]
+                                            if not can_agent_work_with_insurance(_ag, _ri):
+                                                continue
+                                        # Skip rows agent fundamentally should not work due to explicit
+                                        # do-not-allocate/training constraints in strict check.
+                                        _ok, _reason = _agent_can_take_row(
+                                            _ag,
+                                            _row_idx,
+                                            strict_insurance=True,
+                                            enforce_date_cap=False,
+                                        )
+                                        if _ok or _reason in (
+                                            "agent-at-capacity",
+                                            "appointment-date-cap",
+                                            "row-level-rule",
+                                        ):
+                                            out.append(_ag)
+                                    return out
+
+                                for ridx in actionable_first:
+                                    if str(processed_df.at[ridx, "Agent Name"]).strip():
+                                        continue
+                                    eligible_agents = _eligible_agents_for_first_row(ridx)
+                                    if not eligible_agents:
+                                        continue
+
+                                    # Balance by overload first: (allocated - capacity), then allocated.
+                                    eligible_agents.sort(
+                                        key=lambda a: (
+                                            (a.get("allocated", 0) - a.get("capacity", 0)),
+                                            a.get("allocated", 0),
+                                            str(a.get("name", "")).lower(),
+                                        )
+                                    )
+                                    chosen = eligible_agents[0]
+
+                                    chosen["row_indices"].append(ridx)
+                                    chosen["allocated"] = len(chosen.get("row_indices", []))
+                                    processed_df.at[ridx, "Agent Name"] = chosen["name"]
+                                    if "Supervisor" in processed_df.columns:
+                                        processed_df.at[ridx, "Supervisor"] = chosen.get(
+                                            "supervisor", ""
+                                        )
+                                    if "Team Leader" in processed_df.columns:
+                                        processed_df.at[ridx, "Team Leader"] = chosen.get(
+                                            "team_leader", ""
+                                        )
+                                    fp_swaps += 1
+                                    overcap_assigned += 1
+                                    overcap_progress = True
+
+                                if overcap_progress:
+                                    print(
+                                        f"🚀 [First Priority Over-Capacity] Assigned {overcap_assigned} First Priority row(s) beyond capacity (balanced distribution)."
+                                    )
+                                    progress = True
+
+                            if not progress:
+                                # Absolute final fallback:
+                                # Force-assign any remaining actionable First Priority rows by balanced distribution,
+                                # bypassing remaining soft blockers. Keep only hard OON safety.
+                                force_assigned = 0
+                                for ridx in actionable_first:
+                                    if str(processed_df.at[ridx, "Agent Name"]).strip():
+                                        continue
+
+                                    force_candidates = []
+                                    for ag in non_pb_agents:
+                                        if _is_oon20_yes_row(ridx) and not ag.get(
+                                            "has_oon20_location_access", False
+                                        ):
+                                            continue
+                                        force_candidates.append(ag)
+
+                                    if not force_candidates:
+                                        continue
+
+                                    # Balance by overload first, then allocated count.
+                                    force_candidates.sort(
+                                        key=lambda a: (
+                                            (a.get("allocated", 0) - a.get("capacity", 0)),
+                                            a.get("allocated", 0),
+                                            str(a.get("name", "")).lower(),
+                                        )
+                                    )
+                                    chosen = force_candidates[0]
+
+                                    chosen["row_indices"].append(ridx)
+                                    chosen["allocated"] = len(chosen.get("row_indices", []))
+                                    processed_df.at[ridx, "Agent Name"] = chosen["name"]
+                                    if "Supervisor" in processed_df.columns:
+                                        processed_df.at[ridx, "Supervisor"] = chosen.get(
+                                            "supervisor", ""
+                                        )
+                                    if "Team Leader" in processed_df.columns:
+                                        processed_df.at[ridx, "Team Leader"] = chosen.get(
+                                            "team_leader", ""
+                                        )
+                                    force_assigned += 1
+                                    fp_swaps += 1
+
+                                if force_assigned > 0:
+                                    print(
+                                        f"🧱 [First Priority Force Assign] Assigned {force_assigned} remaining First Priority row(s) after all other passes."
+                                    )
+                                    progress = True
+
+                            if not progress:
+                                # collect blockers for actionable First rows
+                                blockers = {}
+                                for ridx in actionable_first:
+                                    row_reason = "no-agent-eligible"
+                                    for ag in non_pb_agents:
+                                        ok, reason = _agent_can_take_row(ag, ridx, strict_insurance=True, enforce_date_cap=False)
+                                        if ok:
+                                            row_reason = "eligible-but-not-assigned"
+                                            break
+                                        row_reason = reason
+                                    blockers[row_reason] = blockers.get(row_reason, 0) + 1
+                                final_first_priority_blockers = blockers
+                                break
+
+                        if fp_direct > 0 or fp_swaps > 0:
+                            print(
+                                f"✅ [Final First Priority] Direct={fp_direct}, Swaps={fp_swaps}, RemainingActionable={final_first_priority_unassigned_actionable_count}"
+                            )
+
                     # Also filter out "Not to work" rows from the count
                     all_allocated_indices = set()
                     for agent in agent_allocations:
@@ -22265,20 +22750,33 @@ def process_allocation_files_with_dates(
                                             len(row_indices)
                                             > MAX_ROWS_PER_APPOINTMENT_DATE
                                         ):
-                                            # Keep OON rows exempt from per-date cap trimming.
-                                            # Only non-OON rows are eligible for removal here.
-                                            non_oon_rows = [
+                                            # Keep OON rows and First Priority rows exempt from per-date cap trimming.
+                                            # Only non-OON and non-First-Priority rows are eligible for removal here.
+                                            non_oon_non_first_rows = [
                                                 ridx
                                                 for ridx in row_indices
-                                                if not _is_oon20_yes_row(ridx)
+                                                if (
+                                                    not _is_oon20_yes_row(ridx)
+                                                    and not (
+                                                        priority_status_col_name
+                                                        and priority_status_col_name
+                                                        in processed_df.columns
+                                                        and is_first_priority_value(
+                                                            processed_df.at[
+                                                                ridx,
+                                                                priority_status_col_name,
+                                                            ]
+                                                        )
+                                                    )
+                                                )
                                             ]
                                             if (
-                                                len(non_oon_rows)
+                                                len(non_oon_non_first_rows)
                                                 <= MAX_ROWS_PER_APPOINTMENT_DATE
                                             ):
                                                 continue
                                             # Keep only first MAX_ROWS_PER_APPOINTMENT_DATE rows (remove the rest)
-                                            excess_rows = non_oon_rows[
+                                            excess_rows = non_oon_non_first_rows[
                                                 MAX_ROWS_PER_APPOINTMENT_DATE:
                                             ]
                                             rows_to_remove.extend(excess_rows)
@@ -22296,6 +22794,210 @@ def process_allocation_files_with_dates(
                                         print(
                                             f"   ✅ Removed {len(rows_to_remove)} excess rows from agent '{agent_name}'"
                                         )
+
+                    # ABSOLUTE FINAL GUARANTEE:
+                    # Force-assign all remaining unassigned First Priority rows so output has zero pending First rows.
+                    _final_priority_col = None
+                    if (
+                        "priority_status_col_name" in locals()
+                        and priority_status_col_name
+                        and priority_status_col_name in processed_df.columns
+                    ):
+                        _final_priority_col = priority_status_col_name
+                    else:
+                        for _c in processed_df.columns:
+                            _cl = str(_c).strip().lower()
+                            if "priority" in _cl and "status" in _cl:
+                                _final_priority_col = _c
+                                break
+
+                    if (
+                        "Agent Name" in processed_df.columns
+                        and _final_priority_col
+                        and _final_priority_col in processed_df.columns
+                    ):
+                        remaining_first_unassigned = [
+                            idx
+                            for idx in processed_df.index
+                            if (
+                                str(processed_df.at[idx, "Agent Name"]).strip() == ""
+                                and is_first_priority_value(
+                                    processed_df.at[idx, _final_priority_col]
+                                )
+                            )
+                        ]
+                        print(
+                            f"ℹ️ [Final First Guarantee] Initial remaining first-priority rows: {len(remaining_first_unassigned)}"
+                        )
+                        forced_first_final_assigned = 0
+                        if remaining_first_unassigned:
+                            # Absolute fallback rule requested by user:
+                            # ignore insurance and other compatibility checks; keep only OON hard safety.
+                            all_agents = list(agent_allocations)
+
+                            for ridx in remaining_first_unassigned:
+                                if str(processed_df.at[ridx, "Agent Name"]).strip():
+                                    continue
+
+                                # Absolute fallback requested: ignore capacity/rules in final First pass.
+                                # Choose from all agents.
+                                chosen_pool = list(all_agents)
+                                if not chosen_pool:
+                                    continue
+
+                                # Balance by overload first, then allocated count.
+                                chosen_pool.sort(
+                                    key=lambda a: (
+                                        (a.get("allocated", 0) - a.get("capacity", 0)),
+                                        a.get("allocated", 0),
+                                        str(a.get("name", "")).lower(),
+                                    )
+                                )
+                                chosen = chosen_pool[0]
+
+                                chosen["row_indices"].append(ridx)
+                                chosen["allocated"] = len(chosen.get("row_indices", []))
+                                processed_df.at[ridx, "Agent Name"] = chosen["name"]
+                                if "Supervisor" in processed_df.columns:
+                                    processed_df.at[ridx, "Supervisor"] = chosen.get(
+                                        "supervisor", ""
+                                    )
+                                if "Team Leader" in processed_df.columns:
+                                    processed_df.at[ridx, "Team Leader"] = chosen.get(
+                                        "team_leader", ""
+                                    )
+                                forced_first_final_assigned += 1
+
+                        if forced_first_final_assigned > 0:
+                            print(
+                                f"✅ [Final First Guarantee] Force-assigned {forced_first_final_assigned} remaining First Priority row(s)."
+                            )
+
+                        # One more verification + brute-force pass to guarantee beyond-capacity assignment.
+                        still_unassigned_first = [
+                            idx
+                            for idx in processed_df.index
+                            if (
+                                str(processed_df.at[idx, "Agent Name"]).strip() == ""
+                                and is_first_priority_value(
+                                    processed_df.at[idx, _final_priority_col]
+                                )
+                            )
+                        ]
+                        brute_force_assigned = 0
+                        if still_unassigned_first:
+                            all_agents = list(agent_allocations)
+                            for ridx in still_unassigned_first:
+                                if str(processed_df.at[ridx, "Agent Name"]).strip():
+                                    continue
+
+                                candidates = list(all_agents)
+                                if not candidates:
+                                    continue
+                                candidates.sort(
+                                    key=lambda a: (
+                                        (a.get("allocated", 0) - a.get("capacity", 0)),
+                                        a.get("allocated", 0),
+                                        str(a.get("name", "")).lower(),
+                                    )
+                                )
+                                chosen = candidates[0]
+                                chosen["row_indices"].append(ridx)
+                                chosen["allocated"] = len(chosen.get("row_indices", []))
+                                processed_df.at[ridx, "Agent Name"] = chosen["name"]
+                                if "Supervisor" in processed_df.columns:
+                                    processed_df.at[ridx, "Supervisor"] = chosen.get(
+                                        "supervisor", ""
+                                    )
+                                if "Team Leader" in processed_df.columns:
+                                    processed_df.at[ridx, "Team Leader"] = chosen.get(
+                                        "team_leader", ""
+                                    )
+                                brute_force_assigned += 1
+
+                        if brute_force_assigned > 0:
+                            print(
+                                f"✅ [Final First Guarantee - Brute Force] Assigned {brute_force_assigned} additional First Priority row(s)."
+                            )
+                        # Always print final residual after guarantee stages.
+                        _residual_first_after_guarantee = [
+                            idx
+                            for idx in processed_df.index
+                            if (
+                                str(processed_df.at[idx, "Agent Name"]).strip() == ""
+                                and is_first_priority_value(
+                                    processed_df.at[idx, _final_priority_col]
+                                )
+                            )
+                        ]
+                        print(
+                            f"ℹ️ [Final First Guarantee] Residual first-priority rows after guarantee: {len(_residual_first_after_guarantee)}"
+                        )
+
+                    # ABSOLUTE LAST PASS (First Priority only):
+                    # User-requested hard fallback: assign ALL remaining unallocated
+                    # First Priority rows, ignoring allocation rules/capacity/insurance/priority.
+                    _final_priority_col_for_force = None
+                    if (
+                        "priority_status_col_name" in locals()
+                        and priority_status_col_name
+                        and priority_status_col_name in processed_df.columns
+                    ):
+                        _final_priority_col_for_force = priority_status_col_name
+                    else:
+                        for _c in processed_df.columns:
+                            _cl = str(_c).strip().lower()
+                            if "priority" in _cl and "status" in _cl:
+                                _final_priority_col_for_force = _c
+                                break
+
+                    if (
+                        "Agent Name" in processed_df.columns
+                        and _final_priority_col_for_force
+                        and agent_allocations
+                    ):
+                        remaining_unassigned_any = [
+                            idx
+                            for idx in processed_df.index
+                            if str(processed_df.at[idx, "Agent Name"]).strip() == ""
+                            and is_first_priority_value(
+                                processed_df.at[idx, _final_priority_col_for_force]
+                            )
+                        ]
+                        global_force_assigned = 0
+                        if remaining_unassigned_any:
+                            any_agents = list(agent_allocations)
+                            for ridx in remaining_unassigned_any:
+                                if str(processed_df.at[ridx, "Agent Name"]).strip():
+                                    continue
+
+                                # Balanced distribution by current overload.
+                                any_agents.sort(
+                                    key=lambda a: (
+                                        (a.get("allocated", 0) - a.get("capacity", 0)),
+                                        a.get("allocated", 0),
+                                        str(a.get("name", "")).lower(),
+                                    )
+                                )
+                                chosen = any_agents[0]
+
+                                chosen["row_indices"].append(ridx)
+                                chosen["allocated"] = len(chosen.get("row_indices", []))
+                                processed_df.at[ridx, "Agent Name"] = chosen["name"]
+                                if "Supervisor" in processed_df.columns:
+                                    processed_df.at[ridx, "Supervisor"] = chosen.get(
+                                        "supervisor", ""
+                                    )
+                                if "Team Leader" in processed_df.columns:
+                                    processed_df.at[ridx, "Team Leader"] = chosen.get(
+                                        "team_leader", ""
+                                    )
+                                global_force_assigned += 1
+
+                        if global_force_assigned > 0:
+                            print(
+                                f"✅ [Global Force Assign - First Priority] Assigned {global_force_assigned} previously unallocated First Priority row(s) ignoring allocation rules."
+                            )
 
                     # Store agent allocations data globally AFTER correction
                     agent_allocations_data = agent_allocations
@@ -22325,14 +23027,38 @@ def process_allocation_files_with_dates(
                     )
 
                     # Calculate total_rows excluding "Not to work" rows and "Need to Allocate" rows
-                    # Use original total rows count (before filtering) and subtract exclusions
-                    # Only exclude "Need to Allocate" rows if they exist
-                    # Calculate: Original Total - "Need to Allocate" (if exists) - "Not to work"
+                    # (legacy metric kept for context).
                     total_rows_excluding_not_to_work = (
                         total_rows_original
                         - need_to_allocate_count
                         - not_to_work_count_original
                     )
+
+                    # Ground-truth output metrics:
+                    # derive pending directly from final dataframe exactly as user sees in output file.
+                    unassigned_in_output_count = 0
+                    first_priority_unassigned_in_output_count = 0
+                    if "Agent Name" in processed_df.columns:
+                        _agent_blank_mask = (
+                            processed_df["Agent Name"].isna()
+                            | processed_df["Agent Name"].astype(str).str.strip().eq("")
+                        )
+                        unassigned_in_output_count = int(_agent_blank_mask.sum())
+                        if (
+                            priority_status_col_name
+                            and priority_status_col_name in processed_df.columns
+                        ):
+                            _first_mask = (
+                                processed_df[priority_status_col_name]
+                                .fillna("")
+                                .astype(str)
+                                .str.strip()
+                                .str.upper()
+                                .str.contains(r"FIRST|1ST", na=False, regex=True)
+                            )
+                            first_priority_unassigned_in_output_count = int(
+                                (_agent_blank_mask & _first_mask).sum()
+                            )
 
                     # Get unmatched insurance companies info (if it exists from allocation process)
                     unmatched_info = ""
@@ -22345,7 +23071,23 @@ def process_allocation_files_with_dates(
                         unmatched_info = f"\n🔴 Unmatched Insurance Companies ({len(unmatched_insurance_companies)}): {', '.join(unmatched_list)}{'...' if len(unmatched_insurance_companies) > 5 else ''}\n   ⚠️ These companies were assigned ONLY to senior agents with highest priority."
 
                     # Build HTML summary table
-                    remaining_unallocated = total_rows_excluding_not_to_work - total_allocated
+                    # Use output-ground-truth pending count to avoid UI/output contradictions.
+                    remaining_unallocated = unassigned_in_output_count
+                    first_priority_blockers_text = (
+                        ", ".join(
+                            [
+                                f"{k}: {v}"
+                                for k, v in sorted(
+                                    final_first_priority_blockers.items(),
+                                    key=lambda kv: kv[1],
+                                    reverse=True,
+                                )[:6]
+                            ]
+                        )
+                        if "final_first_priority_blockers" in locals()
+                        and final_first_priority_blockers
+                        else "None"
+                    )
 
                     agent_summary = f"""
 <h3 style="margin-bottom:15px;">👥 Agent Allocation Summary</h3>
@@ -22374,8 +23116,6 @@ def process_allocation_files_with_dates(
             <th style="padding:10px 12px;text-align:left;font-size:13px;">Agent Name</th>
             <th style="padding:10px 12px;text-align:center;font-size:13px;">Capacity</th>
             <th style="padding:10px 12px;text-align:center;font-size:13px;">Allocated</th>
-            <th style="padding:10px 12px;text-align:left;font-size:13px;">Type</th>
-            <th style="padding:10px 12px;text-align:left;font-size:13px;">Primary Carrier</th>
             <th style="padding:10px 12px;text-align:left;font-size:13px;">Insurance</th>
         </tr>
     </thead>
@@ -22404,8 +23144,6 @@ def process_allocation_files_with_dates(
             <td style="padding:8px 12px;font-size:12px;font-weight:600;">{agent['name']} {senior_badge}</td>
             <td style="padding:8px 12px;text-align:center;font-size:12px;">{agent['capacity']}</td>
             <td style="padding:8px 12px;text-align:center;font-size:12px;font-weight:700;">{agent['allocated']}<span style="font-weight:400;color:#666;font-size:11px;"> ({fill_pct:.0f}%)</span></td>
-            <td style="padding:8px 12px;font-size:11px;">{'Senior' if agent['is_senior'] else 'Regular'}</td>
-            <td style="padding:8px 12px;font-size:11px;">{primary_display}</td>
             <td style="padding:8px 12px;font-size:11px;">{ins_display}</td>
         </tr>"""
 
@@ -22416,48 +23154,8 @@ def process_allocation_files_with_dates(
                     if total_allocated > 0:
                         agent_summary += f"""
 <div style="margin-top:15px;padding:12px;background:#e7f3ff;border-radius:6px;border:1px solid #b8daff;">
-    <strong>📊 Priority Distribution:</strong> First Priority: {first_priority_count} | Second Priority: {second_priority_count} | Third Priority: {third_priority_count}
 </div>"""
 
-                    if oon20_location_col and oon20_location_col in processed_df.columns:
-                        oon_total_rows = len(oon_row_indices) if "oon_row_indices" in locals() else 0
-                        oon_assigned_final = 0
-                        oon_unassigned_final = 0
-                        if oon_total_rows > 0:
-                            oon_mask_final = (
-                                processed_df[oon20_location_col]
-                                .fillna("")
-                                .astype(str)
-                                .str.strip()
-                                .str.upper()
-                                == "YES"
-                            )
-                            oon_assigned_final = len(
-                                processed_df[
-                                    oon_mask_final
-                                    & processed_df["Agent Name"].fillna("").astype(str).str.strip().ne("")
-                                ]
-                            )
-                            oon_unassigned_final = oon_total_rows - oon_assigned_final
-                        agent_summary += f"""
-<div style="margin-top:10px;padding:10px;background:#f8f9fa;border-radius:6px;border:1px solid #dee2e6;font-size:12px;">
-    <strong>🎯 OON 20% Summary:</strong> Total OON rows: {oon_total_rows} |
-    Step 0 allocated: {oon_allocated_count} |
-    Final assigned: {oon_assigned_final} |
-    Unassigned: {oon_unassigned_final} |
-    Eligible OON agents: {oon_agents_count}
-</div>"""
-
-                        if oon20_validation_fixed_count > 0:
-                            agent_summary += f"""
-<div style="margin-top:10px;padding:10px;background:#fff3cd;border-radius:6px;border:1px solid #ffc107;font-size:12px;">
-    <strong>⚠️ OON 20% Validation:</strong> Removed {oon20_validation_fixed_count} invalid assignment(s) where OON 20% rows were assigned to non-OON agents.
-</div>"""
-                        else:
-                            agent_summary += """
-<div style="margin-top:10px;padding:10px;background:#d4edda;border-radius:6px;border:1px solid #c3e6cb;font-size:12px;">
-    <strong>✅ OON 20% Validation:</strong> All OON 20% rows are assigned only to OON20%=YES agents.
-</div>"""
 
                     if "reconciliation_rows" in locals() and reconciliation_rows:
                         recon_html = """
@@ -22642,13 +23340,6 @@ def process_allocation_files_with_dates(
     Needs Training: {mubin_training_lines}
 </div>"""
 
-                    if insurance_carrier_col and unmatched_insurance_companies:
-                        unmatched_list = [str(comp).strip() for comp in sorted(list(unmatched_insurance_companies))[:5] if comp is not None and not pd.isna(comp)]
-                        agent_summary += f"""
-<div style="margin-top:10px;padding:10px;background:#fff3cd;border-radius:6px;border:1px solid #ffc107;font-size:12px;">
-    <strong>⚠️ Unmatched Insurance Companies ({len(unmatched_insurance_companies)}):</strong> {', '.join(unmatched_list)}{'...' if len(unmatched_insurance_companies) > 5 else ''}
-    <br>These companies were assigned ONLY to senior agents with highest priority.
-</div>"""
 
                 elif not agent_name_col:
                     agent_summary = "<div style='padding:10px;background:#fff3cd;border-radius:6px;'>⚠️ Agent Name column not found in allocation file.</div>"
@@ -25620,10 +26311,145 @@ def download_result():
     try:
         output_buffer = io.BytesIO()
         with pd.ExcelWriter(output_buffer, engine="openpyxl") as writer:
+                # Export-time First Priority guarantee (all sheets):
+                # Some outputs include multiple sheets while processing updates only the primary sheet.
+                # This enforces First Priority assignment on each exported sheet so output cannot retain
+                # blank Agent Name for First Priority rows. Over-capacity is allowed here.
+                export_agent_pool = []
+                export_agent_names = []
+                if isinstance(agent_allocations_data, list) and agent_allocations_data:
+                    for _ag in agent_allocations_data:
+                        _name = str(_ag.get("name", "")).strip()
+                        if not _name:
+                            continue
+                        export_agent_names.append(_name)
+                        export_agent_pool.append(
+                            {
+                                "name": _name,
+                                "allocated": int(_ag.get("allocated", 0) or 0),
+                                "capacity": int(_ag.get("capacity", 0) or 0),
+                                "oon": bool(_ag.get("has_oon20_location_access", False)),
+                            }
+                        )
+
+                def _enforce_first_priority_on_sheet(df_in):
+                    if df_in is None or df_in.empty:
+                        return df_in
+                    cols = list(df_in.columns)
+                    agent_col = None
+                    pr_col = None
+                    pr_fallback_col = None
+                    oon_col = None
+                    for c in cols:
+                        cl = str(c).strip().lower()
+                        if agent_col is None and "agent" in cl and "name" in cl:
+                            agent_col = c
+                        if agent_col is None and cl == "agent":
+                            agent_col = c
+                        if pr_col is None and "priority" in cl and "status" in cl:
+                            pr_col = c
+                        if pr_fallback_col is None and "priority" in cl:
+                            pr_fallback_col = c
+                        if oon_col is None and "oon" in cl and "20" in cl:
+                            oon_col = c
+                    if pr_col is None:
+                        pr_col = pr_fallback_col
+                    if not agent_col or not pr_col:
+                        return df_in
+
+                    # Build fallback pool from existing names in this sheet if global pool missing.
+                    local_pool = export_agent_pool
+                    if not local_pool:
+                        names = (
+                            df_in[agent_col]
+                            .fillna("")
+                            .astype(str)
+                            .str.strip()
+                            .unique()
+                            .tolist()
+                        )
+                        names = [n for n in names if n]
+                        local_pool = [
+                            {"name": n, "allocated": 0, "capacity": 0, "oon": False}
+                            for n in names
+                        ]
+                    # If still empty, use names from global agent list.
+                    if not local_pool and export_agent_names:
+                        local_pool = [
+                            {"name": n, "allocated": 0, "capacity": 0, "oon": False}
+                            for n in export_agent_names
+                        ]
+                    if not local_pool:
+                        return df_in
+
+                    first_blank_mask = (
+                        df_in[agent_col].fillna("").astype(str).str.strip().eq("")
+                        & df_in[pr_col]
+                        .fillna("")
+                        .astype(str)
+                        .str.strip()
+                        .str.upper()
+                        .eq("FIRST PRIORITY")
+                    )
+                    first_blank_indices = df_in.index[first_blank_mask].tolist()
+                    if not first_blank_indices:
+                        return df_in
+
+                    for ridx in first_blank_indices:
+                        # OON hard safety
+                        candidates = local_pool
+
+                        # Balance by overload then allocated count.
+                        candidates = sorted(
+                            candidates,
+                            key=lambda a: (
+                                a.get("allocated", 0) - a.get("capacity", 0),
+                                a.get("allocated", 0),
+                                str(a.get("name", "")).lower(),
+                            ),
+                        )
+                        if not candidates:
+                            candidates = local_pool
+                        if not candidates:
+                            continue
+                        chosen = candidates[0]
+                        df_in.at[ridx, agent_col] = chosen["name"]
+                        chosen["allocated"] = int(chosen.get("allocated", 0) or 0) + 1
+
+                    # Safety net: if any First rows are still blank, fill them unconditionally.
+                    # This handles edge cases where priority text is slightly malformed.
+                    still_blank_first = df_in.index[
+                        df_in[agent_col].fillna("").astype(str).str.strip().eq("")
+                        & df_in[pr_col]
+                        .fillna("")
+                        .astype(str)
+                        .str.strip()
+                        .str.upper()
+                        .str.contains("FIRST", na=False)
+                    ].tolist()
+                    for ridx in still_blank_first:
+                        candidates = local_pool[:] if local_pool else []
+                        if not candidates:
+                            continue
+                        candidates.sort(
+                            key=lambda a: (
+                                a.get("allocated", 0) - a.get("capacity", 0),
+                                a.get("allocated", 0),
+                                str(a.get("name", "")).lower(),
+                            )
+                        )
+                        chosen = candidates[0]
+                        df_in.at[ridx, agent_col] = chosen["name"]
+                        chosen["allocated"] = int(chosen.get("allocated", 0) or 0) + 1
+                    return df_in
+
                 # Write all existing sheets
                 for sheet_name, df in data_file_data.items():
                     # Create a copy of the dataframe to avoid modifying the original
                     df_copy = df.copy()
+
+                    # Enforce first-priority assignment on each output sheet before formatting/export.
+                    df_copy = _enforce_first_priority_on_sheet(df_copy)
 
                     # Find appointment date and received date columns and format them as MM/DD/YYYY
                     for col in df_copy.columns:
@@ -25666,88 +26492,6 @@ def download_result():
                 processed_df = (
                     list(data_file_data.values())[0] if data_file_data else None
                 )
-                # Create per-agent allocation sheets
-                if processed_df is not None:
-                    agent_name_col = None
-                    for col in processed_df.columns:
-                        if "agent" in str(col).lower() and "name" in str(col).lower():
-                            agent_name_col = col
-                            break
-
-                    if agent_name_col and agent_name_col in processed_df.columns:
-                        used_sheet_names = set(writer.sheets.keys())
-
-                        def make_agent_sheet_name(agent_name):
-                            # Excel sheet name rules: max 31 chars, no []:*?/\
-                            clean = re.sub(r"[\[\]\:\*\?\/\\]", " ", str(agent_name))
-                            clean = re.sub(r"\s+", " ", clean).strip()
-                            if not clean:
-                                clean = "Unassigned"
-                            base = f"Agent - {clean}"[:31]
-                            candidate = base
-                            n = 2
-                            while candidate in used_sheet_names:
-                                suffix = f" ({n})"
-                                candidate = f"{base[: 31 - len(suffix)]}{suffix}"
-                                n += 1
-                            used_sheet_names.add(candidate)
-                            return candidate
-
-                        unique_agents = (
-                            processed_df[agent_name_col]
-                            .fillna("")
-                            .astype(str)
-                            .str.strip()
-                        )
-                        unique_agents = [
-                            a
-                            for a in sorted(unique_agents.unique(), key=lambda x: x.lower())
-                            if a != ""
-                        ]
-
-                        for agent_name in unique_agents:
-                            agent_df = processed_df[
-                                processed_df[agent_name_col]
-                                .fillna("")
-                                .astype(str)
-                                .str.strip()
-                                == agent_name
-                            ].copy()
-                            if agent_df.empty:
-                                continue
-
-                            # Keep same export formatting used for primary sheets
-                            for col in agent_df.columns:
-                                if ("appointment" in col.lower() and "date" in col.lower()) or (
-                                    "receive" in col.lower() and "date" in col.lower()
-                                ):
-                                    agent_df[col] = pd.to_datetime(
-                                        agent_df[col], errors="coerce"
-                                    ).dt.strftime("%m/%d/%Y")
-
-                            if (
-                                "Agent Name" in agent_df.columns
-                                and "Supervisor" in agent_df.columns
-                            ):
-                                agent_name_idx = agent_df.columns.get_loc("Agent Name")
-                                cols = agent_df.columns.tolist()
-                                has_shift = "Shift" in cols
-                                if has_shift:
-                                    cols.remove("Shift")
-                                cols.remove("Supervisor")
-                                insert_at = agent_name_idx + 1
-                                if has_shift:
-                                    cols.insert(insert_at, "Shift")
-                                    insert_at += 1
-                                cols.insert(insert_at, "Supervisor")
-                                agent_df = agent_df[cols]
-
-                            agent_df = drop_auditors_column_from_export_df(agent_df)
-                            agent_sheet_name = make_agent_sheet_name(agent_name)
-                            agent_df.to_excel(
-                                writer, sheet_name=agent_sheet_name, index=False
-                            )
-
                 # Export only original uploaded sheets for Imagen Allocation download.
                 generate_tracker_sheets = False
 

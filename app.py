@@ -37423,13 +37423,7 @@ def daily_consolidate_all_subtabs_and_email():
                 "AR_PRODUCTION_DAILY_CONSOLIDATION_EMAIL",
                 "Sunil.yadav.mnc@gmail.com",
             )
-            # Always include AR tracker mailbox on these two streams.
-            web_ar_payment_pp_consolidation_email = ensure_required_recipient(
-                web_ar_payment_pp_consolidation_email, "ar.tracker.mnc@gmail.com"
-            )
-            ar_production_daily_consolidation_email = ensure_required_recipient(
-                ar_production_daily_consolidation_email, "ar.tracker.mnc@gmail.com"
-            )
+            # Use configured recipients as-is for these two streams.
 
             subtab_configs = [
                 (DayShiftFile, "Day Shift"),

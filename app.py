@@ -37726,54 +37726,56 @@ def daily_consolidate_all_subtabs_and_email():
                     and ar_production_daily_ok
                 )
 
+                # Mark as executed today once consolidation attempt has run (prevents repeated same-day retries).
+                app._last_subtab_consolidation_date = today
+
                 if success:
-                    # Mark as executed today
-                    app._last_subtab_consolidation_date = today
                     print(
                         f"✅ Daily sub-tab consolidation emails completed (main→{consolidation_email}, NH→{nh_consolidation_email}, EV→{ev_consolidation_email}, Dental BV→{dental_bv_consolidation_email}, Ortho AR/Dental AR→{ar_consolidation_email}, Web AR/Payment List (PP)→{web_ar_payment_pp_consolidation_email}, AR Production Daily→{ar_production_daily_consolidation_email})"
                     )
-
-                    # Perform cleanup after successful email (delete all uploads for these subtabs)
-                    cleanup_configs = [
-                        (DayShiftFile, "Day Shift"),
-                        (NightShiftFile, "Night Shift"),
-                        (NTBPFile, "NTBP"),
-                        (QCPFile, "Auditor"),
-                        (DailyConsolidateFile, "Daily Consolidate"),
-                        (NHFile, "NH"),
-                        (WebARFile, "Web AR"),
-                        (OrthoFile, "Ortho AR"),
-                        (DentalARFile, "Dental AR"),
-                        (EVAgentFile, "EV"),
-                        (PaymentListPPFile, "Payment List (PP)"),
-                        (ARProductionDailyFile, "AR Production Daily"),
-                        (DentalBVAgentFile, "Dental BV"),
-                        (MISChecklistFile, "MIS Checklist"),
-                    ]
-
-                    total_deleted = 0
-                    for file_model, file_type_name in cleanup_configs:
-                        files_to_delete = file_model.query.all()
-                        deleted_count = len(files_to_delete)
-                        for work_file in files_to_delete:
-                            db.session.delete(work_file)
-                        total_deleted += deleted_count
-                        if deleted_count > 0:
-                            print(
-                                f"✅ Cleanup: Deleted {deleted_count} {file_type_name} file(s)"
-                            )
-
-                    db.session.commit()
-                    print(
-                        f"✅ Daily sub-tab consolidation + cleanup complete. Deleted {total_deleted} total file(s)."
-                    )
-
-                    return True, total_deleted
                 else:
                     print(
-                        "❌ One or more daily consolidation emails failed; skipping cleanup."
+                        "⚠️ One or more daily consolidation emails failed; proceeding with cleanup to ensure daily reset."
                     )
-                    return False, "Email send failed"
+
+                # Always cleanup after a consolidation attempt with data.
+                cleanup_configs = [
+                    (DayShiftFile, "Day Shift"),
+                    (NightShiftFile, "Night Shift"),
+                    (NTBPFile, "NTBP"),
+                    (QCPFile, "Auditor"),
+                    (DailyConsolidateFile, "Daily Consolidate"),
+                    (NHFile, "NH"),
+                    (WebARFile, "Web AR"),
+                    (OrthoFile, "Ortho AR"),
+                    (DentalARFile, "Dental AR"),
+                    (EVAgentFile, "EV"),
+                    (PaymentListPPFile, "Payment List (PP)"),
+                    (ARProductionDailyFile, "AR Production Daily"),
+                    (DentalBVAgentFile, "Dental BV"),
+                    (MISChecklistFile, "MIS Checklist"),
+                ]
+
+                total_deleted = 0
+                for file_model, file_type_name in cleanup_configs:
+                    files_to_delete = file_model.query.all()
+                    deleted_count = len(files_to_delete)
+                    for work_file in files_to_delete:
+                        db.session.delete(work_file)
+                    total_deleted += deleted_count
+                    if deleted_count > 0:
+                        print(
+                            f"✅ Cleanup: Deleted {deleted_count} {file_type_name} file(s)"
+                        )
+
+                db.session.commit()
+                print(
+                    f"✅ Daily sub-tab consolidation + cleanup complete. Deleted {total_deleted} total file(s)."
+                )
+
+                if success:
+                    return True, total_deleted
+                return False, f"Email send failed; cleanup completed ({total_deleted} files deleted)"
             else:
                 print(f"⚠️ No files found in any sub-tab to consolidate")
                 return False, "No files to consolidate"
@@ -43482,6 +43484,33 @@ if __name__ == "__main__":
         print(
             f"✅ Old consolidation scheduler started - runs every day at {cleanup_hour:02d}:{cleanup_minute:02d} {cleanup_timezone_str} (UTC: {utc_time.strftime('%H:%M')})"
         )
+
+        # Catch-up run:
+        # If app starts after scheduled time and today's run hasn't executed yet,
+        # trigger once immediately so daily reset/email isn't missed.
+        try:
+            now_local = datetime.now(cleanup_timezone)
+            scheduled_today = cleanup_timezone.localize(
+                datetime(
+                    now_local.year,
+                    now_local.month,
+                    now_local.day,
+                    cleanup_hour,
+                    cleanup_minute,
+                    0,
+                )
+            )
+            if (
+                now_local >= scheduled_today
+                and getattr(app, "_last_subtab_consolidation_date", None)
+                != now_local.date()
+            ):
+                print(
+                    "🕒 Missed scheduled consolidation window; running immediate catch-up now."
+                )
+                daily_consolidate_all_subtabs_and_email()
+        except Exception as catchup_exc:
+            print(f"⚠️ Consolidation catch-up check failed: {catchup_exc}")
     else:
         # In reloader process, don't start scheduler
         scheduler = None

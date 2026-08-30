@@ -11398,6 +11398,44 @@ DD_TOOLKIT_GROUP = [
 ]
 
 
+def _normalized_insurance_name(value):
+    if value is None or pd.isna(value):
+        return ""
+    formatted = format_insurance_company_name(value)
+    if formatted is None or pd.isna(formatted):
+        formatted = value
+    return str(formatted).strip()
+
+
+def _agent_insurance_name_set(agent_insurance_list):
+    names = set()
+    for comp in agent_insurance_list or []:
+        if comp is None or pd.isna(comp):
+            continue
+        raw = str(comp).strip()
+        if not raw:
+            continue
+        names.add(raw)
+        formatted = _normalized_insurance_name(raw)
+        if formatted:
+            names.add(formatted)
+    return names
+
+
+def _agent_has_dd_ins_group(agent_names):
+    lowers = {n.lower() for n in agent_names}
+    if "dd ins" in lowers or "ins" in lowers:
+        return True
+    return any(n.lower() in {c.lower() for c in DD_INS_GROUP} for n in agent_names)
+
+
+def _agent_has_dd_toolkit_group(agent_names):
+    lowers = {n.lower() for n in agent_names}
+    if any(x in lowers for x in ("dd toolkit", "dd toolkits", "dd")):
+        return True
+    return any(n.lower() in {c.lower() for c in DD_TOOLKIT_GROUP} for n in agent_names)
+
+
 def staff_status_is_no_allocation(status_val):
     """
     True when staff/database Status means this person must not receive row allocations.
@@ -11930,6 +11968,133 @@ def can_allocate_row_by_appointment_date_peek(
     date_key = str(date_key).strip()
     current = counts.get(date_key, 0)
     return current < MAX_ROWS_PER_APPOINTMENT_DATE
+
+
+def _imagen_agent_name_series(df):
+    """Return stripped Agent Name values, even if the column name is duplicated."""
+    if df is None or "Agent Name" not in getattr(df, "columns", []):
+        return None
+    col = df["Agent Name"]
+    if isinstance(col, pd.DataFrame):
+        col = col.iloc[:, 0]
+    return col.fillna("").astype(str).str.strip()
+
+
+def _get_agent_name_at(df, idx):
+    """Read the assigned agent name, using the same column as allocation counts."""
+    series = _imagen_agent_name_series(df)
+    if series is None or idx not in series.index:
+        return ""
+    return str(series.at[idx]).strip()
+
+
+def _set_agent_name_at(df, idx, name):
+    """Write Agent Name on every duplicate column so later recounts see the assignment."""
+    if df is None or "Agent Name" not in getattr(df, "columns", []):
+        return
+    name_cols = [c for c in df.columns if str(c).strip() == "Agent Name"]
+    if not name_cols:
+        return
+    df.loc[idx, name_cols] = name or ""
+
+
+def _count_rows_assigned_to_agent(df, agent_name):
+    """Count rows assigned to an agent using trimmed, case-insensitive names."""
+    series = _imagen_agent_name_series(df)
+    if series is None:
+        return 0
+    target = str(agent_name or "").strip().lower()
+    if not target:
+        return 0
+    return int(series.str.lower().eq(target).sum())
+
+
+def _sync_agent_allocated_counts_from_df(processed_df, agent_allocations):
+    """Set each agent's allocated count from the final Agent Name column.
+
+    The UI table was previously using an in-memory counter that later
+    assignment passes (and the download path) did not always update.
+    Ground truth is whatever is written in the dataframe.
+    """
+    if not agent_allocations:
+        return
+    series = _imagen_agent_name_series(processed_df)
+    if series is None:
+        return
+    name_to_indices = {}
+    for idx, name in series.items():
+        key = str(name).strip().lower()
+        if not key:
+            continue
+        name_to_indices.setdefault(key, []).append(idx)
+    for agent in agent_allocations:
+        key = str(agent.get("name") or "").strip().lower()
+        indices = name_to_indices.get(key, [])
+        agent["row_indices"] = indices
+        agent["allocated"] = len(indices)
+
+
+def enforce_first_priority_assignment_on_df(df_in, agent_allocations):
+    """Assign remaining First Priority rows that still have a blank Agent Name.
+
+    Shared by processing (UI summary) and download so both surfaces use the
+    same final snapshot.
+    """
+    if df_in is None or getattr(df_in, "empty", True):
+        return df_in
+    cols = list(df_in.columns)
+    agent_col = None
+    pr_col = None
+    pr_fallback_col = None
+    for c in cols:
+        cl = str(c).strip().lower()
+        if agent_col is None and "agent" in cl and "name" in cl:
+            agent_col = c
+        if agent_col is None and cl == "agent":
+            agent_col = c
+        if pr_col is None and "priority" in cl and "status" in cl:
+            pr_col = c
+        if pr_fallback_col is None and "priority" in cl:
+            pr_fallback_col = c
+    if pr_col is None:
+        pr_col = pr_fallback_col
+    if not agent_col or not pr_col:
+        return df_in
+
+    pool = []
+    if isinstance(agent_allocations, list):
+        for ag in agent_allocations:
+            name = str(ag.get("name", "")).strip()
+            if not name or ag.get("is_auditor"):
+                continue
+            pool.append(ag)
+    if not pool:
+        return df_in
+
+    def _row_is_first(val):
+        try:
+            return is_first_priority_value(val)
+        except Exception:
+            text = str(val or "").strip().upper()
+            return "FIRST" in text or "1ST" in text
+
+    first_blank_indices = [
+        idx
+        for idx in df_in.index
+        if str(df_in.at[idx, agent_col]).strip() == ""
+        and _row_is_first(df_in.at[idx, pr_col])
+    ]
+    insurance_col = _detect_insurance_carrier_column(df_in)
+    for ridx in first_blank_indices:
+        chosen = _select_insurance_capable_agent(
+            pool, df_in, ridx, insurance_col
+        )
+        if not chosen:
+            continue
+        df_in.at[ridx, agent_col] = chosen["name"]
+        chosen.setdefault("row_indices", []).append(ridx)
+        chosen["allocated"] = len(chosen.get("row_indices", []))
+    return df_in
 
 
 def _count_first_priority_rows_on_agent(agent, processed_df, priority_status_col_name):
@@ -12495,12 +12660,8 @@ def safe_extend_row_indices(
     for idx in row_indices_list:
         # Use helper function to check if row can be allocated to this agent
         # Pass insurance_carrier_col to check assigned insurance for "Single" agents
-        # For First-priority rows, do not enforce insurance lock in this helper gate.
-        _row_level_ins_col = (
-            None if _is_first_priority_row_local(idx) else insurance_carrier_col
-        )
         if can_allocate_row_to_agent(
-            agent, idx, processed_df, secondary_insurance_col, _row_level_ins_col
+            agent, idx, processed_df, secondary_insurance_col, insurance_carrier_col
         ):
             pre_filtered_indices.append(idx)
 
@@ -12509,6 +12670,18 @@ def safe_extend_row_indices(
         for idx in pre_filtered_indices
         if not should_skip_row_for_allocation(idx, processed_df, remark_col)
     ]
+
+    # First Priority rows may only go to agents with staff Priority Status First.
+    if priority_status_col_local and priority_status_col_local in processed_df.columns:
+        priority_filtered = []
+        for idx in filtered_indices:
+            if idx not in processed_df.index:
+                continue
+            row_priority = processed_df.at[idx, priority_status_col_local]
+            if not can_agent_work_with_priority(agent, row_priority):
+                continue
+            priority_filtered.append(idx)
+        filtered_indices = priority_filtered
 
     # Filter by appointment date limit (max 20 rows per appointment date per agent)
     if appointment_date_col and appointment_date_col in processed_df.columns:
@@ -12531,10 +12704,8 @@ def safe_extend_row_indices(
         for idx in filtered_indices:
             if idx in processed_df.index:
                 row_insurance = processed_df.at[idx, insurance_carrier_col]
-                # Final insurance validation before allocation
-                if _is_first_priority_row_local(idx) or can_agent_work_with_insurance(
-                    agent, row_insurance
-                ):
+                # Insurance capability is required on every row, including First Priority.
+                if can_agent_work_with_insurance(agent, row_insurance):
                     # Additional check for "Single" preference agents: must match assigned insurance
                     if _is_first_priority_row_local(idx) or check_single_agent_assigned_insurance_match(
                         agent, row_insurance, insurance_carrier_col
@@ -12672,6 +12843,19 @@ def check_insurance_match(
         if formatted_row_lower == comp_lower:
             return True
 
+        # Known-carrier leftover variants: agent list "Aetna" should match
+        # leftover "Aetna Dental" / "MET LIFE" after formatting or as a word.
+        if comp_lower in {"aetna", "metlife", "cigna"}:
+            raw_row = str(row_insurance or "").strip().lower()
+            if re.search(rf"\b{re.escape(comp_lower)}\b", formatted_row_lower) or (
+                comp_lower == "metlife"
+                and (
+                    re.search(r"\bmet\s*life\b", formatted_row_lower)
+                    or re.search(r"\bmet\s*life\b", raw_row)
+                )
+            ) or re.search(rf"\b{re.escape(comp_lower)}\b", raw_row):
+                return True
+
         # NO substring matching to prevent false positives
         # "Medico Insurance Company" will ONLY match if "Medico Insurance Company" is EXACTLY in the list
         # "Dental Claims" will ONLY match if "Dental Claims" is EXACTLY in the list
@@ -12743,6 +12927,25 @@ def check_insurance_match(
             if formatted_row_insurance in DD_INS_GROUP:
                 if "dd ins" in comp_lower or comp_lower == "ins":
                     return True
+
+    # After expansion, agents keep the individual DD companies but lose the
+    # "DD INS" / "DD Toolkit" tokens. Treat leftover group labels and sibling
+    # group companies as a match when the agent already has any member of that group.
+    agent_names = _agent_insurance_name_set(agent_insurance_list)
+    row_name = formatted_row_insurance or str(row_insurance or "").strip()
+    row_lower = row_name.lower()
+    if _agent_has_dd_ins_group(agent_names) and (
+        row_name in DD_INS_GROUP
+        or row_lower in {c.lower() for c in DD_INS_GROUP}
+        or row_lower in ("dd ins", "ins")
+    ):
+        return True
+    if _agent_has_dd_toolkit_group(agent_names) and (
+        row_name in DD_TOOLKIT_GROUP
+        or row_lower in {c.lower() for c in DD_TOOLKIT_GROUP}
+        or "dd toolkit" in row_lower
+    ):
+        return True
 
     return False
 
@@ -12823,6 +13026,12 @@ def is_priority_row_modal_style(processed_df, row_idx, appointment_date_col=None
     return False
 
 
+def _agent_is_first_priority_capable(agent):
+    """True only when the staff Priority Status is First (including 1st variants)."""
+    raw = str(agent.get("priority_status") or "").strip().upper()
+    return ("FIRST" in raw) or ("1ST" in raw)
+
+
 def can_agent_work_with_priority(agent, row_priority_status):
     """
     Centralized function to check if an agent can work with a specific priority status.
@@ -12836,43 +13045,18 @@ def can_agent_work_with_priority(agent, row_priority_status):
 
     Rules:
         - Agent "First" → can work with ALL priorities (First, Second, Third)
-          Note: First Priority rows should be allocated to First agents first before they get Second/Third Priority rows
-        - Agent "Second" → STRICT: can ONLY work with "Second Priority" or "Third Priority" rows
-          Note: Second agents MUST NEVER get "First Priority" rows
-        - Agent empty/null → defaults to "Second" (can work on Second/Third Priority only)
+        - Agent "Second"/other → can ONLY work with Second/Third Priority rows
+        - First Priority rows MUST only go to agents with Priority Status First
     """
-    # Get agent's priority status capability
-    agent_priority_status = agent.get(
-        "priority_status", "Second"
-    )  # Default to "Second" if empty/null
+    if is_first_priority_value(row_priority_status):
+        return _agent_is_first_priority_capable(agent)
 
-    # Normalize agent priority status (case-insensitive)
-    agent_priority_upper = (
-        str(agent_priority_status).strip().upper()
-        if agent_priority_status
-        else "SECOND"
-    )
+    if _agent_is_first_priority_capable(agent):
+        return True
 
-    # Normalize row priority status (case-insensitive)
     row_priority_upper = (
         str(row_priority_status).strip().upper() if row_priority_status else ""
     )
-
-    # If agent is "First", can work with ALL priorities (First, Second, Third)
-    # First Priority rows should be allocated to First agents first, but they can also get Second/Third Priority rows
-    if agent_priority_upper == "FIRST":
-        return row_priority_upper in [
-            "FIRST PRIORITY",
-            "SECOND PRIORITY",
-            "THIRD PRIORITY",
-        ]
-
-    # If agent is "Second" (or default), STRICT: can ONLY work with "Second Priority" or "Third Priority" rows
-    # MUST NEVER get "First Priority" rows
-    if agent_priority_upper == "SECOND":
-        return row_priority_upper in ["SECOND PRIORITY", "THIRD PRIORITY"]
-
-    # Default: if agent priority status is unknown, default to "Second" behavior (strict)
     return row_priority_upper in ["SECOND PRIORITY", "THIRD PRIORITY"]
 
 
@@ -12924,6 +13108,429 @@ def can_agent_work_with_insurance(agent, row_insurance):
 
     # Default: cannot work
     return False
+
+
+def _detect_insurance_carrier_column(df):
+    """Find the primary insurance column used for allocation matching."""
+    if df is None or not hasattr(df, "columns"):
+        return None
+    preferred = [
+        "Dental Primary Ins Carr",
+        "Insurance Carrier",
+        "Insurance Carrier Name",
+        "Carrier Name",
+        "Primary Insurance",
+        "Ins Carrier",
+        "Insurance",
+    ]
+    for name in preferred:
+        if name in df.columns:
+            return name
+    for col in df.columns:
+        cl = str(col).strip().lower()
+        if "insurance" in cl and any(
+            token in cl for token in ("carrier", "primary", "ins")
+        ):
+            return col
+        if cl in ("carrier name", "carrier"):
+            return col
+    return None
+
+
+def _select_insurance_capable_agent(agents, processed_df, row_idx, insurance_col=None):
+    """Pick a capable agent for a row. Juniors must match insurance; Seniors may take any."""
+    if not agents:
+        return None
+    if not insurance_col or insurance_col not in getattr(processed_df, "columns", []):
+        insurance_col = _detect_insurance_carrier_column(processed_df)
+    row_insurance = None
+    if insurance_col and row_idx in processed_df.index:
+        row_insurance = processed_df.at[row_idx, insurance_col]
+
+    row_priority = None
+    for col in getattr(processed_df, "columns", []):
+        cl = str(col).strip().lower()
+        if "priority" in cl and "status" in cl:
+            if row_idx in processed_df.index:
+                row_priority = processed_df.at[row_idx, col]
+            break
+
+    eligible = []
+    for ag in agents:
+        if ag.get("is_auditor"):
+            continue
+        if row_priority is not None and str(row_priority).strip():
+            if not can_agent_work_with_priority(ag, row_priority):
+                continue
+        if not can_allocate_row_to_agent(ag, row_idx, processed_df, None, None):
+            continue
+        if row_insurance is not None and not can_agent_work_with_insurance(
+            ag, row_insurance
+        ):
+            continue
+        eligible.append(ag)
+    if not eligible:
+        return None
+    eligible.sort(
+        key=lambda a: (
+            (a.get("allocated", 0) - a.get("capacity", 0)),
+            a.get("allocated", 0),
+            str(a.get("name", "")).lower(),
+        )
+    )
+    return eligible[0]
+
+
+def _strip_invalid_insurance_assignments(
+    processed_df, agent_allocations, insurance_col=None
+):
+    """Unassign Junior/non-senior rows that do not match the agent's insurance list."""
+    if processed_df is None or not agent_allocations:
+        return 0
+    if "Agent Name" not in processed_df.columns:
+        return 0
+    if not insurance_col or insurance_col not in processed_df.columns:
+        insurance_col = _detect_insurance_carrier_column(processed_df)
+    if not insurance_col:
+        return 0
+
+    agent_by_name = {
+        str(a.get("name", "")).strip().lower(): a
+        for a in agent_allocations
+        if str(a.get("name", "")).strip()
+    }
+    removed = 0
+    for idx in processed_df.index:
+        assigned_name = str(processed_df.at[idx, "Agent Name"]).strip()
+        if not assigned_name:
+            continue
+        ag = agent_by_name.get(assigned_name.lower())
+        if not ag:
+            continue
+        row_insurance = processed_df.at[idx, insurance_col]
+        if can_agent_work_with_insurance(ag, row_insurance):
+            continue
+        if idx in ag.get("row_indices", []):
+            ag["row_indices"] = [x for x in ag.get("row_indices", []) if x != idx]
+        ag["allocated"] = len(ag.get("row_indices", []))
+        processed_df.at[idx, "Agent Name"] = ""
+        if "Supervisor" in processed_df.columns:
+            processed_df.at[idx, "Supervisor"] = ""
+        if "Team Leader" in processed_df.columns:
+            processed_df.at[idx, "Team Leader"] = ""
+        removed += 1
+    return removed
+
+
+def _strip_invalid_first_priority_assignments(processed_df, agent_allocations):
+    """Unassign First Priority rows given to agents who are not Priority Status First."""
+    if processed_df is None or not agent_allocations:
+        return 0
+    if "Agent Name" not in processed_df.columns:
+        return 0
+    priority_col = None
+    for col in processed_df.columns:
+        cl = str(col).strip().lower()
+        if "priority" in cl and "status" in cl:
+            priority_col = col
+            break
+    if not priority_col:
+        return 0
+
+    agent_by_name = {
+        str(a.get("name", "")).strip().lower(): a
+        for a in agent_allocations
+        if str(a.get("name", "")).strip()
+    }
+    removed = 0
+    for idx in processed_df.index:
+        if not is_first_priority_value(processed_df.at[idx, priority_col]):
+            continue
+        assigned_name = str(processed_df.at[idx, "Agent Name"]).strip()
+        if not assigned_name:
+            continue
+        ag = agent_by_name.get(assigned_name.lower())
+        if not ag or _agent_is_first_priority_capable(ag):
+            continue
+        if idx in ag.get("row_indices", []):
+            ag["row_indices"] = [x for x in ag.get("row_indices", []) if x != idx]
+        ag["allocated"] = len(ag.get("row_indices", []))
+        processed_df.at[idx, "Agent Name"] = ""
+        if "Supervisor" in processed_df.columns:
+            processed_df.at[idx, "Supervisor"] = ""
+        if "Team Leader" in processed_df.columns:
+            processed_df.at[idx, "Team Leader"] = ""
+        removed += 1
+    return removed
+
+
+def _fill_agents_to_capacity(
+    processed_df,
+    agent_allocations,
+    remark_col=None,
+    insurance_col=None,
+):
+    """Assign remaining blank rows to below-capacity agents who still match hard rules.
+
+    Hard rules kept: insurance (Junior), First Priority only to First agents, OON.
+    Single-insurance lock is released for agents who still have shortfall so they can
+    use the rest of their insurance list. Date cap is tried first, then relaxed if
+    that is the only remaining blocker.
+    """
+    if processed_df is None or not agent_allocations:
+        return 0
+    if "Agent Name" not in processed_df.columns:
+        return 0
+
+    insurance_col = insurance_col or _detect_insurance_carrier_column(processed_df)
+    priority_col = _detect_priority_status_column(processed_df)
+    appointment_date_col = None
+    for col in processed_df.columns:
+        cl = str(col).strip().lower()
+        if appointment_date_col is None and "appointment" in cl and "date" in cl:
+            appointment_date_col = col
+
+    _sync_agent_allocated_counts_from_df(processed_df, agent_allocations)
+
+    for ag in agent_allocations:
+        if max(0, int(ag.get("capacity", 0) or 0) - int(ag.get("allocated", 0) or 0)) > 0:
+            ag["assigned_insurance"] = None
+
+    def _row_blank(idx):
+        return str(processed_df.at[idx, "Agent Name"]).strip() == ""
+
+    def _hard_rules_ok(ag, idx):
+        if remark_col and should_skip_row_for_allocation(idx, processed_df, remark_col):
+            return False
+        if priority_col and not can_agent_work_with_priority(
+            ag, processed_df.at[idx, priority_col]
+        ):
+            return False
+        if not _leftover_oon_allows_agent(ag, processed_df, idx):
+            return False
+        if insurance_col and not can_agent_work_with_insurance(
+            ag, processed_df.at[idx, insurance_col]
+        ):
+            return False
+        return True
+
+    def _assign(ag, idx):
+        processed_df.at[idx, "Agent Name"] = ag.get("name", "")
+        if "Supervisor" in processed_df.columns:
+            processed_df.at[idx, "Supervisor"] = ag.get("supervisor", "")
+        if "Team Leader" in processed_df.columns:
+            processed_df.at[idx, "Team Leader"] = ag.get("team_leader", "")
+        ag.setdefault("row_indices", []).append(idx)
+        ag["allocated"] = int(ag.get("allocated", 0) or 0) + 1
+
+    assigned = 0
+    for enforce_date_cap in (True, False):
+        progress = True
+        while progress:
+            progress = False
+            ordered = sorted(
+                agent_allocations,
+                key=lambda a: (
+                    -(
+                        max(
+                            0,
+                            int(a.get("capacity", 0) or 0)
+                            - int(a.get("allocated", 0) or 0),
+                        )
+                    ),
+                    str(a.get("name", "")).lower(),
+                ),
+            )
+            for ag in ordered:
+                if ag.get("is_auditor"):
+                    continue
+                shortfall = max(
+                    0,
+                    int(ag.get("capacity", 0) or 0) - int(ag.get("allocated", 0) or 0),
+                )
+                if shortfall <= 0:
+                    continue
+                for idx in processed_df.index:
+                    if shortfall <= 0:
+                        break
+                    if not _row_blank(idx):
+                        continue
+                    if not _hard_rules_ok(ag, idx):
+                        continue
+                    if (
+                        enforce_date_cap
+                        and appointment_date_col
+                        and not can_allocate_row_by_appointment_date_peek(
+                            ag, idx, processed_df, appointment_date_col
+                        )
+                    ):
+                        continue
+                    _assign(ag, idx)
+                    shortfall -= 1
+                    assigned += 1
+                    progress = True
+    return assigned
+
+
+def _leftover_oon_allows_agent(agent, processed_df, row_idx):
+    """OON rows stay with OON agents only. All other leftover rules are insurance + priority."""
+    oon20_col = processed_df.attrs.get("oon20_location_col")
+    if not oon20_col or oon20_col not in processed_df.columns:
+        for _col in processed_df.columns:
+            _norm = re.sub(r"[^a-z0-9]", "", str(_col).strip().lower())
+            if _norm == "oon20":
+                oon20_col = _col
+                processed_df.attrs["oon20_location_col"] = oon20_col
+                break
+    if not oon20_col or row_idx not in processed_df.index:
+        return True
+    oon20_val = processed_df.at[row_idx, oon20_col]
+    is_oon20_row = pd.notna(oon20_val) and str(oon20_val).strip().upper() == "YES"
+    if agent.get("has_oon20_location_access", False) and not is_oon20_row:
+        return False
+    if is_oon20_row and not agent.get("has_oon20_location_access", False):
+        return False
+    return True
+
+
+def _detect_priority_status_column(df):
+    """Prefer the exact data-file Priority Status column used by debug counts."""
+    if df is None or not hasattr(df, "columns"):
+        return None
+    for col in df.columns:
+        if str(col).strip().lower() == "priority status":
+            return col
+    for col in df.columns:
+        cl = str(col).strip().lower()
+        if "priority" in cl and "status" in cl:
+            return col
+    return None
+
+
+def _fill_named_agent_from_matching_leftovers(
+    processed_df,
+    agent_allocations,
+    agent_name,
+    remark_col=None,
+    insurance_col=None,
+    priority_col=None,
+):
+    """Assign leftover rows to one agent when insurance and priority both match.
+
+    Single/secondary locks are ignored here so leftover matching work is not
+    left unassigned while the agent still has capacity.
+    """
+    if processed_df is None or not agent_allocations or "Agent Name" not in processed_df.columns:
+        return 0
+    target_name = str(agent_name or "").strip().lower()
+    if not target_name:
+        return 0
+    agent = None
+    for ag in agent_allocations:
+        if str(ag.get("name") or "").strip().lower() == target_name:
+            agent = ag
+            break
+    if not agent:
+        return 0
+
+    _sync_agent_allocated_counts_from_df(processed_df, [agent])
+    shortfall = max(
+        0, int(agent.get("capacity", 0) or 0) - int(agent.get("allocated", 0) or 0)
+    )
+    if shortfall <= 0:
+        return 0
+
+    agent["assigned_insurance"] = None
+    insurance_col = insurance_col or _detect_insurance_carrier_column(processed_df)
+    if not priority_col or priority_col not in processed_df.columns:
+        priority_col = _detect_priority_status_column(processed_df)
+
+    assigned = 0
+    for idx in processed_df.index:
+        if shortfall <= 0:
+            break
+        if _get_agent_name_at(processed_df, idx):
+            continue
+        if priority_col and not can_agent_work_with_priority(
+            agent, processed_df.at[idx, priority_col]
+        ):
+            continue
+        if insurance_col and not can_agent_work_with_insurance(
+            agent, processed_df.at[idx, insurance_col]
+        ):
+            continue
+        _set_agent_name_at(processed_df, idx, agent.get("name", ""))
+        if "Supervisor" in processed_df.columns:
+            processed_df.at[idx, "Supervisor"] = agent.get("supervisor", "")
+        if "Team Leader" in processed_df.columns:
+            processed_df.at[idx, "Team Leader"] = agent.get("team_leader", "")
+        agent.setdefault("row_indices", []).append(idx)
+        agent["allocated"] = int(agent.get("allocated", 0) or 0) + 1
+        shortfall -= 1
+        assigned += 1
+    return assigned
+
+
+def _fill_below_capacity_agents_from_matching_leftovers(
+    processed_df,
+    agent_allocations,
+    insurance_col=None,
+    priority_col=None,
+    agent_names=None,
+):
+    """Give leftover insurance+priority matches to every below-capacity agent.
+
+    Named leftover fill used to run only for Alisha/Ayan, so other juniors
+    with matching leftovers stayed at 0.
+    """
+    if processed_df is None or not agent_allocations:
+        return 0
+    _sync_agent_allocated_counts_from_df(processed_df, agent_allocations)
+    wanted = None
+    if agent_names:
+        wanted = {
+            str(name).strip().lower()
+            for name in agent_names
+            if str(name or "").strip()
+        }
+    ordered = sorted(
+        agent_allocations,
+        key=lambda ag: (
+            0
+            if int(ag.get("allocated", 0) or 0) == 0
+            and int(ag.get("capacity", 0) or 0) > 0
+            else 1,
+            -(
+                max(
+                    0,
+                    int(ag.get("capacity", 0) or 0) - int(ag.get("allocated", 0) or 0),
+                )
+            ),
+            str(ag.get("name") or "").lower(),
+        ),
+    )
+    assigned = 0
+    for ag in ordered:
+        if ag.get("is_auditor"):
+            continue
+        name = str(ag.get("name") or "").strip()
+        if not name:
+            continue
+        if wanted and name.lower() not in wanted:
+            continue
+        got = _fill_named_agent_from_matching_leftovers(
+            processed_df,
+            agent_allocations,
+            name,
+            insurance_col=insurance_col,
+            priority_col=priority_col,
+        )
+        if got:
+            print(
+                f"✅ [Leftover Fill] {name} received {got} leftover row(s) matching insurance + priority."
+            )
+        assigned += got
+    return assigned
 
 
 def format_insurance_column_in_dataframe(df, column_name):
@@ -14076,10 +14683,15 @@ def process_allocation_files_with_dates(
                         is_senior = False
 
                         # Check if agent is senior based on Category column (source of truth).
+                        is_auditor = False
                         if category_col and pd.notna(row[category_col]):
                             agent_category = str(row[category_col]).strip().lower()
+                            if "auditor" in agent_category:
+                                is_auditor = True
                             if "senior" in agent_category:
                                 is_senior = True
+                        if is_auditor:
+                            continue
 
                         if insurance_working_col and pd.notna(
                             row[insurance_working_col]
@@ -14377,9 +14989,12 @@ def process_allocation_files_with_dates(
                             priority_status_raw = (
                                 str(row[priority_status_col]).strip().upper()
                             )
-                            if priority_status_raw == "FIRST":
+                            if (
+                                "FIRST" in priority_status_raw
+                                or "1ST" in priority_status_raw
+                            ):
                                 priority_status = "First"
-                            elif priority_status_raw == "SECOND":
+                            elif "SECOND" in priority_status_raw:
                                 priority_status = "Second"
                             # If empty/null or unknown, keep default "Second"
 
@@ -20695,9 +21310,12 @@ def process_allocation_files_with_dates(
                                 )
 
                     def _row_is_currently_assigned(row_idx):
-                        for _ag in agent_allocations:
-                            if row_idx in _ag.get("row_indices", []):
-                                return True
+                        if (
+                            "Agent Name" in processed_df.columns
+                            and row_idx in processed_df.index
+                            and str(processed_df.at[row_idx, "Agent Name"]).strip()
+                        ):
+                            return True
                         return False
 
                     def _agent_can_take_row(
@@ -20705,6 +21323,11 @@ def process_allocation_files_with_dates(
                     ):
                         if _idx not in processed_df.index:
                             return False, "invalid-row"
+                        if (
+                            "Agent Name" in processed_df.columns
+                            and str(processed_df.at[_idx, "Agent Name"]).strip()
+                        ):
+                            return False, "already-assigned"
                         if (_ag["capacity"] - _ag["allocated"]) <= 0:
                             return False, "agent-at-capacity"
                         if should_skip_row_for_allocation(_idx, processed_df, remark_col):
@@ -20729,12 +21352,10 @@ def process_allocation_files_with_dates(
                             )
 
                         # Category rule:
-                        # - Junior/non-senior: strict insurance matching always.
+                        # - Junior/non-senior: strict insurance matching always,
+                        #   including First Priority rows.
                         # - Senior: no insurance matching (can work any insurance).
-                        enforce_insurance_for_agent = (
-                            (not _ag.get("is_senior", False))
-                            and (not _is_first_priority_row)
-                        )
+                        enforce_insurance_for_agent = not _ag.get("is_senior", False)
                         if (
                             enforce_insurance_for_agent
                             and insurance_carrier_col
@@ -21066,8 +21687,8 @@ def process_allocation_files_with_dates(
                             for _idx in processed_df.index:
                                 if _row_is_currently_assigned(_idx):
                                     continue
-                                # Focus on rows that match Ayan's explicit complaint:
-                                # insurance-compatible + Third Priority.
+                                # Leftover rows that match Ayan's insurance and his
+                                # Second-priority capability (Second or Third rows).
                                 _rpv = (
                                     str(processed_df.at[_idx, priority_status_col_name]).strip()
                                     if priority_status_col_name
@@ -21075,7 +21696,7 @@ def process_allocation_files_with_dates(
                                     and pd.notna(processed_df.at[_idx, priority_status_col_name])
                                     else ""
                                 )
-                                if _rpv.upper() != "THIRD PRIORITY":
+                                if not can_agent_work_with_priority(agent, _rpv):
                                     continue
                                 if (
                                     insurance_carrier_col
@@ -22548,34 +23169,23 @@ def process_allocation_files_with_dates(
                                     progress = True
 
                             if not progress:
-                                # Absolute final fallback:
-                                # Force-assign any remaining actionable First Priority rows by balanced distribution,
-                                # bypassing remaining soft blockers. Keep only hard OON safety.
+                                # Final First Priority fallback: still require insurance
+                                # capability (Juniors) and OON safety. Seniors may take any insurance.
                                 force_assigned = 0
                                 for ridx in actionable_first:
                                     if str(processed_df.at[ridx, "Agent Name"]).strip():
                                         continue
 
-                                    force_candidates = []
-                                    for ag in non_pb_agents:
-                                        if _is_oon20_yes_row(ridx) and not ag.get(
-                                            "has_oon20_location_access", False
-                                        ):
-                                            continue
-                                        force_candidates.append(ag)
-
-                                    if not force_candidates:
-                                        continue
-
-                                    # Balance by overload first, then allocated count.
-                                    force_candidates.sort(
-                                        key=lambda a: (
-                                            (a.get("allocated", 0) - a.get("capacity", 0)),
-                                            a.get("allocated", 0),
-                                            str(a.get("name", "")).lower(),
-                                        )
+                                    chosen = _select_insurance_capable_agent(
+                                        non_pb_agents,
+                                        processed_df,
+                                        ridx,
+                                        insurance_carrier_col
+                                        if "insurance_carrier_col" in locals()
+                                        else None,
                                     )
-                                    chosen = force_candidates[0]
+                                    if not chosen:
+                                        continue
 
                                     chosen["row_indices"].append(ridx)
                                     chosen["allocated"] = len(chosen.get("row_indices", []))
@@ -22635,17 +23245,12 @@ def process_allocation_files_with_dates(
                         # Update agent's row_indices to be unique
                         agent["row_indices"] = unique_indices
 
-                        # CRITICAL FIX: Calculate allocated count based on actual rows in DataFrame
-                        # This ensures the count matches what's actually in the processed data
+                        # Count from the dataframe with trimmed/case-insensitive names.
                         if "Agent Name" in processed_df.columns:
-                            agent_name = agent.get("name", "")
-                            # Count actual rows assigned to this agent in the DataFrame
-                            actual_allocated = len(
-                                processed_df[processed_df["Agent Name"] == agent_name]
+                            agent["allocated"] = _count_rows_assigned_to_agent(
+                                processed_df, agent.get("name", "")
                             )
-                            agent["allocated"] = actual_allocated
                         else:
-                            # Fallback to counting unique indices if Agent Name column doesn't exist
                             agent["allocated"] = len(unique_indices)
 
                         # Add to global set
@@ -22831,29 +23436,22 @@ def process_allocation_files_with_dates(
                         )
                         forced_first_final_assigned = 0
                         if remaining_first_unassigned:
-                            # Absolute fallback rule requested by user:
-                            # ignore insurance and other compatibility checks; keep only OON hard safety.
                             all_agents = list(agent_allocations)
 
                             for ridx in remaining_first_unassigned:
                                 if str(processed_df.at[ridx, "Agent Name"]).strip():
                                     continue
 
-                                # Absolute fallback requested: ignore capacity/rules in final First pass.
-                                # Choose from all agents.
-                                chosen_pool = list(all_agents)
-                                if not chosen_pool:
-                                    continue
-
-                                # Balance by overload first, then allocated count.
-                                chosen_pool.sort(
-                                    key=lambda a: (
-                                        (a.get("allocated", 0) - a.get("capacity", 0)),
-                                        a.get("allocated", 0),
-                                        str(a.get("name", "")).lower(),
-                                    )
+                                chosen = _select_insurance_capable_agent(
+                                    all_agents,
+                                    processed_df,
+                                    ridx,
+                                    insurance_carrier_col
+                                    if "insurance_carrier_col" in locals()
+                                    else None,
                                 )
-                                chosen = chosen_pool[0]
+                                if not chosen:
+                                    continue
 
                                 chosen["row_indices"].append(ridx)
                                 chosen["allocated"] = len(chosen.get("row_indices", []))
@@ -22891,17 +23489,16 @@ def process_allocation_files_with_dates(
                                 if str(processed_df.at[ridx, "Agent Name"]).strip():
                                     continue
 
-                                candidates = list(all_agents)
-                                if not candidates:
-                                    continue
-                                candidates.sort(
-                                    key=lambda a: (
-                                        (a.get("allocated", 0) - a.get("capacity", 0)),
-                                        a.get("allocated", 0),
-                                        str(a.get("name", "")).lower(),
-                                    )
+                                chosen = _select_insurance_capable_agent(
+                                    all_agents,
+                                    processed_df,
+                                    ridx,
+                                    insurance_carrier_col
+                                    if "insurance_carrier_col" in locals()
+                                    else None,
                                 )
-                                chosen = candidates[0]
+                                if not chosen:
+                                    continue
                                 chosen["row_indices"].append(ridx)
                                 chosen["allocated"] = len(chosen.get("row_indices", []))
                                 processed_df.at[ridx, "Agent Name"] = chosen["name"]
@@ -22934,9 +23531,9 @@ def process_allocation_files_with_dates(
                             f"ℹ️ [Final First Guarantee] Residual first-priority rows after guarantee: {len(_residual_first_after_guarantee)}"
                         )
 
-                    # ABSOLUTE LAST PASS (First Priority only):
-                    # User-requested hard fallback: assign ALL remaining unallocated
-                    # First Priority rows, ignoring allocation rules/capacity/insurance/priority.
+                    # LAST PASS (First Priority only):
+                    # Assign remaining First Priority rows to capable agents only.
+                    # Junior agents must match insurance; Seniors may take any insurance.
                     _final_priority_col_for_force = None
                     if (
                         "priority_status_col_name" in locals()
@@ -22971,15 +23568,16 @@ def process_allocation_files_with_dates(
                                 if str(processed_df.at[ridx, "Agent Name"]).strip():
                                     continue
 
-                                # Balanced distribution by current overload.
-                                any_agents.sort(
-                                    key=lambda a: (
-                                        (a.get("allocated", 0) - a.get("capacity", 0)),
-                                        a.get("allocated", 0),
-                                        str(a.get("name", "")).lower(),
-                                    )
+                                chosen = _select_insurance_capable_agent(
+                                    any_agents,
+                                    processed_df,
+                                    ridx,
+                                    insurance_carrier_col
+                                    if "insurance_carrier_col" in locals()
+                                    else None,
                                 )
-                                chosen = any_agents[0]
+                                if not chosen:
+                                    continue
 
                                 chosen["row_indices"].append(ridx)
                                 chosen["allocated"] = len(chosen.get("row_indices", []))
@@ -22996,35 +23594,248 @@ def process_allocation_files_with_dates(
 
                         if global_force_assigned > 0:
                             print(
-                                f"✅ [Global Force Assign - First Priority] Assigned {global_force_assigned} previously unallocated First Priority row(s) ignoring allocation rules."
+                                f"✅ [Global Force Assign - First Priority] Assigned {global_force_assigned} previously unallocated First Priority row(s) to insurance-capable agents."
                             )
 
-                    # Store agent allocations data globally AFTER correction
+                    # Last-mile First Priority assignment on the same dataframe the
+                    # download uses, then recount every agent from Agent Name.
+                    processed_df = enforce_first_priority_assignment_on_df(
+                        processed_df, agent_allocations
+                    )
+                    _removed_bad_ins = _strip_invalid_insurance_assignments(
+                        processed_df,
+                        agent_allocations,
+                        insurance_carrier_col
+                        if "insurance_carrier_col" in locals()
+                        else None,
+                    )
+                    if _removed_bad_ins:
+                        print(
+                            f"🛡️ [Final Insurance Guard] Unassigned {_removed_bad_ins} row(s) given to agents without that insurance capability."
+                        )
+                    _removed_bad_fp = _strip_invalid_first_priority_assignments(
+                        processed_df, agent_allocations
+                    )
+                    if _removed_bad_fp:
+                        print(
+                            f"🛡️ [Final First Priority Guard] Unassigned {_removed_bad_fp} First Priority row(s) given to non-First agents."
+                        )
+                    _filled = _fill_agents_to_capacity(
+                        processed_df,
+                        agent_allocations,
+                        remark_col=remark_col if "remark_col" in locals() else None,
+                        insurance_col=insurance_carrier_col
+                        if "insurance_carrier_col" in locals()
+                        else None,
+                    )
+                    if _filled:
+                        print(
+                            f"✅ [Capacity Fill] Assigned {_filled} matching unassigned row(s) to agents still below capacity."
+                        )
+                    _leftover_priority_col = (
+                        priority_status_col_name
+                        if "priority_status_col_name" in locals()
+                        else None
+                    )
+                    _leftover_insurance_col = (
+                        insurance_carrier_col
+                        if "insurance_carrier_col" in locals()
+                        else None
+                    )
+                    _fill_below_capacity_agents_from_matching_leftovers(
+                        processed_df,
+                        agent_allocations,
+                        insurance_col=_leftover_insurance_col,
+                        priority_col=_leftover_priority_col,
+                    )
+                    _removed_after_fill = _strip_invalid_insurance_assignments(
+                        processed_df,
+                        agent_allocations,
+                        insurance_carrier_col
+                        if "insurance_carrier_col" in locals()
+                        else None,
+                    )
+                    _removed_after_fill += _strip_invalid_first_priority_assignments(
+                        processed_df, agent_allocations
+                    )
+                    if _removed_after_fill:
+                        print(
+                            f"🛡️ [Capacity Fill Guard] Unassigned {_removed_after_fill} row(s) that failed insurance or First Priority rules."
+                        )
+                    _fill_below_capacity_agents_from_matching_leftovers(
+                        processed_df,
+                        agent_allocations,
+                        insurance_col=_leftover_insurance_col
+                        if "_leftover_insurance_col" in locals()
+                        else (
+                            insurance_carrier_col
+                            if "insurance_carrier_col" in locals()
+                            else None
+                        ),
+                        priority_col=_leftover_priority_col
+                        if "_leftover_priority_col" in locals()
+                        else (
+                            priority_status_col_name
+                            if "priority_status_col_name" in locals()
+                            else None
+                        ),
+                    )
+                    _sync_agent_allocated_counts_from_df(
+                        processed_df, agent_allocations
+                    )
+                    if alisha_debug:
+                        for _ag in agent_allocations:
+                            if str(_ag.get("name") or "").strip().lower() != "alisha palker":
+                                continue
+                            alisha_debug["allocated"] = int(_ag.get("allocated", 0) or 0)
+                            alisha_debug["shortfall"] = max(
+                                0,
+                                int(alisha_debug.get("target", 0) or 0)
+                                - alisha_debug["allocated"],
+                            )
+                            _ins_col = (
+                                insurance_carrier_col
+                                if "insurance_carrier_col" in locals()
+                                else _detect_insurance_carrier_column(processed_df)
+                            )
+                            _pr_col = (
+                                priority_status_col_name
+                                if "priority_status_col_name" in locals()
+                                else None
+                            )
+                            leftover_match = 0
+                            leftover_reasons = {}
+                            for _idx in processed_df.index:
+                                if str(processed_df.at[_idx, "Agent Name"]).strip():
+                                    continue
+                                if _pr_col and not can_agent_work_with_priority(
+                                    _ag, processed_df.at[_idx, _pr_col]
+                                ):
+                                    leftover_reasons["priority-mismatch"] = (
+                                        leftover_reasons.get("priority-mismatch", 0) + 1
+                                    )
+                                    continue
+                                if _ins_col and not can_agent_work_with_insurance(
+                                    _ag, processed_df.at[_idx, _ins_col]
+                                ):
+                                    leftover_reasons["insurance-mismatch"] = (
+                                        leftover_reasons.get("insurance-mismatch", 0) + 1
+                                    )
+                                    continue
+                                leftover_match += 1
+                            alisha_debug["eligible_available"] = leftover_match
+                            alisha_debug["eligible_available_relaxed"] = leftover_match
+                            alisha_debug["strict_reason_counts"] = leftover_reasons
+                            alisha_debug["assigned_insurance"] = str(
+                                _ag.get("assigned_insurance") or ""
+                            ).strip()
+                            break
+                    if ayan_debug:
+                        for _ag in agent_allocations:
+                            if str(_ag.get("name") or "").strip().lower() != "ayan shaikh":
+                                continue
+                            _sync_agent_allocated_counts_from_df(processed_df, [_ag])
+                            ayan_debug["allocated"] = int(_ag.get("allocated", 0) or 0)
+                            ayan_debug["shortfall"] = max(
+                                0,
+                                int(ayan_debug.get("target", 0) or 0)
+                                - ayan_debug["allocated"],
+                            )
+                            _ins_col = (
+                                insurance_carrier_col
+                                if "insurance_carrier_col" in locals()
+                                else _detect_insurance_carrier_column(processed_df)
+                            )
+                            _pr_col = (
+                                priority_status_col_name
+                                if "priority_status_col_name" in locals()
+                                else None
+                            )
+                            leftover_match = 0
+                            leftover_reasons = {}
+                            leftover_shortfall = ayan_debug["shortfall"]
+                            initial_leftover_shortfall = leftover_shortfall
+                            for _idx in processed_df.index:
+                                if _get_agent_name_at(processed_df, _idx):
+                                    continue
+                                _rp = (
+                                    processed_df.at[_idx, _pr_col]
+                                    if _pr_col
+                                    else ""
+                                )
+                                if _pr_col and not can_agent_work_with_priority(_ag, _rp):
+                                    leftover_reasons["priority-mismatch"] = (
+                                        leftover_reasons.get("priority-mismatch", 0) + 1
+                                    )
+                                    continue
+                                if _ins_col and not can_agent_work_with_insurance(
+                                    _ag, processed_df.at[_idx, _ins_col]
+                                ):
+                                    leftover_reasons["insurance-mismatch"] = (
+                                        leftover_reasons.get("insurance-mismatch", 0) + 1
+                                    )
+                                    continue
+                                leftover_match += 1
+                                if leftover_shortfall > 0:
+                                    _set_agent_name_at(
+                                        processed_df, _idx, _ag.get("name", "")
+                                    )
+                                    if "Supervisor" in processed_df.columns:
+                                        processed_df.at[_idx, "Supervisor"] = _ag.get(
+                                            "supervisor", ""
+                                        )
+                                    if "Team Leader" in processed_df.columns:
+                                        processed_df.at[_idx, "Team Leader"] = _ag.get(
+                                            "team_leader", ""
+                                        )
+                                    leftover_shortfall -= 1
+                            _sync_agent_allocated_counts_from_df(processed_df, [_ag])
+                            ayan_debug["allocated"] = int(_ag.get("allocated", 0) or 0)
+                            ayan_debug["shortfall"] = max(
+                                0,
+                                int(ayan_debug.get("target", 0) or 0)
+                                - ayan_debug["allocated"],
+                            )
+                            leftover_remaining = leftover_match - min(
+                                leftover_match, initial_leftover_shortfall
+                            )
+                            ayan_debug["eligible_available"] = leftover_remaining
+                            ayan_debug["eligible_available_relaxed"] = leftover_remaining
+                            ayan_debug["strict_reason_counts"] = leftover_reasons
+                            ayan_debug["matching_insurance_priority_unassigned"] = (
+                                leftover_remaining
+                            )
+                            ayan_debug["assigned_insurance"] = str(
+                                _ag.get("assigned_insurance") or ""
+                            ).strip()
+                            break
+                    if reconciliation_rows:
+                        allocated_by_name = {
+                            str(a.get("name") or "").strip().lower(): int(
+                                a.get("allocated", 0) or 0
+                            )
+                            for a in agent_allocations
+                        }
+                        for rr in reconciliation_rows:
+                            key = str(rr.get("agent") or "").strip().lower()
+                            if key in allocated_by_name:
+                                rr["allocated"] = allocated_by_name[key]
+                                rr["shortfall"] = max(
+                                    0, int(rr.get("target", 0) or 0) - rr["allocated"]
+                                )
                     agent_allocations_data = agent_allocations
 
-                    # Total allocated should match what's actually in the processed file
-                    # Count rows with non-empty Agent Name values directly from the DataFrame
-                    # This ensures the count matches what users see in the downloaded file
-                    if "Agent Name" in processed_df.columns:
-                        # Count rows where Agent Name is not empty/null
-                        total_allocated = processed_df["Agent Name"].notna().sum()
-                        # Also filter out empty strings
-                        total_allocated = len(
-                            processed_df[
-                                processed_df["Agent Name"].notna()
-                                & (
-                                    processed_df["Agent Name"].astype(str).str.strip()
-                                    != ""
-                                )
-                            ]
+                    agent_name_series = _imagen_agent_name_series(processed_df)
+                    if agent_name_series is not None:
+                        total_allocated = int(agent_name_series.ne("").sum())
+                        agents_with_work = int(
+                            agent_name_series[agent_name_series.ne("")].str.lower().nunique()
                         )
                     else:
-                        # Fallback to counting unique indices if Agent Name column doesn't exist
                         total_allocated = len(all_allocated_indices)
-
-                    agents_with_work = len(
-                        [a for a in agent_allocations if a["allocated"] > 0]
-                    )
+                        agents_with_work = len(
+                            [a for a in agent_allocations if a["allocated"] > 0]
+                        )
 
                     # Calculate total_rows excluding "Not to work" rows and "Need to Allocate" rows
                     # (legacy metric kept for context).
@@ -23034,15 +23845,11 @@ def process_allocation_files_with_dates(
                         - not_to_work_count_original
                     )
 
-                    # Ground-truth output metrics:
-                    # derive pending directly from final dataframe exactly as user sees in output file.
+                    # Ground-truth output metrics from the same dataframe the file uses.
                     unassigned_in_output_count = 0
                     first_priority_unassigned_in_output_count = 0
-                    if "Agent Name" in processed_df.columns:
-                        _agent_blank_mask = (
-                            processed_df["Agent Name"].isna()
-                            | processed_df["Agent Name"].astype(str).str.strip().eq("")
-                        )
+                    if agent_name_series is not None:
+                        _agent_blank_mask = agent_name_series.eq("")
                         unassigned_in_output_count = int(_agent_blank_mask.sum())
                         if (
                             priority_status_col_name
@@ -23279,7 +24086,7 @@ def process_allocation_files_with_dates(
     Allocation Preference: {ayan_debug['allocation_preference'] or '-'} |
     Assigned Insurance Lock: {ayan_debug['assigned_insurance'] or '-'} |
     Priority Capability: {ayan_debug['priority_status'] or '-'}<br>
-    Unassigned rows matching (Insurance + Third Priority): {ayan_debug['matching_insurance_priority_unassigned']}<br>
+    Unassigned leftover rows matching (Insurance + Second/Third Priority): {ayan_debug['matching_insurance_priority_unassigned']}<br>
     Block reasons on those matching rows: {ayan_block_reason_lines}<br>
     Strict skip reasons (all unassigned rows): {ayan_reason_lines}<br>
     Insurance List: {ayan_insurance_lines}<br>
@@ -26311,145 +27118,15 @@ def download_result():
     try:
         output_buffer = io.BytesIO()
         with pd.ExcelWriter(output_buffer, engine="openpyxl") as writer:
-                # Export-time First Priority guarantee (all sheets):
-                # Some outputs include multiple sheets while processing updates only the primary sheet.
-                # This enforces First Priority assignment on each exported sheet so output cannot retain
-                # blank Agent Name for First Priority rows. Over-capacity is allowed here.
-                export_agent_pool = []
-                export_agent_names = []
-                if isinstance(agent_allocations_data, list) and agent_allocations_data:
-                    for _ag in agent_allocations_data:
-                        _name = str(_ag.get("name", "")).strip()
-                        if not _name:
-                            continue
-                        export_agent_names.append(_name)
-                        export_agent_pool.append(
-                            {
-                                "name": _name,
-                                "allocated": int(_ag.get("allocated", 0) or 0),
-                                "capacity": int(_ag.get("capacity", 0) or 0),
-                                "oon": bool(_ag.get("has_oon20_location_access", False)),
-                            }
-                        )
-
-                def _enforce_first_priority_on_sheet(df_in):
-                    if df_in is None or df_in.empty:
-                        return df_in
-                    cols = list(df_in.columns)
-                    agent_col = None
-                    pr_col = None
-                    pr_fallback_col = None
-                    oon_col = None
-                    for c in cols:
-                        cl = str(c).strip().lower()
-                        if agent_col is None and "agent" in cl and "name" in cl:
-                            agent_col = c
-                        if agent_col is None and cl == "agent":
-                            agent_col = c
-                        if pr_col is None and "priority" in cl and "status" in cl:
-                            pr_col = c
-                        if pr_fallback_col is None and "priority" in cl:
-                            pr_fallback_col = c
-                        if oon_col is None and "oon" in cl and "20" in cl:
-                            oon_col = c
-                    if pr_col is None:
-                        pr_col = pr_fallback_col
-                    if not agent_col or not pr_col:
-                        return df_in
-
-                    # Build fallback pool from existing names in this sheet if global pool missing.
-                    local_pool = export_agent_pool
-                    if not local_pool:
-                        names = (
-                            df_in[agent_col]
-                            .fillna("")
-                            .astype(str)
-                            .str.strip()
-                            .unique()
-                            .tolist()
-                        )
-                        names = [n for n in names if n]
-                        local_pool = [
-                            {"name": n, "allocated": 0, "capacity": 0, "oon": False}
-                            for n in names
-                        ]
-                    # If still empty, use names from global agent list.
-                    if not local_pool and export_agent_names:
-                        local_pool = [
-                            {"name": n, "allocated": 0, "capacity": 0, "oon": False}
-                            for n in export_agent_names
-                        ]
-                    if not local_pool:
-                        return df_in
-
-                    first_blank_mask = (
-                        df_in[agent_col].fillna("").astype(str).str.strip().eq("")
-                        & df_in[pr_col]
-                        .fillna("")
-                        .astype(str)
-                        .str.strip()
-                        .str.upper()
-                        .eq("FIRST PRIORITY")
-                    )
-                    first_blank_indices = df_in.index[first_blank_mask].tolist()
-                    if not first_blank_indices:
-                        return df_in
-
-                    for ridx in first_blank_indices:
-                        # OON hard safety
-                        candidates = local_pool
-
-                        # Balance by overload then allocated count.
-                        candidates = sorted(
-                            candidates,
-                            key=lambda a: (
-                                a.get("allocated", 0) - a.get("capacity", 0),
-                                a.get("allocated", 0),
-                                str(a.get("name", "")).lower(),
-                            ),
-                        )
-                        if not candidates:
-                            candidates = local_pool
-                        if not candidates:
-                            continue
-                        chosen = candidates[0]
-                        df_in.at[ridx, agent_col] = chosen["name"]
-                        chosen["allocated"] = int(chosen.get("allocated", 0) or 0) + 1
-
-                    # Safety net: if any First rows are still blank, fill them unconditionally.
-                    # This handles edge cases where priority text is slightly malformed.
-                    still_blank_first = df_in.index[
-                        df_in[agent_col].fillna("").astype(str).str.strip().eq("")
-                        & df_in[pr_col]
-                        .fillna("")
-                        .astype(str)
-                        .str.strip()
-                        .str.upper()
-                        .str.contains("FIRST", na=False)
-                    ].tolist()
-                    for ridx in still_blank_first:
-                        candidates = local_pool[:] if local_pool else []
-                        if not candidates:
-                            continue
-                        candidates.sort(
-                            key=lambda a: (
-                                a.get("allocated", 0) - a.get("capacity", 0),
-                                a.get("allocated", 0),
-                                str(a.get("name", "")).lower(),
-                            )
-                        )
-                        chosen = candidates[0]
-                        df_in.at[ridx, agent_col] = chosen["name"]
-                        chosen["allocated"] = int(chosen.get("allocated", 0) or 0) + 1
-                    return df_in
-
                 # Write all existing sheets
                 for sheet_name, df in data_file_data.items():
                     # Create a copy of the dataframe to avoid modifying the original
                     df_copy = df.copy()
 
-                    # Enforce first-priority assignment on each output sheet before formatting/export.
-                    df_copy = _enforce_first_priority_on_sheet(df_copy)
+                    # Same last-mile First Priority assignment used for the UI summary.
+                    df_copy = enforce_first_priority_assignment_on_df(
+                        df_copy, agent_allocations_data
+                    )
 
                     # Find appointment date and received date columns and format them as MM/DD/YYYY
                     for col in df_copy.columns:

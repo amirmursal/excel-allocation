@@ -46,11 +46,23 @@ from apscheduler.triggers.cron import CronTrigger
 import pytz
 import resend
 
+from email_pending_verification import (
+    attach_agent_emails,
+    classify_pending_excel_label,
+    has_match_columns,
+    load_agent_database,
+    load_pending_excel_workbook,
+    lookup_agent_email,
+    match_pending_rows,
+    names_match,
+    process_pdf_file,
+)
+
 # Load environment variables
 load_dotenv()
 
 app = Flask(__name__)
-app.config["MAX_CONTENT_LENGTH"] = 16 * 1024 * 1024  # 16MB max file size
+app.config["MAX_CONTENT_LENGTH"] = 64 * 1024 * 1024  # 64MB for multi-PDF uploads
 app.config["SECRET_KEY"] = os.environ.get(
     "SECRET_KEY", "your-secret-key-change-in-production"
 )
@@ -1404,6 +1416,15 @@ auditor_email_allocation_data = None
 auditor_email_allocation_filename = None
 auditor_email_agents_list = None
 auditor_email_sent = set()
+
+# Email Pending Verification
+pending_pdf_datasets = []
+pending_excel_sources = []
+pending_agent_staff = []
+pending_agent_staff_filename = None
+pending_verification_agents = None
+pending_verification_rows_by_agent = None
+pending_verification_sent = set()
 
 # Agent processing result
 agent_processing_result = None
@@ -5100,6 +5121,9 @@ HTML_TEMPLATE = """
                         <button type="button" id="email-tab-auditor" onclick="switchEmailTab('auditor')" style="padding: 12px 24px; font-size: 14px; font-weight: 600; border: none; border-bottom: 3px solid transparent; background: transparent; color: #999; cursor: pointer; transition: all 0.2s;">
                             <i class="fas fa-user-check"></i> Email Auditors Allocations
                         </button>
+                        <button type="button" id="email-tab-pending" onclick="switchEmailTab('pending')" style="padding: 12px 24px; font-size: 14px; font-weight: 600; border: none; border-bottom: 3px solid transparent; background: transparent; color: #999; cursor: pointer; transition: all 0.2s;">
+                            <i class="fas fa-file-pdf"></i> Email Pending Verification
+                        </button>
                     </div>
 
                     <!-- ========== AGENT ALLOCATION TAB ========== -->
@@ -5407,6 +5431,193 @@ HTML_TEMPLATE = """
                         </form>
                     </div>
                     </div><!-- end email-auditor-tab-content -->
+
+                    <!-- ========== PENDING VERIFICATION TAB ========== -->
+                    <div id="email-pending-tab-content" style="display: none;">
+                    <div class="section" style="margin-bottom: 20px; padding: 14px 18px; background: #fffbea; border: 1px solid #e6d89c; border-radius: 8px; font-size: 13px; color: #664d03;">
+                        Upload doctor PDFs first. Each filename must include <strong>Dr. &lt;doctor name&gt;</strong> or <strong>Dr &lt;doctor name&gt;</strong>.
+                        Every <strong>Patient</strong> + <strong>Entered</strong> row is kept (all dates), not only the day before Printed On.
+                        Then upload the Allocation Report and Consolidate files together in one picker.
+                        Every sheet in both files is searched. A row matches when
+                        <strong>Office Name</strong> matches the doctor and <strong>Patient Name</strong> matches a patient from that doctor's PDF.
+                        Upload the Agent Database so each table agent can be emailed from the <strong>Send</strong> button.
+                    </div>
+                    <div id="pending-upload-status" style="margin-bottom: 20px;">
+                        {% with messages = get_flashed_messages(with_categories=true) %}
+                            {% if messages %}
+                                {% for category, message in messages %}
+                                    {% if 'pending' in message.lower() or 'pdf' in message.lower() or 'doctor' in message.lower() or 'consolidate' in message.lower() or 'agent database' in message.lower() %}
+                                    <div class="alert alert-{{ category }}" style="padding: 12px 15px; border-radius: 6px; margin-bottom: 10px; {% if category == 'success' %}background: #d4edda; color: #155724; border: 1px solid #c3e6cb;{% elif category == 'error' %}background: #f8d7da; color: #721c24; border: 1px solid #f5c6cb;{% else %}background: #d1ecf1; color: #0c5460; border: 1px solid #bee5eb;{% endif %}">
+                                        <i class="fas fa-{% if category == 'success' %}check-circle{% elif category == 'error' %}exclamation-circle{% else %}info-circle{% endif %}"></i> {{ message }}
+                                    </div>
+                                    {% endif %}
+                                {% endfor %}
+                            {% endif %}
+                        {% endwith %}
+                    </div>
+                    <div class="upload-grid">
+                        <div class="upload-card">
+                            <form id="pending-pdf-form" action="/upload_pending_verification_pdfs" method="post" enctype="multipart/form-data" onsubmit="return showPendingVerificationLoader(this, 'Uploading PDFs', 'Reading Printed On, Patient, and Entered. This can take a minute.');">
+                                <div class="form-group">
+                                    <input type="file" name="pdf_files" accept=".pdf" multiple required>
+                                </div>
+                                <button type="submit">📤 Upload Doctor PDFs</button>
+                            </form>
+                            {% if pending_pdf_datasets %}
+                            <div style="margin-top: 10px; padding: 8px; background: #e7f3ff; border-radius: 5px; font-size: 12px; color: #004085;">
+                                <i class="fas fa-check-circle"></i> {{ pending_pdf_datasets|length }} PDF file(s) loaded
+                            </div>
+                            {% endif %}
+                        </div>
+                        <div class="upload-card">
+                            <form id="pending-excel-form" action="/upload_pending_excel_files" method="post" enctype="multipart/form-data" onsubmit="return showPendingVerificationLoader(this, 'Uploading Excel files', 'Searching every sheet in Allocation Report and Consolidate for matching patients.');">
+                                <div class="form-group">
+                                    <input type="file" name="excel_files" accept=".xlsx,.xls" multiple required>
+                                    <div style="margin-top: 8px; font-size: 12px; color: #666;">Select Allocation Report and Consolidate together.</div>
+                                </div>
+                                <button type="submit">📤 Upload Allocation + Consolidate</button>
+                            </form>
+                            {% if pending_excel_filenames %}
+                            <div style="margin-top: 10px; padding: 8px; background: #e7f3ff; border-radius: 5px; font-size: 12px; color: #004085;">
+                                <i class="fas fa-check-circle"></i> Uploaded: {{ pending_excel_filenames|join(', ') }}
+                            </div>
+                            {% endif %}
+                        </div>
+                        <div class="upload-card">
+                            <form id="pending-agent-db-form" action="/upload_pending_agent_database" method="post" enctype="multipart/form-data" onsubmit="return showPendingVerificationLoader(this, 'Uploading Agent Database', 'Reading Agent Name and Email id.');">
+                                <div class="form-group">
+                                    <input type="file" name="file" accept=".xlsx,.xls" required>
+                                    <div style="margin-top: 8px; font-size: 12px; color: #666;">Needs <strong>Agent Name</strong> and <strong>Email id</strong> columns.</div>
+                                </div>
+                                <button type="submit">📤 Upload Agent Database</button>
+                            </form>
+                            {% if pending_agent_staff_filename %}
+                            <div style="margin-top: 10px; padding: 8px; background: #e7f3ff; border-radius: 5px; font-size: 12px; color: #004085;">
+                                <i class="fas fa-check-circle"></i> Uploaded: {{ pending_agent_staff_filename }}
+                            </div>
+                            {% endif %}
+                        </div>
+                    </div>
+
+                    {% if pending_pdf_datasets %}
+                    <div class="section" style="margin-top: 24px;">
+                        <h3 style="margin: 0 0 12px 0;">📄 PDF datasets by doctor</h3>
+                        <div style="overflow-x: auto;">
+                            <table style="width: 100%; border-collapse: collapse; background: white; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
+                                <thead>
+                                    <tr style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white;">
+                                        <th style="padding: 12px 15px; text-align: left;">File</th>
+                                        <th style="padding: 12px 15px; text-align: left;">Doctor</th>
+                                        <th style="padding: 12px 15px; text-align: center;">Printed On</th>
+                                        <th style="padding: 12px 15px; text-align: center;">Previous Day</th>
+                                        <th style="padding: 12px 15px; text-align: center;">PDF Patients (all dates)</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {% for item in pending_pdf_datasets %}
+                                    <tr style="border-bottom: 1px solid #e9ecef;">
+                                        <td style="padding: 12px 15px;">{{ item.filename }}</td>
+                                        <td style="padding: 12px 15px;">{{ item.doctor_name or '-' }}</td>
+                                        <td style="padding: 12px 15px; text-align: center;">{{ item.printed_on or '-' }}</td>
+                                        <td style="padding: 12px 15px; text-align: center;">{{ item.previous_date or '-' }} ({{ item.previous_day_count or 0 }})</td>
+                                        <td style="padding: 12px 15px; text-align: center;">
+                                            {{ item.patient_count }}
+                                            {% if item.error %}
+                                            <div style="color: #c0392b; font-size: 12px; margin-top: 4px;">{{ item.error }}</div>
+                                            {% endif %}
+                                        </td>
+                                    </tr>
+                                    {% endfor %}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                    {% endif %}
+
+                    {% if pending_pdf_datasets and pending_excel_filenames and not pending_verification_agents %}
+                    <div class="section" style="margin-top: 24px; padding: 14px 18px; background: #f8f9fa; border-radius: 8px; color: #666;">
+                        No matching rows yet. Every Excel sheet is searched. Office Name must match a PDF doctor, and Patient Name must match a patient from that doctor's PDF (any Entered date).
+                    </div>
+                    {% endif %}
+
+                    {% if pending_verification_agents %}
+                    <div class="section" style="margin-top: 30px;">
+                        <h3 style="margin: 0 0 12px 0;">📋 Agents with matching pending patients</h3>
+                        <div style="overflow-x: auto;">
+                            <table style="width: 100%; border-collapse: collapse; background: white; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
+                                <thead>
+                                    <tr style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white;">
+                                        <th style="padding: 12px 15px; text-align: left;">Agent Name</th>
+                                        <th style="padding: 12px 15px; text-align: left;">Email ID</th>
+                                        <th style="padding: 12px 15px; text-align: center;">Matching Rows</th>
+                                        <th style="padding: 12px 15px; text-align: center;">Action</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {% for agent in pending_verification_agents %}
+                                    <tr style="border-bottom: 1px solid #e9ecef;">
+                                        <td style="padding: 12px 15px;">{{ agent.agent_name }}</td>
+                                        <td style="padding: 12px 15px;">
+                                            {% if agent.email_id %}
+                                                {{ agent.email_id }}
+                                            {% else %}
+                                                <span style="color: #999; font-style: italic;">No email found</span>
+                                            {% endif %}
+                                        </td>
+                                        <td style="padding: 12px 15px; text-align: center;">{{ agent.row_count }}</td>
+                                        <td style="padding: 12px 15px; text-align: center;">
+                                            <div style="display: flex; gap: 8px; justify-content: center; align-items: center;">
+                                                <button type="button" class="pending-view-btn" data-agent-name="{{ agent.agent_name }}" style="background: linear-gradient(135deg, #3498db, #2980b9); color: white; border: none; padding: 8px 16px; border-radius: 5px; cursor: pointer; font-size: 13px; font-weight: 600;">
+                                                    <i class="fas fa-eye"></i> View
+                                                </button>
+                                                {% if agent.email_id %}
+                                                <button type="button" class="pending-send-btn" data-agent-name="{{ agent.agent_name }}" data-email-id="{{ agent.email_id }}" {% if agent.agent_name in pending_verification_sent %}disabled style="background: #95a5a6; color: white; border: none; padding: 8px 16px; border-radius: 5px; cursor: not-allowed; font-size: 13px; font-weight: 600;"{% else %}style="background: linear-gradient(135deg, #27ae60, #2ecc71); color: white; border: none; padding: 8px 16px; border-radius: 5px; cursor: pointer; font-size: 13px; font-weight: 600;"{% endif %}>
+                                                    {% if agent.agent_name in pending_verification_sent %}
+                                                    <i class="fas fa-check"></i> Already sent
+                                                    {% else %}
+                                                    <i class="fas fa-paper-plane"></i> <span class="send-btn-text">Send</span>
+                                                    {% endif %}
+                                                </button>
+                                                {% else %}
+                                                <span style="color: #999; font-size: 12px;">Upload agent database</span>
+                                                {% endif %}
+                                            </div>
+                                        </td>
+                                    </tr>
+                                    {% endfor %}
+                                </tbody>
+                            </table>
+                        </div>
+                        <div id="pending-email-send-status" style="margin-top: 15px;"></div>
+                    </div>
+                    {% endif %}
+
+                    <div id="pending-verification-modal" style="display: none; position: fixed; z-index: 10000; left: 0; top: 0; width: 100%; height: 100%; overflow: auto; background-color: rgba(0,0,0,0.5);">
+                        <div style="background-color: #fefefe; margin: 2% auto; padding: 0; border: none; border-radius: 10px; width: 90%; max-width: 1400px; max-height: 90vh; overflow: hidden; box-shadow: 0 10px 30px rgba(0,0,0,0.3);">
+                            <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 20px; display: flex; justify-content: space-between; align-items: center;">
+                                <h2 style="margin: 0; font-size: 20px;"><i class="fas fa-user"></i> <span id="pending-modal-agent-name"></span> - Pending Verification</h2>
+                                <button onclick="closePendingVerificationModal()" style="background: transparent; border: none; color: white; font-size: 28px; font-weight: bold; cursor: pointer; padding: 0; width: 30px; height: 30px;">&times;</button>
+                            </div>
+                            <div style="padding: 20px; max-height: calc(90vh - 120px); overflow-y: auto;">
+                                <p style="margin: 5px 0 15px 0; color: #666;"><strong>Total Rows:</strong> <span id="pending-modal-row-count">0</span></p>
+                                <div style="overflow-x: auto;">
+                                    <table style="width: 100%; border-collapse: collapse; background: white; border-radius: 8px; overflow: hidden;">
+                                        <thead id="pending-modal-table-head"></thead>
+                                        <tbody id="pending-modal-table-body"></tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="section" style="text-align: left; margin-top: 20px;">
+                        <form action="/reset_pending_verification" method="post" onsubmit="return showPendingVerificationLoader(this, 'Resetting', 'Clearing pending verification files...');">
+                            <input type="hidden" name="current_menu" value="email-allocation">
+                            <button type="submit" class="process-btn" style="background: linear-gradient(135deg, #e74c3c, #c0392b);">
+                                <i class="fas fa-redo"></i> Reset Pending Verification
+                            </button>
+                        </form>
+                    </div>
+                    </div><!-- end email-pending-tab-content -->
 
                 </div>
                 
@@ -7617,28 +7828,179 @@ HTML_TEMPLATE = """
         function switchEmailTab(tab) {
             var agentTab = document.getElementById('email-agent-tab-content');
             var auditorTab = document.getElementById('email-auditor-tab-content');
+            var pendingTab = document.getElementById('email-pending-tab-content');
             var agentBtn = document.getElementById('email-tab-agent');
             var auditorBtn = document.getElementById('email-tab-auditor');
-            if (tab === 'agent') {
-                if (agentTab) agentTab.style.display = 'block';
-                if (auditorTab) auditorTab.style.display = 'none';
-                if (agentBtn) { agentBtn.style.borderBottomColor = '#667eea'; agentBtn.style.color = '#667eea'; }
-                if (auditorBtn) { auditorBtn.style.borderBottomColor = 'transparent'; auditorBtn.style.color = '#999'; }
-            } else {
-                if (agentTab) agentTab.style.display = 'none';
-                if (auditorTab) auditorTab.style.display = 'block';
-                if (agentBtn) { agentBtn.style.borderBottomColor = 'transparent'; agentBtn.style.color = '#999'; }
-                if (auditorBtn) { auditorBtn.style.borderBottomColor = '#667eea'; auditorBtn.style.color = '#667eea'; }
-            }
+            var pendingBtn = document.getElementById('email-tab-pending');
+            var tabs = {
+                agent: { panel: agentTab, button: agentBtn },
+                auditor: { panel: auditorTab, button: auditorBtn },
+                pending: { panel: pendingTab, button: pendingBtn }
+            };
+            Object.keys(tabs).forEach(function(key) {
+                var item = tabs[key];
+                if (item.panel) item.panel.style.display = key === tab ? 'block' : 'none';
+                if (item.button) {
+                    item.button.style.borderBottomColor = key === tab ? '#667eea' : 'transparent';
+                    item.button.style.color = key === tab ? '#667eea' : '#999';
+                }
+            });
         }
 
-        // Auto-switch to auditor tab if URL has tab=auditor
         (function() {
             var params = new URLSearchParams(window.location.search);
-            if (params.get('tab') === 'auditor') {
-                switchEmailTab('auditor');
+            var tab = params.get('tab');
+            if (tab === 'auditor' || tab === 'pending' || tab === 'pending-verification') {
+                switchEmailTab(tab === 'pending-verification' ? 'pending' : tab);
             }
         })();
+
+        document.addEventListener('click', function(event) {
+            var viewBtn = event.target.closest ? event.target.closest('.pending-view-btn') : null;
+            if (viewBtn) {
+                viewPendingVerificationAgent(viewBtn.getAttribute('data-agent-name') || '');
+                return;
+            }
+            var sendBtn = event.target.closest ? event.target.closest('.pending-send-btn') : null;
+            if (sendBtn && !sendBtn.disabled) {
+                sendPendingVerificationEmail(
+                    sendBtn.getAttribute('data-agent-name') || '',
+                    sendBtn.getAttribute('data-email-id') || '',
+                    sendBtn
+                );
+            }
+        });
+
+        function viewPendingVerificationAgent(agentName) {
+            var modal = document.getElementById('pending-verification-modal');
+            document.getElementById('pending-modal-agent-name').textContent = agentName;
+            document.getElementById('pending-modal-table-head').innerHTML = '<tr><th colspan="100" style="padding:20px;text-align:center;"><i class="fas fa-spinner fa-spin"></i> Loading...</th></tr>';
+            document.getElementById('pending-modal-table-body').innerHTML = '';
+            document.getElementById('pending-modal-row-count').textContent = '0';
+            modal.style.display = 'block';
+            fetch('/get_pending_verification_agent_data', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ agent_name: agentName })
+            })
+            .then(function(r) { return r.json(); })
+            .then(function(data) {
+                if (data.success && data.rows && data.columns) {
+                    document.getElementById('pending-modal-row-count').textContent = data.rows.length;
+                    var headerHtml = '<tr>';
+                    data.columns.forEach(function(col) {
+                        headerHtml += '<th style="background-color:#92d050;color:#000;font-weight:700;text-align:center;padding:10px 12px;border:1px solid #808080;">' + col + '</th>';
+                    });
+                    headerHtml += '</tr>';
+                    document.getElementById('pending-modal-table-head').innerHTML = headerHtml;
+                    var bodyHtml = '';
+                    data.rows.forEach(function(row) {
+                        bodyHtml += '<tr style="border-bottom:1px solid #e9ecef;">';
+                        data.columns.forEach(function(col) {
+                            var value = row[col] !== null && row[col] !== undefined ? String(row[col]) : '';
+                            bodyHtml += '<td style="padding:12px 15px;">' + value + '</td>';
+                        });
+                        bodyHtml += '</tr>';
+                    });
+                    document.getElementById('pending-modal-table-body').innerHTML = bodyHtml;
+                } else {
+                    document.getElementById('pending-modal-table-head').innerHTML = '<tr><th colspan="100" style="padding:20px;text-align:center;color:#dc3545;">' + (data.error || 'Failed to load data') + '</th></tr>';
+                }
+            })
+            .catch(function(error) {
+                document.getElementById('pending-modal-table-head').innerHTML = '<tr><th colspan="100" style="padding:20px;text-align:center;color:#dc3545;">' + error.message + '</th></tr>';
+            });
+        }
+
+        function closePendingVerificationModal() {
+            var modal = document.getElementById('pending-verification-modal');
+            if (modal) modal.style.display = 'none';
+        }
+
+        function sendPendingVerificationEmail(agentName, emailId, buttonElement) {
+            var statusDiv = document.getElementById('pending-email-send-status');
+            if (statusDiv) {
+                statusDiv.innerHTML = '<div style="color: #007bff; padding: 10px; background: #e7f3ff; border-radius: 5px;"><i class="fas fa-spinner fa-spin"></i> Sending pending verification rows to ' + agentName + '... Please wait.</div>';
+            }
+            if (buttonElement) {
+                buttonElement.disabled = true;
+                buttonElement.style.cursor = 'not-allowed';
+                buttonElement.style.opacity = '0.6';
+            }
+            fetch('/send_pending_verification_email', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ agent_name: agentName, email_id: emailId })
+            })
+            .then(function(r) {
+                return r.text().then(function(text) {
+                    var data = {};
+                    try { data = text ? JSON.parse(text) : {}; } catch (e) {
+                        data = { success: false, error: text || ('Server returned HTTP ' + r.status) };
+                    }
+                    if (!r.ok && !data.error) {
+                        data.success = false;
+                        data.error = 'Server returned HTTP ' + r.status;
+                    }
+                    return data;
+                });
+            })
+            .then(function(data) {
+                if (data.success) {
+                    if (typeof showSnackbar === 'function') {
+                        showSnackbar('Email sent successfully to ' + agentName);
+                    }
+                    if (buttonElement) {
+                        buttonElement.disabled = true;
+                        buttonElement.style.background = '#95a5a6';
+                        buttonElement.style.cursor = 'not-allowed';
+                        buttonElement.style.opacity = '1';
+                        var sendBtnText = buttonElement.querySelector('.send-btn-text');
+                        if (sendBtnText) {
+                            sendBtnText.textContent = 'Already sent';
+                        } else {
+                            buttonElement.innerHTML = '<i class="fas fa-check"></i> Already sent';
+                        }
+                    }
+                    if (statusDiv) {
+                        statusDiv.innerHTML = '<div style="color: #28a745; padding: 10px; background: #d4edda; border-radius: 5px;"><i class="fas fa-check-circle"></i> Successfully sent email to ' + agentName + ' (' + emailId + ').</div>';
+                    }
+                } else {
+                    if (buttonElement) {
+                        buttonElement.disabled = false;
+                        buttonElement.style.cursor = 'pointer';
+                        buttonElement.style.opacity = '1';
+                    }
+                    if (statusDiv) {
+                        statusDiv.innerHTML = '<div style="color: #dc3545; padding: 10px; background: #f8d7da; border-radius: 5px;"><i class="fas fa-exclamation-circle"></i> Error: ' + (data.error || 'Failed to send email') + '</div>';
+                    }
+                }
+            })
+            .catch(function(error) {
+                if (buttonElement) {
+                    buttonElement.disabled = false;
+                    buttonElement.style.cursor = 'pointer';
+                    buttonElement.style.opacity = '1';
+                }
+                if (statusDiv) {
+                    statusDiv.innerHTML = '<div style="color: #dc3545; padding: 10px; background: #f8d7da; border-radius: 5px;"><i class="fas fa-exclamation-circle"></i> Error: ' + error.message + '</div>';
+                }
+            });
+        }
+
+        function showPendingVerificationLoader(form, title, subtitle) {
+            if (form && typeof form.checkValidity === 'function' && !form.checkValidity()) {
+                return true;
+            }
+            var submitBtn = form ? form.querySelector('button[type="submit"]') : null;
+            if (submitBtn) {
+                submitBtn.disabled = true;
+                submitBtn.style.opacity = '0.7';
+                submitBtn.style.cursor = 'wait';
+            }
+            showLoader(title || 'Processing files', subtitle || 'Please wait while we process your files...');
+            return true;
+        }
 
         // ===== Auditor Email Functions =====
         var currentViewingAuditor = null;
@@ -9013,8 +9375,12 @@ HTML_TEMPLATE = """
         let receiveDateSelections = new Map(); // appointmentDate -> Set of selected receive dates
         
         // Loader functions
-        function showLoader() {
+        function showLoader(title, subtitle) {
             const loader = document.getElementById('loader-overlay');
+            const titleEl = document.getElementById('loader-overlay-title');
+            const subtitleEl = document.getElementById('loader-overlay-subtitle');
+            if (titleEl && title) titleEl.textContent = title;
+            if (subtitleEl && subtitle) subtitleEl.textContent = subtitle;
             if (loader) {
                 loader.classList.add('show');
             }
@@ -10502,8 +10868,8 @@ HTML_TEMPLATE = """
     <div id="loader-overlay" class="loader-overlay">
         <div class="loader-container">
             <div class="loader-spinner"></div>
-            <p class="loader-text">Loading Appointment Dates</p>
-            <p class="loader-subtitle">Please wait while we process your files...</p>
+            <p class="loader-text" id="loader-overlay-title">Loading Appointment Dates</p>
+            <p class="loader-subtitle" id="loader-overlay-subtitle">Please wait while we process your files...</p>
             <div class="progress-bar-container">
                 <div class="progress-bar"></div>
             </div>
@@ -24397,6 +24763,8 @@ def index():
     global email_allocation_data, email_allocation_filename, email_allocation_agents_list
     global auditor_email_staff_data, auditor_email_staff_filename
     global auditor_email_allocation_data, auditor_email_allocation_filename, auditor_email_agents_list, auditor_email_sent
+    global pending_pdf_datasets, pending_excel_sources
+    global pending_agent_staff_filename, pending_verification_agents, pending_verification_sent
     global tracker_data, tracker_filename, tracker_file_ready
     global nh_bv_tracker_data, nh_bv_tracker_filename, nh_bv_tracker_file_ready
     global imagen_qc_tracker_data, imagen_qc_tracker_filename, imagen_qc_tracker_file_ready
@@ -24524,6 +24892,17 @@ def index():
         auditor_email_allocation_filename=auditor_email_allocation_filename,
         auditor_email_agents_list=auditor_email_agents_list,
         auditor_email_sent=list(auditor_email_sent) if auditor_email_sent else [],
+        pending_pdf_datasets=pending_pdf_datasets or [],
+        pending_excel_filenames=[
+            source.get("filename")
+            for source in (pending_excel_sources or [])
+            if source.get("filename")
+        ],
+        pending_agent_staff_filename=pending_agent_staff_filename,
+        pending_verification_agents=pending_verification_agents,
+        pending_verification_sent=list(pending_verification_sent)
+        if pending_verification_sent
+        else [],
         tracker_file_ready=(
             tracker_file_ready if "tracker_file_ready" in globals() else False
         ),
@@ -25685,6 +26064,309 @@ def reset_auditor_email():
     auditor_email_sent = set()
     flash("Auditor Email Allocation has been reset.", "success")
     return redirect("/?menu=email-allocation&tab=auditor")
+
+
+PENDING_VERIFICATION_REDIRECT = "/?menu=email-allocation&tab=pending"
+
+
+def _pending_rows_for_agent(agent_name: str) -> list:
+    rows_by_agent = pending_verification_rows_by_agent or {}
+    exact = rows_by_agent.get(agent_name) or []
+    if exact:
+        return exact
+    for name, rows in rows_by_agent.items():
+        if names_match(name, agent_name):
+            return rows or []
+    return []
+
+
+def _refresh_pending_verification_matches():
+    global pending_verification_agents, pending_verification_rows_by_agent
+    if not pending_pdf_datasets or not pending_excel_sources:
+        pending_verification_agents = None
+        pending_verification_rows_by_agent = None
+        return
+    agents, by_agent = match_pending_rows(
+        pending_pdf_datasets,
+        excel_sources=pending_excel_sources,
+    )
+    pending_verification_agents = attach_agent_emails(agents, pending_agent_staff)
+    pending_verification_rows_by_agent = by_agent
+
+
+@app.route("/upload_pending_verification_pdfs", methods=["POST"])
+@admin_required
+def upload_pending_verification_pdfs():
+    global pending_pdf_datasets
+    files = request.files.getlist("pdf_files")
+    if not files:
+        flash("No PDF files provided.", "error")
+        return redirect(PENDING_VERIFICATION_REDIRECT)
+
+    datasets = []
+    errors = []
+    for file in files:
+        original_name = file.filename or ""
+        if not original_name:
+            continue
+        if not original_name.lower().endswith(".pdf"):
+            errors.append(f"{original_name}: not a PDF")
+            continue
+        tmp_path = None
+        try:
+            suffix = os.path.splitext(secure_filename(original_name) or "upload.pdf")[1]
+            with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+                tmp_path = tmp.name
+                file.save(tmp_path)
+            datasets.append(process_pdf_file(tmp_path, original_name))
+        except Exception as exc:
+            errors.append(f"{original_name}: {exc}")
+        finally:
+            if tmp_path and os.path.exists(tmp_path):
+                os.remove(tmp_path)
+
+    if not datasets and errors:
+        flash("Pending PDF upload failed: " + "; ".join(errors), "error")
+        return redirect(PENDING_VERIFICATION_REDIRECT)
+
+    pending_pdf_datasets = datasets
+    _refresh_pending_verification_matches()
+    message = f"Loaded {len(datasets)} pending-verification PDF(s)."
+    if errors:
+        message += " Some files failed: " + "; ".join(errors)
+        flash(message, "error")
+    else:
+        flash(message, "success")
+    return redirect(PENDING_VERIFICATION_REDIRECT)
+
+
+@app.route("/upload_pending_excel_files", methods=["POST"])
+@admin_required
+def upload_pending_excel_files():
+    global pending_excel_sources
+    files = request.files.getlist("excel_files")
+    if not files:
+        flash("No Allocation Report or Consolidate file provided.", "error")
+        return redirect(PENDING_VERIFICATION_REDIRECT)
+
+    sources = []
+    errors = []
+    sheet_count = 0
+    usable_count = 0
+    for file in files:
+        original_name = file.filename or ""
+        if not original_name:
+            continue
+        if not original_name.lower().endswith((".xlsx", ".xls")):
+            errors.append(f"{original_name}: not an Excel file")
+            continue
+        tmp_path = None
+        try:
+            suffix = os.path.splitext(secure_filename(original_name) or "upload.xlsx")[1]
+            with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+                tmp_path = tmp.name
+                file.save(tmp_path)
+            sheets = load_pending_excel_workbook(tmp_path)
+            label = classify_pending_excel_label(original_name)
+            sources.append(
+                {
+                    "filename": original_name,
+                    "label": label,
+                    "sheets": sheets,
+                }
+            )
+            sheet_count += len(sheets)
+            usable_count += sum(1 for df in sheets.values() if has_match_columns(df))
+        except Exception as exc:
+            errors.append(f"{original_name}: {exc}")
+        finally:
+            if tmp_path and os.path.exists(tmp_path):
+                os.remove(tmp_path)
+
+    if not sources:
+        flash(
+            "Pending Excel upload failed: "
+            + ("; ".join(errors) if errors else "no files selected."),
+            "error",
+        )
+        return redirect(PENDING_VERIFICATION_REDIRECT)
+
+    pending_excel_sources = sources
+    _refresh_pending_verification_matches()
+    names = ", ".join(source["filename"] for source in sources)
+    message = (
+        f"Loaded {len(sources)} Excel file(s) for pending verification: {names}. "
+        f"Searched {sheet_count} sheet(s), "
+        f"{usable_count} with Office / Patient / Agent columns."
+    )
+    if errors:
+        message += " Some files failed: " + "; ".join(errors)
+        flash(message, "error")
+    else:
+        flash(message, "success")
+    return redirect(PENDING_VERIFICATION_REDIRECT)
+
+
+@app.route("/get_pending_verification_agent_data", methods=["POST"])
+@admin_required
+def get_pending_verification_agent_data():
+    payload = request.get_json(silent=True) or {}
+    agent_name = str(payload.get("agent_name") or "").strip()
+    rows = (pending_verification_rows_by_agent or {}).get(agent_name) or []
+    if not rows:
+        return jsonify({"success": False, "error": "No matching rows for this agent"})
+    columns = list(rows[0].keys())
+    return jsonify({"success": True, "columns": columns, "rows": rows})
+
+
+@app.route("/upload_pending_agent_database", methods=["POST"])
+@admin_required
+def upload_pending_agent_database():
+    global pending_agent_staff, pending_agent_staff_filename, pending_verification_sent
+    global pending_verification_agents
+    if "file" not in request.files:
+        flash("No Agent Database provided.", "error")
+        return redirect(PENDING_VERIFICATION_REDIRECT)
+    file = request.files["file"]
+    original_name = file.filename or ""
+    if not original_name:
+        flash("No Agent Database selected.", "error")
+        return redirect(PENDING_VERIFICATION_REDIRECT)
+    if not original_name.lower().endswith((".xlsx", ".xls")):
+        flash("Agent Database must be an Excel file.", "error")
+        return redirect(PENDING_VERIFICATION_REDIRECT)
+    tmp_path = None
+    try:
+        suffix = os.path.splitext(secure_filename(original_name) or "upload.xlsx")[1]
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+            tmp_path = tmp.name
+            file.save(tmp_path)
+        staff = load_agent_database(tmp_path)
+        if not staff:
+            flash(
+                "Agent Database uploaded but no Agent Name / Email id rows were found. Every sheet was searched.",
+                "error",
+            )
+            return redirect(PENDING_VERIFICATION_REDIRECT)
+        pending_agent_staff = staff
+        pending_agent_staff_filename = original_name
+        pending_verification_sent = set()
+        if pending_verification_agents:
+            pending_verification_agents = attach_agent_emails(
+                pending_verification_agents, pending_agent_staff
+            )
+        else:
+            _refresh_pending_verification_matches()
+        matched = sum(
+            1
+            for agent in (pending_verification_agents or [])
+            if agent.get("email_id")
+        )
+        flash(
+            f"Agent Database uploaded for pending verification. "
+            f"Loaded {len(staff)} agent email(s)"
+            + (
+                f", matched {matched} agent(s) in the pending table."
+                if pending_verification_agents
+                else "."
+            ),
+            "success",
+        )
+    except Exception as exc:
+        flash(f"Error reading Agent Database: {exc}", "error")
+    finally:
+        if tmp_path and os.path.exists(tmp_path):
+            os.remove(tmp_path)
+    return redirect(PENDING_VERIFICATION_REDIRECT)
+
+
+@app.route("/send_pending_verification_email", methods=["POST"])
+@admin_required
+def send_pending_verification_email():
+    global pending_verification_sent
+    payload = request.get_json(silent=True) or {}
+    agent_name = str(payload.get("agent_name") or "").strip()
+    email_id = str(payload.get("email_id") or "").strip()
+    if not agent_name:
+        return jsonify({"success": False, "error": "Agent name is required"})
+    if not email_id:
+        email_id = lookup_agent_email(pending_agent_staff, agent_name) or ""
+    if not email_id:
+        print(f"[Pending Verification] Send blocked, no email for {agent_name}")
+        return jsonify(
+            {
+                "success": False,
+                "error": "Email ID is required. Upload the Agent Database first.",
+            }
+        )
+    rows = _pending_rows_for_agent(agent_name)
+    if not rows:
+        return jsonify(
+            {"success": False, "error": f"No matching rows for agent '{agent_name}'"}
+        )
+    agent_df = pd.DataFrame(rows)
+    temp_fd, temp_path = tempfile.mkstemp(suffix=".xlsx")
+    try:
+        sheet_name = re.sub(r"[\\/*?:\[\]]", "_", agent_name)[:31] or "Pending"
+        with pd.ExcelWriter(temp_path, engine="openpyxl") as writer:
+            agent_df.to_excel(writer, sheet_name=sheet_name, index=False)
+        with open(temp_path, "rb") as handle:
+            excel_bytes = io.BytesIO(handle.read())
+        html_content = f"""
+            <html>
+            <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
+                <h2>Pending Verification - {html.escape(agent_name)}</h2>
+                <p>Dear {html.escape(agent_name)},</p>
+                <p>Your pending verification patients are attached to this email.</p>
+                <p><strong>Total Rows:</strong> {len(rows)}</p>
+                <p>Please review the attached Excel file.</p>
+                <p>Best regards,<br>Allocation System</p>
+            </body>
+            </html>
+            """
+        safe_name = re.sub(r"[^\w\-]+", "_", agent_name).strip("_") or "agent"
+        today_date = get_ist_today_date_str()
+        success, message = send_email_with_resend(
+            to_email=email_id,
+            subject=f"Pending Verification - {agent_name} - {today_date}",
+            html_content=html_content,
+            attachment_data=excel_bytes,
+            attachment_filename=f"{safe_name}_pending_verification_{datetime.now().strftime('%Y%m%d')}.xlsx",
+        )
+        print(f"[Pending Verification] Send to {agent_name} <{email_id}>: {success} {message}")
+        if success:
+            pending_verification_sent.add(agent_name)
+            return jsonify(
+                {
+                    "success": True,
+                    "message": f"Email sent successfully to {agent_name}",
+                }
+            )
+        return jsonify({"success": False, "error": message})
+    except Exception as exc:
+        return jsonify({"success": False, "error": f"Error sending email: {exc}"})
+    finally:
+        os.close(temp_fd)
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+
+
+@app.route("/reset_pending_verification", methods=["POST"])
+@admin_required
+def reset_pending_verification():
+    global pending_pdf_datasets, pending_excel_sources
+    global pending_agent_staff, pending_agent_staff_filename
+    global pending_verification_agents, pending_verification_rows_by_agent
+    global pending_verification_sent
+    pending_pdf_datasets = []
+    pending_excel_sources = []
+    pending_agent_staff = []
+    pending_agent_staff_filename = None
+    pending_verification_agents = None
+    pending_verification_rows_by_agent = None
+    pending_verification_sent = set()
+    flash("Pending verification has been reset.", "success")
+    return redirect(PENDING_VERIFICATION_REDIRECT)
 
 
 ## ========== AUDITOR EMAIL ALLOCATION ROUTES ==========

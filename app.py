@@ -13630,6 +13630,39 @@ def _strip_invalid_first_priority_assignments(processed_df, agent_allocations):
     return removed
 
 
+def _strip_invalid_oon_assignments(processed_df, agent_allocations):
+    """Unassign OON rows given to non-OON agents, and non-OON rows given to OON agents."""
+    if processed_df is None or not agent_allocations:
+        return 0
+    if "Agent Name" not in processed_df.columns:
+        return 0
+    agent_by_name = {
+        str(a.get("name", "")).strip().lower(): a
+        for a in agent_allocations
+        if str(a.get("name", "")).strip()
+    }
+    removed = 0
+    for idx in processed_df.index:
+        assigned_name = str(processed_df.at[idx, "Agent Name"]).strip()
+        if not assigned_name:
+            continue
+        ag = agent_by_name.get(assigned_name.lower())
+        if not ag:
+            continue
+        if _leftover_oon_allows_agent(ag, processed_df, idx):
+            continue
+        if idx in ag.get("row_indices", []):
+            ag["row_indices"] = [x for x in ag.get("row_indices", []) if x != idx]
+        ag["allocated"] = len(ag.get("row_indices", []))
+        processed_df.at[idx, "Agent Name"] = ""
+        if "Supervisor" in processed_df.columns:
+            processed_df.at[idx, "Supervisor"] = ""
+        if "Team Leader" in processed_df.columns:
+            processed_df.at[idx, "Team Leader"] = ""
+        removed += 1
+    return removed
+
+
 def _fill_agents_to_capacity(
     processed_df,
     agent_allocations,
@@ -13784,7 +13817,8 @@ def _fill_named_agent_from_matching_leftovers(
     """Assign leftover rows to one agent when insurance and priority both match.
 
     Single/secondary locks are ignored here so leftover matching work is not
-    left unassigned while the agent still has capacity.
+    left unassigned while the agent still has capacity. OON rows still stay
+    with OON agents only.
     """
     if processed_df is None or not agent_allocations or "Agent Name" not in processed_df.columns:
         return 0
@@ -13816,6 +13850,8 @@ def _fill_named_agent_from_matching_leftovers(
         if shortfall <= 0:
             break
         if _get_agent_name_at(processed_df, idx):
+            continue
+        if not _leftover_oon_allows_agent(agent, processed_df, idx):
             continue
         if priority_col and not can_agent_work_with_priority(
             agent, processed_df.at[idx, priority_col]
@@ -23986,6 +24022,13 @@ def process_allocation_files_with_dates(
                         print(
                             f"🛡️ [Final First Priority Guard] Unassigned {_removed_bad_fp} First Priority row(s) given to non-First agents."
                         )
+                    _removed_bad_oon = _strip_invalid_oon_assignments(
+                        processed_df, agent_allocations
+                    )
+                    if _removed_bad_oon:
+                        print(
+                            f"🛡️ [Final OON Guard] Unassigned {_removed_bad_oon} OON row(s) given to non-OON agents (or non-OON rows given to OON agents)."
+                        )
                     _filled = _fill_agents_to_capacity(
                         processed_df,
                         agent_allocations,
@@ -24024,9 +24067,12 @@ def process_allocation_files_with_dates(
                     _removed_after_fill += _strip_invalid_first_priority_assignments(
                         processed_df, agent_allocations
                     )
+                    _removed_after_fill += _strip_invalid_oon_assignments(
+                        processed_df, agent_allocations
+                    )
                     if _removed_after_fill:
                         print(
-                            f"🛡️ [Capacity Fill Guard] Unassigned {_removed_after_fill} row(s) that failed insurance or First Priority rules."
+                            f"🛡️ [Capacity Fill Guard] Unassigned {_removed_after_fill} row(s) that failed insurance, First Priority, or OON rules."
                         )
                     _fill_below_capacity_agents_from_matching_leftovers(
                         processed_df,

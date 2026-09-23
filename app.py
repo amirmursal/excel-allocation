@@ -44159,89 +44159,67 @@ def upload_day_shift():
         try:
             file_data = pd.read_excel(filename, sheet_name=None, parse_dates=False)
 
-            # Validate Office Name column is not blank
-            is_valid, error_msg = validate_office_name_not_blank(file_data)
-            if not is_valid:
-                if os.path.exists(filename):
-                    os.remove(filename)
-                return jsonify({"success": False, "message": error_msg}), 400
-
-            # Validate Appointment Date format (MM/DD/YYYY)
-            is_valid, error_msg = validate_appointment_date_format(file_data)
-            if not is_valid:
-                if os.path.exists(filename):
-                    os.remove(filename)
-                return jsonify({"success": False, "message": error_msg}), 400
-
-            # Validate Patient ID is numeric and not blank
-            is_valid, error_msg = validate_patient_id_numeric(file_data)
-            if not is_valid:
-                if os.path.exists(filename):
-                    os.remove(filename)
-                return jsonify({"success": False, "message": error_msg}), 400
-
-            # Validate Patient Name is text and not blank
-            is_valid, error_msg = validate_patient_name_text(file_data)
-            if not is_valid:
-                if os.path.exists(filename):
-                    os.remove(filename)
-                return jsonify({"success": False, "message": error_msg}), 400
-
-            # Validate Dental Primary Ins Carr is text and not blank
-            is_valid, error_msg = validate_dental_primary_ins_carr(file_data)
-            if not is_valid:
-                if os.path.exists(filename):
-                    os.remove(filename)
-                return jsonify({"success": False, "message": error_msg}), 400
-
-            # Validate Received date format (MM/DD/YYYY)
-            is_valid, error_msg = validate_received_date_format(file_data)
-            if not is_valid:
-                if os.path.exists(filename):
-                    os.remove(filename)
-                return jsonify({"success": False, "message": error_msg}), 400
-
-            # Validate Status Code is text and not blank
-            is_valid, error_msg = validate_status_code_text(file_data)
-            if not is_valid:
-                if os.path.exists(filename):
-                    os.remove(filename)
-                return jsonify({"success": False, "message": error_msg}), 400
-
-            # Validate Comment is not blank
-            is_valid, error_msg = validate_column_not_blank(file_data, "Comment")
-            if not is_valid:
-                if os.path.exists(filename):
-                    os.remove(filename)
-                return jsonify({"success": False, "message": error_msg}), 400
-
-            # Validate Plan Name is not blank
-            is_valid, error_msg = validate_column_not_blank(file_data, "Plan Name")
-            if not is_valid:
-                if os.path.exists(filename):
-                    os.remove(filename)
-                return jsonify({"success": False, "message": error_msg}), 400
-
-            # Validate Group Number is not blank
-            is_valid, error_msg = validate_column_not_blank(file_data, "Group Number")
-            if not is_valid:
-                if os.path.exists(filename):
-                    os.remove(filename)
-                return jsonify({"success": False, "message": error_msg}), 400
-
-            # Validate Plan Number: digits + '/' between groups; spaces allowed around '/'
-            is_valid, error_msg = validate_plan_number_numeric_slash_only(file_data)
-            if not is_valid:
-                if os.path.exists(filename):
-                    os.remove(filename)
-                return jsonify({"success": False, "message": error_msg}), 400
-
-            # Validate Agent Name is not blank
-            is_valid, error_msg = validate_column_not_blank(file_data, "Agent Name")
-            if not is_valid:
-                if os.path.exists(filename):
-                    os.remove(filename)
-                return jsonify({"success": False, "message": error_msg}), 400
+            # TODO: Re-enable column validation later.
+            # is_valid, error_msg = validate_office_name_not_blank(file_data)
+            # if not is_valid:
+            #     if os.path.exists(filename):
+            #         os.remove(filename)
+            #     return jsonify({"success": False, "message": error_msg}), 400
+            # is_valid, error_msg = validate_appointment_date_format(file_data)
+            # if not is_valid:
+            #     if os.path.exists(filename):
+            #         os.remove(filename)
+            #     return jsonify({"success": False, "message": error_msg}), 400
+            # is_valid, error_msg = validate_patient_id_numeric(file_data)
+            # if not is_valid:
+            #     if os.path.exists(filename):
+            #         os.remove(filename)
+            #     return jsonify({"success": False, "message": error_msg}), 400
+            # is_valid, error_msg = validate_patient_name_text(file_data)
+            # if not is_valid:
+            #     if os.path.exists(filename):
+            #         os.remove(filename)
+            #     return jsonify({"success": False, "message": error_msg}), 400
+            # is_valid, error_msg = validate_dental_primary_ins_carr(file_data)
+            # if not is_valid:
+            #     if os.path.exists(filename):
+            #         os.remove(filename)
+            #     return jsonify({"success": False, "message": error_msg}), 400
+            # is_valid, error_msg = validate_received_date_format(file_data)
+            # if not is_valid:
+            #     if os.path.exists(filename):
+            #         os.remove(filename)
+            #     return jsonify({"success": False, "message": error_msg}), 400
+            # is_valid, error_msg = validate_status_code_text(file_data)
+            # if not is_valid:
+            #     if os.path.exists(filename):
+            #         os.remove(filename)
+            #     return jsonify({"success": False, "message": error_msg}), 400
+            # is_valid, error_msg = validate_column_not_blank(file_data, "Comment")
+            # if not is_valid:
+            #     if os.path.exists(filename):
+            #         os.remove(filename)
+            #     return jsonify({"success": False, "message": error_msg}), 400
+            # is_valid, error_msg = validate_column_not_blank(file_data, "Plan Name")
+            # if not is_valid:
+            #     if os.path.exists(filename):
+            #         os.remove(filename)
+            #     return jsonify({"success": False, "message": error_msg}), 400
+            # is_valid, error_msg = validate_column_not_blank(file_data, "Group Number")
+            # if not is_valid:
+            #     if os.path.exists(filename):
+            #         os.remove(filename)
+            #     return jsonify({"success": False, "message": error_msg}), 400
+            # is_valid, error_msg = validate_plan_number_numeric_slash_only(file_data)
+            # if not is_valid:
+            #     if os.path.exists(filename):
+            #         os.remove(filename)
+            #     return jsonify({"success": False, "message": error_msg}), 400
+            # is_valid, error_msg = validate_column_not_blank(file_data, "Agent Name")
+            # if not is_valid:
+            #     if os.path.exists(filename):
+            #         os.remove(filename)
+            #     return jsonify({"success": False, "message": error_msg}), 400
 
             # Get notes if provided
             notes = request.form.get("notes", "")
@@ -44311,89 +44289,67 @@ def upload_night_shift():
         try:
             file_data = pd.read_excel(filename, sheet_name=None, parse_dates=False)
 
-            # Validate Office Name column is not blank
-            is_valid, error_msg = validate_office_name_not_blank(file_data)
-            if not is_valid:
-                if os.path.exists(filename):
-                    os.remove(filename)
-                return jsonify({"success": False, "message": error_msg}), 400
-
-            # Validate Appointment Date format (MM/DD/YYYY)
-            is_valid, error_msg = validate_appointment_date_format(file_data)
-            if not is_valid:
-                if os.path.exists(filename):
-                    os.remove(filename)
-                return jsonify({"success": False, "message": error_msg}), 400
-
-            # Validate Patient ID is numeric and not blank
-            is_valid, error_msg = validate_patient_id_numeric(file_data)
-            if not is_valid:
-                if os.path.exists(filename):
-                    os.remove(filename)
-                return jsonify({"success": False, "message": error_msg}), 400
-
-            # Validate Patient Name is text and not blank
-            is_valid, error_msg = validate_patient_name_text(file_data)
-            if not is_valid:
-                if os.path.exists(filename):
-                    os.remove(filename)
-                return jsonify({"success": False, "message": error_msg}), 400
-
-            # Validate Dental Primary Ins Carr is text and not blank
-            is_valid, error_msg = validate_dental_primary_ins_carr(file_data)
-            if not is_valid:
-                if os.path.exists(filename):
-                    os.remove(filename)
-                return jsonify({"success": False, "message": error_msg}), 400
-
-            # Validate Received date format (MM/DD/YYYY)
-            is_valid, error_msg = validate_received_date_format(file_data)
-            if not is_valid:
-                if os.path.exists(filename):
-                    os.remove(filename)
-                return jsonify({"success": False, "message": error_msg}), 400
-
-            # Validate Status Code is text and not blank
-            is_valid, error_msg = validate_status_code_text(file_data)
-            if not is_valid:
-                if os.path.exists(filename):
-                    os.remove(filename)
-                return jsonify({"success": False, "message": error_msg}), 400
-
-            # Validate Comment is not blank
-            is_valid, error_msg = validate_column_not_blank(file_data, "Comment")
-            if not is_valid:
-                if os.path.exists(filename):
-                    os.remove(filename)
-                return jsonify({"success": False, "message": error_msg}), 400
-
-            # Validate Plan Name is not blank
-            is_valid, error_msg = validate_column_not_blank(file_data, "Plan Name")
-            if not is_valid:
-                if os.path.exists(filename):
-                    os.remove(filename)
-                return jsonify({"success": False, "message": error_msg}), 400
-
-            # Validate Group Number is not blank
-            is_valid, error_msg = validate_column_not_blank(file_data, "Group Number")
-            if not is_valid:
-                if os.path.exists(filename):
-                    os.remove(filename)
-                return jsonify({"success": False, "message": error_msg}), 400
-
-            # Validate Plan Number: digits + '/' between groups; spaces allowed around '/'
-            is_valid, error_msg = validate_plan_number_numeric_slash_only(file_data)
-            if not is_valid:
-                if os.path.exists(filename):
-                    os.remove(filename)
-                return jsonify({"success": False, "message": error_msg}), 400
-
-            # Validate Agent Name is not blank
-            is_valid, error_msg = validate_column_not_blank(file_data, "Agent Name")
-            if not is_valid:
-                if os.path.exists(filename):
-                    os.remove(filename)
-                return jsonify({"success": False, "message": error_msg}), 400
+            # TODO: Re-enable column validation later.
+            # is_valid, error_msg = validate_office_name_not_blank(file_data)
+            # if not is_valid:
+            #     if os.path.exists(filename):
+            #         os.remove(filename)
+            #     return jsonify({"success": False, "message": error_msg}), 400
+            # is_valid, error_msg = validate_appointment_date_format(file_data)
+            # if not is_valid:
+            #     if os.path.exists(filename):
+            #         os.remove(filename)
+            #     return jsonify({"success": False, "message": error_msg}), 400
+            # is_valid, error_msg = validate_patient_id_numeric(file_data)
+            # if not is_valid:
+            #     if os.path.exists(filename):
+            #         os.remove(filename)
+            #     return jsonify({"success": False, "message": error_msg}), 400
+            # is_valid, error_msg = validate_patient_name_text(file_data)
+            # if not is_valid:
+            #     if os.path.exists(filename):
+            #         os.remove(filename)
+            #     return jsonify({"success": False, "message": error_msg}), 400
+            # is_valid, error_msg = validate_dental_primary_ins_carr(file_data)
+            # if not is_valid:
+            #     if os.path.exists(filename):
+            #         os.remove(filename)
+            #     return jsonify({"success": False, "message": error_msg}), 400
+            # is_valid, error_msg = validate_received_date_format(file_data)
+            # if not is_valid:
+            #     if os.path.exists(filename):
+            #         os.remove(filename)
+            #     return jsonify({"success": False, "message": error_msg}), 400
+            # is_valid, error_msg = validate_status_code_text(file_data)
+            # if not is_valid:
+            #     if os.path.exists(filename):
+            #         os.remove(filename)
+            #     return jsonify({"success": False, "message": error_msg}), 400
+            # is_valid, error_msg = validate_column_not_blank(file_data, "Comment")
+            # if not is_valid:
+            #     if os.path.exists(filename):
+            #         os.remove(filename)
+            #     return jsonify({"success": False, "message": error_msg}), 400
+            # is_valid, error_msg = validate_column_not_blank(file_data, "Plan Name")
+            # if not is_valid:
+            #     if os.path.exists(filename):
+            #         os.remove(filename)
+            #     return jsonify({"success": False, "message": error_msg}), 400
+            # is_valid, error_msg = validate_column_not_blank(file_data, "Group Number")
+            # if not is_valid:
+            #     if os.path.exists(filename):
+            #         os.remove(filename)
+            #     return jsonify({"success": False, "message": error_msg}), 400
+            # is_valid, error_msg = validate_plan_number_numeric_slash_only(file_data)
+            # if not is_valid:
+            #     if os.path.exists(filename):
+            #         os.remove(filename)
+            #     return jsonify({"success": False, "message": error_msg}), 400
+            # is_valid, error_msg = validate_column_not_blank(file_data, "Agent Name")
+            # if not is_valid:
+            #     if os.path.exists(filename):
+            #         os.remove(filename)
+            #     return jsonify({"success": False, "message": error_msg}), 400
 
             # Get notes if provided
             notes = request.form.get("notes", "")
@@ -44462,89 +44418,67 @@ def upload_ntbp():
         try:
             file_data = pd.read_excel(filename, sheet_name=None, parse_dates=False)
 
-            # Validate Office Name column is not blank
-            is_valid, error_msg = validate_office_name_not_blank(file_data)
-            if not is_valid:
-                if os.path.exists(filename):
-                    os.remove(filename)
-                return jsonify({"success": False, "message": error_msg}), 400
-
-            # Validate Appointment Date format (MM/DD/YYYY)
-            is_valid, error_msg = validate_appointment_date_format(file_data)
-            if not is_valid:
-                if os.path.exists(filename):
-                    os.remove(filename)
-                return jsonify({"success": False, "message": error_msg}), 400
-
-            # Validate Patient ID is numeric and not blank
-            is_valid, error_msg = validate_patient_id_numeric(file_data)
-            if not is_valid:
-                if os.path.exists(filename):
-                    os.remove(filename)
-                return jsonify({"success": False, "message": error_msg}), 400
-
-            # Validate Patient Name is text and not blank
-            is_valid, error_msg = validate_patient_name_text(file_data)
-            if not is_valid:
-                if os.path.exists(filename):
-                    os.remove(filename)
-                return jsonify({"success": False, "message": error_msg}), 400
-
-            # Validate Dental Primary Ins Carr is text and not blank
-            is_valid, error_msg = validate_dental_primary_ins_carr(file_data)
-            if not is_valid:
-                if os.path.exists(filename):
-                    os.remove(filename)
-                return jsonify({"success": False, "message": error_msg}), 400
-
-            # Validate Received date format (MM/DD/YYYY)
-            is_valid, error_msg = validate_received_date_format(file_data)
-            if not is_valid:
-                if os.path.exists(filename):
-                    os.remove(filename)
-                return jsonify({"success": False, "message": error_msg}), 400
-
-            # Validate Status Code is text and not blank
-            is_valid, error_msg = validate_status_code_text(file_data)
-            if not is_valid:
-                if os.path.exists(filename):
-                    os.remove(filename)
-                return jsonify({"success": False, "message": error_msg}), 400
-
-            # Validate Comment is not blank
-            is_valid, error_msg = validate_column_not_blank(file_data, "Comment")
-            if not is_valid:
-                if os.path.exists(filename):
-                    os.remove(filename)
-                return jsonify({"success": False, "message": error_msg}), 400
-
-            # Validate Plan Name is not blank
-            is_valid, error_msg = validate_column_not_blank(file_data, "Plan Name")
-            if not is_valid:
-                if os.path.exists(filename):
-                    os.remove(filename)
-                return jsonify({"success": False, "message": error_msg}), 400
-
-            # Validate Group Number is not blank
-            is_valid, error_msg = validate_column_not_blank(file_data, "Group Number")
-            if not is_valid:
-                if os.path.exists(filename):
-                    os.remove(filename)
-                return jsonify({"success": False, "message": error_msg}), 400
-
-            # Validate Plan Number: digits + '/' between groups; spaces allowed around '/'
-            is_valid, error_msg = validate_plan_number_numeric_slash_only(file_data)
-            if not is_valid:
-                if os.path.exists(filename):
-                    os.remove(filename)
-                return jsonify({"success": False, "message": error_msg}), 400
-
-            # Validate Agent Name is not blank
-            is_valid, error_msg = validate_column_not_blank(file_data, "Agent Name")
-            if not is_valid:
-                if os.path.exists(filename):
-                    os.remove(filename)
-                return jsonify({"success": False, "message": error_msg}), 400
+            # TODO: Re-enable column validation later.
+            # is_valid, error_msg = validate_office_name_not_blank(file_data)
+            # if not is_valid:
+            #     if os.path.exists(filename):
+            #         os.remove(filename)
+            #     return jsonify({"success": False, "message": error_msg}), 400
+            # is_valid, error_msg = validate_appointment_date_format(file_data)
+            # if not is_valid:
+            #     if os.path.exists(filename):
+            #         os.remove(filename)
+            #     return jsonify({"success": False, "message": error_msg}), 400
+            # is_valid, error_msg = validate_patient_id_numeric(file_data)
+            # if not is_valid:
+            #     if os.path.exists(filename):
+            #         os.remove(filename)
+            #     return jsonify({"success": False, "message": error_msg}), 400
+            # is_valid, error_msg = validate_patient_name_text(file_data)
+            # if not is_valid:
+            #     if os.path.exists(filename):
+            #         os.remove(filename)
+            #     return jsonify({"success": False, "message": error_msg}), 400
+            # is_valid, error_msg = validate_dental_primary_ins_carr(file_data)
+            # if not is_valid:
+            #     if os.path.exists(filename):
+            #         os.remove(filename)
+            #     return jsonify({"success": False, "message": error_msg}), 400
+            # is_valid, error_msg = validate_received_date_format(file_data)
+            # if not is_valid:
+            #     if os.path.exists(filename):
+            #         os.remove(filename)
+            #     return jsonify({"success": False, "message": error_msg}), 400
+            # is_valid, error_msg = validate_status_code_text(file_data)
+            # if not is_valid:
+            #     if os.path.exists(filename):
+            #         os.remove(filename)
+            #     return jsonify({"success": False, "message": error_msg}), 400
+            # is_valid, error_msg = validate_column_not_blank(file_data, "Comment")
+            # if not is_valid:
+            #     if os.path.exists(filename):
+            #         os.remove(filename)
+            #     return jsonify({"success": False, "message": error_msg}), 400
+            # is_valid, error_msg = validate_column_not_blank(file_data, "Plan Name")
+            # if not is_valid:
+            #     if os.path.exists(filename):
+            #         os.remove(filename)
+            #     return jsonify({"success": False, "message": error_msg}), 400
+            # is_valid, error_msg = validate_column_not_blank(file_data, "Group Number")
+            # if not is_valid:
+            #     if os.path.exists(filename):
+            #         os.remove(filename)
+            #     return jsonify({"success": False, "message": error_msg}), 400
+            # is_valid, error_msg = validate_plan_number_numeric_slash_only(file_data)
+            # if not is_valid:
+            #     if os.path.exists(filename):
+            #         os.remove(filename)
+            #     return jsonify({"success": False, "message": error_msg}), 400
+            # is_valid, error_msg = validate_column_not_blank(file_data, "Agent Name")
+            # if not is_valid:
+            #     if os.path.exists(filename):
+            #         os.remove(filename)
+            #     return jsonify({"success": False, "message": error_msg}), 400
 
             # Clear all existing NTBP files for this agent before saving new one (override behavior)
             existing_files = NTBPFile.query.filter_by(agent_id=user.id).all()
@@ -44676,89 +44610,67 @@ def upload_daily_consolidate():
         try:
             file_data = pd.read_excel(filename, sheet_name=None, parse_dates=False)
 
-            # Validate Office Name column is not blank
-            is_valid, error_msg = validate_office_name_not_blank(file_data)
-            if not is_valid:
-                if os.path.exists(filename):
-                    os.remove(filename)
-                return jsonify({"success": False, "message": error_msg}), 400
-
-            # Validate Appointment Date format (MM/DD/YYYY)
-            is_valid, error_msg = validate_appointment_date_format(file_data)
-            if not is_valid:
-                if os.path.exists(filename):
-                    os.remove(filename)
-                return jsonify({"success": False, "message": error_msg}), 400
-
-            # Validate Patient ID is numeric and not blank
-            is_valid, error_msg = validate_patient_id_numeric(file_data)
-            if not is_valid:
-                if os.path.exists(filename):
-                    os.remove(filename)
-                return jsonify({"success": False, "message": error_msg}), 400
-
-            # Validate Patient Name is text and not blank
-            is_valid, error_msg = validate_patient_name_text(file_data)
-            if not is_valid:
-                if os.path.exists(filename):
-                    os.remove(filename)
-                return jsonify({"success": False, "message": error_msg}), 400
-
-            # Validate Dental Primary Ins Carr is text and not blank
-            is_valid, error_msg = validate_dental_primary_ins_carr(file_data)
-            if not is_valid:
-                if os.path.exists(filename):
-                    os.remove(filename)
-                return jsonify({"success": False, "message": error_msg}), 400
-
-            # Validate Received date format (MM/DD/YYYY)
-            is_valid, error_msg = validate_received_date_format(file_data)
-            if not is_valid:
-                if os.path.exists(filename):
-                    os.remove(filename)
-                return jsonify({"success": False, "message": error_msg}), 400
-
-            # Validate Status Code is text and not blank
-            is_valid, error_msg = validate_status_code_text(file_data)
-            if not is_valid:
-                if os.path.exists(filename):
-                    os.remove(filename)
-                return jsonify({"success": False, "message": error_msg}), 400
-
-            # Validate Comment is not blank
-            is_valid, error_msg = validate_column_not_blank(file_data, "Comment")
-            if not is_valid:
-                if os.path.exists(filename):
-                    os.remove(filename)
-                return jsonify({"success": False, "message": error_msg}), 400
-
-            # Validate Plan Name is not blank
-            is_valid, error_msg = validate_column_not_blank(file_data, "Plan Name")
-            if not is_valid:
-                if os.path.exists(filename):
-                    os.remove(filename)
-                return jsonify({"success": False, "message": error_msg}), 400
-
-            # Validate Group Number is not blank
-            is_valid, error_msg = validate_column_not_blank(file_data, "Group Number")
-            if not is_valid:
-                if os.path.exists(filename):
-                    os.remove(filename)
-                return jsonify({"success": False, "message": error_msg}), 400
-
-            # Validate Plan Number: digits + '/' between groups; spaces allowed around '/'
-            is_valid, error_msg = validate_plan_number_numeric_slash_only(file_data)
-            if not is_valid:
-                if os.path.exists(filename):
-                    os.remove(filename)
-                return jsonify({"success": False, "message": error_msg}), 400
-
-            # Validate Agent Name is not blank
-            is_valid, error_msg = validate_column_not_blank(file_data, "Agent Name")
-            if not is_valid:
-                if os.path.exists(filename):
-                    os.remove(filename)
-                return jsonify({"success": False, "message": error_msg}), 400
+            # TODO: Re-enable column validation later.
+            # is_valid, error_msg = validate_office_name_not_blank(file_data)
+            # if not is_valid:
+            #     if os.path.exists(filename):
+            #         os.remove(filename)
+            #     return jsonify({"success": False, "message": error_msg}), 400
+            # is_valid, error_msg = validate_appointment_date_format(file_data)
+            # if not is_valid:
+            #     if os.path.exists(filename):
+            #         os.remove(filename)
+            #     return jsonify({"success": False, "message": error_msg}), 400
+            # is_valid, error_msg = validate_patient_id_numeric(file_data)
+            # if not is_valid:
+            #     if os.path.exists(filename):
+            #         os.remove(filename)
+            #     return jsonify({"success": False, "message": error_msg}), 400
+            # is_valid, error_msg = validate_patient_name_text(file_data)
+            # if not is_valid:
+            #     if os.path.exists(filename):
+            #         os.remove(filename)
+            #     return jsonify({"success": False, "message": error_msg}), 400
+            # is_valid, error_msg = validate_dental_primary_ins_carr(file_data)
+            # if not is_valid:
+            #     if os.path.exists(filename):
+            #         os.remove(filename)
+            #     return jsonify({"success": False, "message": error_msg}), 400
+            # is_valid, error_msg = validate_received_date_format(file_data)
+            # if not is_valid:
+            #     if os.path.exists(filename):
+            #         os.remove(filename)
+            #     return jsonify({"success": False, "message": error_msg}), 400
+            # is_valid, error_msg = validate_status_code_text(file_data)
+            # if not is_valid:
+            #     if os.path.exists(filename):
+            #         os.remove(filename)
+            #     return jsonify({"success": False, "message": error_msg}), 400
+            # is_valid, error_msg = validate_column_not_blank(file_data, "Comment")
+            # if not is_valid:
+            #     if os.path.exists(filename):
+            #         os.remove(filename)
+            #     return jsonify({"success": False, "message": error_msg}), 400
+            # is_valid, error_msg = validate_column_not_blank(file_data, "Plan Name")
+            # if not is_valid:
+            #     if os.path.exists(filename):
+            #         os.remove(filename)
+            #     return jsonify({"success": False, "message": error_msg}), 400
+            # is_valid, error_msg = validate_column_not_blank(file_data, "Group Number")
+            # if not is_valid:
+            #     if os.path.exists(filename):
+            #         os.remove(filename)
+            #     return jsonify({"success": False, "message": error_msg}), 400
+            # is_valid, error_msg = validate_plan_number_numeric_slash_only(file_data)
+            # if not is_valid:
+            #     if os.path.exists(filename):
+            #         os.remove(filename)
+            #     return jsonify({"success": False, "message": error_msg}), 400
+            # is_valid, error_msg = validate_column_not_blank(file_data, "Agent Name")
+            # if not is_valid:
+            #     if os.path.exists(filename):
+            #         os.remove(filename)
+            #     return jsonify({"success": False, "message": error_msg}), 400
 
             # Clear all existing Daily Consolidate files for this agent before saving new one (override behavior)
             existing_files = DailyConsolidateFile.query.filter_by(

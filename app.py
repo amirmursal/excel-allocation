@@ -30,6 +30,7 @@ import io
 import uuid
 import json
 import time
+import threading
 from collections import Counter
 from functools import wraps
 from urllib.parse import quote
@@ -1401,6 +1402,196 @@ def _imagen_timing(step, seconds, extra=""):
     """Step 0 measurement only. Search Railway logs for [ImagenTiming]."""
     extra_txt = f" | {extra}" if extra else ""
     print(f"[ImagenTiming] {step}: {seconds:.2f}s{extra_txt}", flush=True)
+
+
+_imagen_job_lock = threading.Lock()
+
+
+def _imagen_job_dir():
+    folder = os.path.join(tempfile.gettempdir(), "imagen_allocation_job")
+    os.makedirs(folder, exist_ok=True)
+    return folder
+
+
+def _imagen_job_status_path():
+    return os.path.join(_imagen_job_dir(), "status.json")
+
+
+def _imagen_job_xlsx_path():
+    return os.path.join(_imagen_job_dir(), "result.xlsx")
+
+
+def _write_imagen_job_status(payload):
+    path = _imagen_job_status_path()
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle)
+    os.replace(tmp, path)
+
+
+def _read_imagen_job_status():
+    path = _imagen_job_status_path()
+    if not os.path.exists(path):
+        return {"status": "idle"}
+    try:
+        with open(path, encoding="utf-8") as handle:
+            data = json.load(handle)
+        if isinstance(data, dict):
+            return data
+    except Exception:
+        pass
+    return {"status": "idle"}
+
+
+def _imagen_result_file_ready():
+    status = _read_imagen_job_status().get("status")
+    return status == "ready" and os.path.exists(_imagen_job_xlsx_path())
+
+
+def _imagen_job_still_current(job_id):
+    return bool(job_id) and _read_imagen_job_status().get("job_id") == job_id
+
+
+def _clear_imagen_job_files():
+    for path in (_imagen_job_status_path(), _imagen_job_xlsx_path()):
+        if os.path.exists(path):
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+
+
+def _copy_excel_sheets(data):
+    if data is None:
+        return None
+    if isinstance(data, dict):
+        copied = {}
+        for key, value in data.items():
+            copied[key] = value.copy() if hasattr(value, "copy") else value
+        return copied
+    if hasattr(data, "copy"):
+        return data.copy()
+    return data
+
+
+def _build_and_save_imagen_xlsx(sheets, agent_allocs, dest_path):
+    """Write the same Imagen download workbook the UI already produces."""
+    from openpyxl import load_workbook
+
+    output_buffer = io.BytesIO()
+    with pd.ExcelWriter(output_buffer, engine="openpyxl") as writer:
+        for sheet_name, df in sheets.items():
+            df_copy = df.copy()
+            df_copy = enforce_first_priority_assignment_on_df(df_copy, agent_allocs)
+            for col in df_copy.columns:
+                if ("appointment" in col.lower() and "date" in col.lower()) or (
+                    "receive" in col.lower() and "date" in col.lower()
+                ):
+                    df_copy[col] = pd.to_datetime(df_copy[col], errors="coerce").dt.strftime(
+                        "%m/%d/%Y"
+                    )
+            if "Agent Name" in df_copy.columns and "Supervisor" in df_copy.columns:
+                agent_name_idx = df_copy.columns.get_loc("Agent Name")
+                cols = df_copy.columns.tolist()
+                has_shift = "Shift" in cols
+                if has_shift:
+                    cols.remove("Shift")
+                cols.remove("Supervisor")
+                insert_at = agent_name_idx + 1
+                if has_shift:
+                    cols.insert(insert_at, "Shift")
+                    insert_at += 1
+                cols.insert(insert_at, "Supervisor")
+                df_copy = df_copy[cols]
+            df_copy = drop_auditors_column_from_export_df(df_copy)
+            df_copy.to_excel(writer, sheet_name=str(sheet_name)[:31], index=False)
+
+    output_buffer.seek(0)
+    wb = load_workbook(output_buffer)
+    for sheet_name in wb.sheetnames:
+        apply_first_priority_full_row_red_openpyxl(wb, sheet_name)
+    apply_comparison_tool_excel_output_styling(wb)
+    wb.save(dest_path)
+    wb.close()
+
+
+def _run_imagen_allocation_job(job):
+    """Background Imagen allocation. Matching rules are unchanged."""
+    global data_file_data, processing_result, agent_allocations_data
+    with app.app_context():
+        started = time.time()
+        try:
+            data_sheets = job["data_sheets"]
+            data_df = list(data_sheets.values())[0]
+            print(
+                f"⚙️ [ImagenJob] Calling process_allocation_files_with_dates for {len(data_df)} rows"
+            )
+            result_message, processed_df = process_allocation_files_with_dates(
+                job["allocation_data"],
+                data_df,
+                [],
+                "",
+                job["appointment_dates"],
+                job["appointment_dates_second"],
+                job["receive_dates"],
+                job["selected_shift"],
+                job["excluded_agents"],
+            )
+            elapsed = time.time() - started
+            _imagen_timing(
+                "process_allocation_only", elapsed, f"rows={len(data_df)}"
+            )
+            if not _imagen_job_still_current(job.get("job_id")):
+                print("⚠️ [ImagenJob] Job superseded; skipping write")
+                return
+
+            if processed_df is None:
+                processing_result = result_message
+                _write_imagen_job_status(
+                    {
+                        "status": "error",
+                        "job_id": job.get("job_id"),
+                        "message": str(result_message or "Allocation returned no data"),
+                        "elapsed_s": round(elapsed, 2),
+                    }
+                )
+                return
+
+            first_key = list(data_sheets.keys())[0]
+            data_sheets[first_key] = processed_df
+            data_file_data = data_sheets
+            processing_result = result_message
+            dest = _imagen_job_xlsx_path()
+            _build_and_save_imagen_xlsx(
+                data_sheets, agent_allocations_data, dest
+            )
+            download_name = f"Imagen Allocation {datetime.now().strftime('%m_%d_%Y')}.xlsx"
+            _write_imagen_job_status(
+                {
+                    "status": "ready",
+                    "job_id": job.get("job_id"),
+                    "message": result_message,
+                    "download_name": download_name,
+                    "elapsed_s": round(elapsed, 2),
+                    "rows": int(len(processed_df)),
+                }
+            )
+            print(f"✅ [ImagenJob] Result saved to {dest} in {elapsed:.2f}s")
+        except Exception as exc:
+            import traceback
+
+            error_details = traceback.format_exc()
+            print(f"❌ [ImagenJob] {exc}\n{error_details}")
+            processing_result = f"❌ Error processing data file: {exc}"
+            if _imagen_job_still_current(job.get("job_id")):
+                _write_imagen_job_status(
+                    {
+                        "status": "error",
+                        "job_id": job.get("job_id"),
+                        "message": processing_result,
+                        "elapsed_s": round(time.time() - started, 2),
+                    }
+                )
 
 
 # Global variables to store session data (fallback for backward compatibility)
@@ -4603,7 +4794,7 @@ HTML_TEMPLATE = """
                 {% endif %}
 
                 <!-- Download Section -->
-                {% if processing_result and ('Priority processing completed successfully' in processing_result or 'Imagen Allocation Complete' in processing_result) %}
+                {% if imagen_result_file_ready %}
                 <div class="section">
                     <h3>💾 Download your Excel file with updated Priority Status assignments.</h3>
                     <form action="/download_result" method="post" id="imagen-download-form">
@@ -10393,66 +10584,130 @@ HTML_TEMPLATE = """
             const progressBar = document.getElementById('progress-bar');
             const progressText = document.getElementById('progress-text');
             
-            if (!progressBar || !progressText) {
-                return;
-            }
-            
             const progressInterval = setInterval(() => {
                 progress += Math.random() * 15;
                 if (progress > 90) progress = 90;
-                
-                progressBar.style.width = progress + '%';
-                progressBar.textContent = Math.round(progress) + '%';
-                
-                if (progress < 30) {
-                    progressText.textContent = 'Reading files...';
-                } else if (progress < 60) {
-                    progressText.textContent = 'Analyzing appointment dates...';
-                } else if (progress < 90) {
-                    progressText.textContent = 'Assigning priorities...';
-                } else {
-                    progressText.textContent = 'Finalizing results...';
+                if (progressBar) {
+                    progressBar.style.width = progress + '%';
+                    progressBar.textContent = Math.round(progress) + '%';
+                }
+                if (progressText) {
+                    if (progress < 30) {
+                        progressText.textContent = 'Reading files...';
+                    } else if (progress < 60) {
+                        progressText.textContent = 'Analyzing appointment dates...';
+                    } else if (progress < 90) {
+                        progressText.textContent = 'Assigning priorities...';
+                    } else {
+                        progressText.textContent = 'Finalizing results...';
+                    }
                 }
             }, 200);
             
-            // Make AJAX request with form body
             const formData = new FormData(form);
-            
-            // Note: urlParams, currentMenu, and currentSubmenu are already declared at the top of the function
             
             fetch('/process_files', {
                 method: 'POST',
                 body: formData,
+                headers: { 'Accept': 'application/json' },
                 redirect: 'follow'
             })
-            .then(response => {
-                clearInterval(progressInterval);
+            .then(response => response.json().then(data => ({ ok: response.ok, status: response.status, data })).catch(() => ({ ok: response.ok, status: response.status, data: null })))
+            .then(({ ok, data }) => {
+                if (data && (data.status === 'running' || data.ready)) {
+                    pollImagenAllocationJob(currentMenu, currentSubmenu, progressInterval, progressBar, progressText);
+                    return;
+                }
+                if (progressInterval) clearInterval(progressInterval);
+                if (progressText) {
+                    progressText.textContent = (data && data.message) ? data.message : (ok ? 'Processing complete!' : 'Processing failed');
+                }
+                setTimeout(() => {
+                    window.location.href = `/?menu=${currentMenu}&submenu=${currentSubmenu}`;
+                }, 800);
+            })
+            .catch(error => {
+                if (progressInterval) clearInterval(progressInterval);
+                if (progressText) {
+                    progressText.textContent = 'Error: ' + error.message;
+                }
+                setTimeout(() => {
+                    window.location.href = `/?menu=${currentMenu}&submenu=${currentSubmenu}`;
+                }, 2000);
+            });
+        }
+
+        function pollImagenAllocationJob(currentMenu, currentSubmenu, progressInterval, progressBar, progressText) {
+            const finish = (text, delay) => {
+                if (progressInterval) clearInterval(progressInterval);
                 if (progressBar) {
                     progressBar.style.width = '100%';
                     progressBar.textContent = '100%';
                 }
                 if (progressText) {
-                    progressText.textContent = 'Processing complete!';
+                    progressText.textContent = text;
                 }
-                
-                // Reload page with menu parameters preserved to show results
                 setTimeout(() => {
-                    const redirectUrl = `/?menu=${currentMenu}&submenu=${currentSubmenu}`;
-                    window.location.href = redirectUrl;
-                }, 1000);
-            })
-            .catch(error => {
-                clearInterval(progressInterval);
-                if (progressText) {
-                    progressText.textContent = 'Error: ' + error.message;
-                }
-                // On error, reload to show error message with menu preserved
-                setTimeout(() => {
-                    const redirectUrl = `/?menu=${currentMenu}&submenu=${currentSubmenu}`;
-                    window.location.href = redirectUrl;
-                }, 2000);
-            });
+                    window.location.href = `/?menu=${currentMenu}&submenu=${currentSubmenu}`;
+                }, delay);
+            };
+            const poll = () => {
+                fetch('/imagen_allocation_status', { headers: { 'Accept': 'application/json' } })
+                    .then(response => response.json())
+                    .then(data => {
+                        if (data.status === 'ready' || data.ready) {
+                            finish('Processing complete!', 400);
+                            return;
+                        }
+                        if (data.status === 'error') {
+                            finish(data.message || 'Processing failed', 800);
+                            return;
+                        }
+                        if (data.status === 'running') {
+                            setTimeout(poll, 2000);
+                            return;
+                        }
+                        finish('Processing complete!', 400);
+                    })
+                    .catch(() => setTimeout(poll, 2000));
+            };
+            poll();
         }
+
+        function resumeImagenAllocationPollIfRunning() {
+            const overlay = document.getElementById('processing-status');
+            if (!overlay) return;
+            const urlParams = new URLSearchParams(window.location.search);
+            const currentMenu = urlParams.get('menu') || 'allocations';
+            const currentSubmenu = urlParams.get('submenu') || 'image-allocation';
+            if (currentMenu !== 'allocations' || currentSubmenu !== 'image-allocation') return;
+            fetch('/imagen_allocation_status', { headers: { 'Accept': 'application/json' } })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.status !== 'running') return;
+                    overlay.style.display = 'flex';
+                    const processBtn = document.getElementById('process-btn');
+                    if (processBtn) {
+                        processBtn.disabled = true;
+                        processBtn.textContent = 'Processing...';
+                    }
+                    let progress = 40;
+                    const progressBar = document.getElementById('progress-bar');
+                    const progressText = document.getElementById('progress-text');
+                    const progressInterval = setInterval(() => {
+                        progress += Math.random() * 8;
+                        if (progress > 90) progress = 90;
+                        if (progressBar) {
+                            progressBar.style.width = progress + '%';
+                            progressBar.textContent = Math.round(progress) + '%';
+                        }
+                        if (progressText) progressText.textContent = 'Assigning priorities...';
+                    }, 400);
+                    pollImagenAllocationJob(currentMenu, currentSubmenu, progressInterval, progressBar, progressText);
+                })
+                .catch(() => {});
+        }
+        resumeImagenAllocationPollIfRunning();
         
         function uploadAgentWorkFile() {
             const form = document.getElementById('agentUploadForm');
@@ -24915,6 +25170,12 @@ def index():
             na_rep="",
         )
 
+    imagen_job_status = _read_imagen_job_status()
+    imagen_result_file_ready = _imagen_result_file_ready()
+    imagen_processing_result = processing_result
+    if not imagen_processing_result and imagen_job_status.get("message"):
+        imagen_processing_result = imagen_job_status.get("message")
+
     render_started = time.time()
     rendered = render_template_string(
         HTML_TEMPLATE,
@@ -24922,7 +25183,8 @@ def index():
         data_file_data=data_file_data,
         allocation_filename=allocation_filename,
         data_filename=data_filename,
-        processing_result=processing_result,
+        processing_result=imagen_processing_result,
+        imagen_result_file_ready=imagen_result_file_ready,
         agent_processing_result=agent_processing_result,
         agent_allocations_data=agent_allocations_data,
         agent_work_files=agent_work_files,
@@ -27727,149 +27989,128 @@ def process_ev_allocation():
 @app.route("/process_files", methods=["POST"])
 @admin_required
 def process_files():
-    global allocation_data, data_file_data, processing_result, agent_processing_result, agent_allocations_data
-    global email_staff_details, email_staff_filename
-    global email_allocation_data, email_allocation_filename, email_allocation_agents_list
-    global tracker_data, tracker_filename, tracker_file_ready
+    global allocation_data, data_file_data, processing_result
 
     request_started = time.time()
-    # Get current user
-    user = get_user_by_username(session.get("user_id"))
-
-    # Preserve menu and submenu parameters to stay on Imagen Allocation view
     current_menu = request.form.get("current_menu", "allocations")
     current_submenu = request.form.get("current_submenu", "image-allocation")
+    wants_json = "application/json" in (request.headers.get("Accept") or "")
 
-    # Load all agent work files for admin view
-    all_agent_work_files = None
-    day_shift_files = None
-    night_shift_files = None
-    ntbp_files = None
-    qcp_files = None
-    daily_consolidate_files = None
-    if user and user.role == "admin":
-        lists_started = time.time()
-        all_agent_work_files = get_all_agent_work_files()
-        day_shift_files = get_day_shift_files()
-        night_shift_files = get_night_shift_files()
-        ntbp_files = get_ntbp_files()
-        qcp_files = get_qcp_files()
-        daily_consolidate_files = get_daily_consolidate_files()
-        nh_files = get_nh_files()
-        _imagen_timing(
-            "process_unused_agent_file_lists", time.time() - lists_started
-        )
+    def _redirect_or_json(payload, code=200, flash_msg=None, flash_cat="info"):
+        if wants_json:
+            return jsonify(payload), code
+        if flash_msg:
+            flash(flash_msg, flash_cat)
+        redirect_url = f"/?menu={current_menu}"
+        if current_submenu:
+            redirect_url += f"&submenu={current_submenu}"
+        return redirect(redirect_url)
 
     if not data_file_data:
         processing_result = "❌ Error: Please upload data file first"
-        # Redirect back to the same view with menu parameters preserved
-        redirect_url = f"/?menu={current_menu}"
-        if current_submenu:
-            redirect_url += f"&submenu={current_submenu}"
-        flash(processing_result, "error")
-        return redirect(redirect_url)
-
-    try:
-        process_start_time = time.time()
-        print(
-            f"🔄 [process_files] Starting processing at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+        return _redirect_or_json(
+            {"status": "error", "message": processing_result},
+            400,
+            processing_result,
+            "error",
         )
 
-        # Get the first sheet from data file
-        if not data_file_data:
-            raise ValueError("No data file available")
-
-        data_df = list(data_file_data.values())[0]
-
-        if data_df is None or len(data_df) == 0:
-            raise ValueError("Data file is empty")
-
-        print(f"📊 [process_files] Processing {len(data_df)} rows from data file")
-
-        # Get selected appointment dates from calendar
-        appointment_dates = request.form.getlist("appointment_dates")
-        appointment_dates_second = request.form.getlist("appointment_dates_second")
-        receive_dates = request.form.getlist("receive_dates")
-        debug_count = request.form.get("debug_selected_count", "0")
-        debug_count_second = request.form.get("debug_selected_count_second", "0")
-
-        # Get shift selection and excluded agents
-        selected_shift = request.form.get("selected_shift")
-        excluded_agents = request.form.getlist("excluded_agents")
-
-        print(
-            f"📅 [process_files] Selected dates - First: {len(appointment_dates)}, Second: {len(appointment_dates_second)}, Receive: {len(receive_dates)}"
+    data_df = list(data_file_data.values())[0]
+    if data_df is None or len(data_df) == 0:
+        processing_result = "❌ Error: Data file is empty"
+        return _redirect_or_json(
+            {"status": "error", "message": processing_result},
+            400,
+            processing_result,
+            "error",
         )
 
-        if selected_shift:
-            print(
-                f"👥 [process_files] Selected shift: {selected_shift}, Excluded agents: {len(excluded_agents)}"
+    appointment_dates = request.form.getlist("appointment_dates")
+    appointment_dates_second = request.form.getlist("appointment_dates_second")
+    receive_dates = request.form.getlist("receive_dates")
+    selected_shift = request.form.get("selected_shift")
+    excluded_agents = request.form.getlist("excluded_agents")
+
+    print(
+        f"📅 [process_files] Selected dates - First: {len(appointment_dates)}, Second: {len(appointment_dates_second)}, Receive: {len(receive_dates)}"
+    )
+    if selected_shift:
+        print(
+            f"👥 [process_files] Selected shift: {selected_shift}, Excluded agents: {len(excluded_agents)}"
+        )
+
+    with _imagen_job_lock:
+        existing = _read_imagen_job_status()
+        if existing.get("status") == "running":
+            return _redirect_or_json(
+                {
+                    "status": "running",
+                    "message": "Imagen allocation is already running",
+                },
+                202,
             )
 
-        # Process the data file with selected dates and allocation data
-        print(f"⚙️ [process_files] Calling process_allocation_files_with_dates...")
-        allocate_started = time.time()
-        result_message, processed_df = process_allocation_files_with_dates(
-            allocation_data,
-            data_df,
-            [],
-            "",
-            appointment_dates,
-            appointment_dates_second,
-            receive_dates,
-            selected_shift,
-            excluded_agents,
+        job_id = str(uuid.uuid4())
+        xlsx_path = _imagen_job_xlsx_path()
+        if os.path.exists(xlsx_path):
+            try:
+                os.remove(xlsx_path)
+            except OSError:
+                pass
+
+        processing_result = None
+        _write_imagen_job_status(
+            {
+                "status": "running",
+                "job_id": job_id,
+                "started_at": datetime.now().isoformat(timespec="seconds"),
+                "rows": int(len(data_df)),
+            }
         )
-        allocate_elapsed = time.time() - allocate_started
-        _imagen_timing(
-            "process_allocation_only",
-            allocate_elapsed,
-            f"rows={len(data_df)}",
+        job = {
+            "job_id": job_id,
+            "allocation_data": _copy_excel_sheets(allocation_data),
+            "data_sheets": _copy_excel_sheets(data_file_data),
+            "appointment_dates": list(appointment_dates),
+            "appointment_dates_second": list(appointment_dates_second),
+            "receive_dates": list(receive_dates),
+            "selected_shift": selected_shift,
+            "excluded_agents": list(excluded_agents),
+        }
+        thread = threading.Thread(
+            target=_run_imagen_allocation_job,
+            args=(job,),
+            name=f"imagen-allocation-{job_id[:8]}",
+            daemon=True,
         )
+        thread.start()
 
-        process_elapsed = time.time() - process_start_time
-        print(
-            f"⏱️ [process_files] Processing completed in {process_elapsed:.2f} seconds"
-        )
+    _imagen_timing("process_request_accepted", time.time() - request_started)
+    print(f"🔄 [process_files] Started background job {job_id} for {len(data_df)} rows")
+    return _redirect_or_json(
+        {
+            "status": "running",
+            "job_id": job_id,
+            "message": "Imagen allocation started",
+            "rows": int(len(data_df)),
+        },
+        202,
+    )
 
-        if processed_df is not None:
-            # Store the result for download
-            processing_result = result_message
-            # Update the data_file_data with the processed result
-            data_file_data[list(data_file_data.keys())[0]] = processed_df
-            print(f"✅ [process_files] Successfully processed {len(processed_df)} rows")
-        else:
-            processing_result = result_message
-            print(
-                f"⚠️ [process_files] Processing returned None - {result_message[:100]}"
-            )
 
-        # Redirect back to the same view with menu parameters preserved
-        redirect_url = f"/?menu={current_menu}"
-        if current_submenu:
-            redirect_url += f"&submenu={current_submenu}"
-        flash(processing_result, "success" if processed_df is not None else "info")
-        _imagen_timing("process_request_total", time.time() - request_started)
-        return redirect(redirect_url)
-
-    except Exception as e:
-        import traceback
-
-        error_details = traceback.format_exc()
-        error_message = f"❌ Error processing data file: {str(e)}"
-        processing_result = error_message
-
-        # Log full error details
-        print(f"❌ [process_files] Error occurred: {str(e)}")
-        print(f"📋 [process_files] Traceback:\n{error_details}")
-
-        # Redirect back to the same view with menu parameters preserved
-        redirect_url = f"/?menu={current_menu}"
-        if current_submenu:
-            redirect_url += f"&submenu={current_submenu}"
-        flash(processing_result, "error")
-        _imagen_timing("process_request_total_error", time.time() - request_started)
-        return redirect(redirect_url)
+@app.route("/imagen_allocation_status", methods=["GET"])
+@admin_required
+def imagen_allocation_status():
+    status = _read_imagen_job_status()
+    return jsonify(
+        {
+            "status": status.get("status", "idle"),
+            "message": status.get("message", ""),
+            "ready": _imagen_result_file_ready(),
+            "elapsed_s": status.get("elapsed_s"),
+            "rows": status.get("rows"),
+        }
+    )
 
 
 @app.route("/download_result", methods=["POST"])
@@ -27877,13 +28118,23 @@ def process_files():
 def download_result():
     global data_file_data, data_filename, agent_allocations_data, agent_insurance_agent_names
 
-    if not data_file_data:
-        return jsonify({"error": "No data to download"}), 400
-
     filename = request.form.get("filename", "").strip()
     if not filename:
         date_str = datetime.now().strftime("%m_%d_%Y")
         filename = f"Imagen Allocation {date_str}.xlsx"
+
+    if _imagen_result_file_ready():
+        status = _read_imagen_job_status()
+        download_name = status.get("download_name") or filename
+        return send_file(
+            _imagen_job_xlsx_path(),
+            mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            as_attachment=True,
+            download_name=download_name,
+        )
+
+    if not data_file_data:
+        return jsonify({"error": "No data to download"}), 400
 
     try:
         output_buffer = io.BytesIO()
@@ -39555,6 +39806,7 @@ def reset_imagen_allocation():
         data_filename = None
         processing_result = None
         agent_allocations_data = None
+        _clear_imagen_job_files()
         db.session.commit()
         flash("✅ Imagen Allocation has been reset successfully!", "success")
     except Exception as e:

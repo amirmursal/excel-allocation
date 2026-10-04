@@ -29,6 +29,7 @@ import tempfile
 import io
 import uuid
 import json
+import time
 from collections import Counter
 from functools import wraps
 from urllib.parse import quote
@@ -1394,6 +1395,12 @@ class AllocationOutboundSend(db.Model):
     sent_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow, index=True)
 
     agent = db.relationship("User", backref="allocation_outbound_sends")
+
+
+def _imagen_timing(step, seconds, extra=""):
+    """Step 0 measurement only. Search Railway logs for [ImagenTiming]."""
+    extra_txt = f" | {extra}" if extra else ""
+    print(f"[ImagenTiming] {step}: {seconds:.2f}s{extra_txt}", flush=True)
 
 
 # Global variables to store session data (fallback for backward compatibility)
@@ -24803,6 +24810,7 @@ def _get_imagen_qc_dates():
 @app.route("/")
 @login_required
 def index():
+    index_started = time.time()
     global allocation_data, data_file_data, allocation_filename, data_filename, processing_result
     global agent_processing_result, agent_allocations_data
     global email_staff_details, email_staff_filename
@@ -24866,6 +24874,7 @@ def index():
     )
 
     if user and user.role == "admin":
+        lists_started = time.time()
         all_agent_work_files = get_all_agent_work_files()
         day_shift_files = get_day_shift_files()
         night_shift_files = get_night_shift_files()
@@ -24886,6 +24895,11 @@ def index():
             shift_type=DENTAL_BV_SHIFT_NIGHT
         )
         mis_checklist_files = get_mis_checklist_files()
+        _imagen_timing(
+            "homepage_agent_file_lists",
+            time.time() - lists_started,
+            f"menu={current_menu} submenu={current_submenu}",
+        )
 
     ar_ticker_preview_html = None
     if (
@@ -24901,7 +24915,8 @@ def index():
             na_rep="",
         )
 
-    return render_template_string(
+    render_started = time.time()
+    rendered = render_template_string(
         HTML_TEMPLATE,
         allocation_data=allocation_data,
         data_file_data=data_file_data,
@@ -24990,6 +25005,13 @@ def index():
         current_menu=current_menu,
         current_submenu=current_submenu,
     )
+    _imagen_timing("homepage_render_template", time.time() - render_started)
+    _imagen_timing(
+        "homepage_total",
+        time.time() - index_started,
+        f"menu={current_menu} submenu={current_submenu}",
+    )
+    return rendered
 
 
 @app.route("/login", methods=["GET", "POST"])
@@ -27192,6 +27214,7 @@ def upload_allocation_file():
 
         total_upload_time = time.time() - upload_start_time
         print(f"✅ [Upload] Total upload time: {total_upload_time:.2f}s")
+        _imagen_timing("upload_staff_total", total_upload_time)
 
         processing_result = f"✅ Allocation file uploaded successfully! Loaded {len(allocation_data)} sheet(s): {', '.join(list(allocation_data.keys()))}"
         flash(
@@ -27234,13 +27257,20 @@ def upload_data_file():
         _formatted_insurance_names = set()
         _formatted_insurance_details = []
 
+        upload_started = time.time()
         # Save uploaded file temporarily
         filename = secure_filename(file.filename)
         file.save(filename)
 
         # Load Excel file
         # Use parse_dates=False to prevent automatic date parsing that differs between Windows and Mac
+        load_started = time.time()
         data_file_data = pd.read_excel(filename, sheet_name=None, parse_dates=False)
+        _imagen_timing(
+            "upload_insurance_excel_load",
+            time.time() - load_started,
+            f"sheets={len(data_file_data)}",
+        )
 
         # Format insurance company names in "Dental Primary Ins Carr" column for better allocation
         for sheet_name, df in data_file_data.items():
@@ -27276,6 +27306,7 @@ def upload_data_file():
         if os.path.exists(filename):
             os.remove(filename)
 
+        _imagen_timing("upload_insurance_total", time.time() - upload_started)
         return redirect("/")
 
     except Exception as e:
@@ -27701,6 +27732,7 @@ def process_files():
     global email_allocation_data, email_allocation_filename, email_allocation_agents_list
     global tracker_data, tracker_filename, tracker_file_ready
 
+    request_started = time.time()
     # Get current user
     user = get_user_by_username(session.get("user_id"))
 
@@ -27716,6 +27748,7 @@ def process_files():
     qcp_files = None
     daily_consolidate_files = None
     if user and user.role == "admin":
+        lists_started = time.time()
         all_agent_work_files = get_all_agent_work_files()
         day_shift_files = get_day_shift_files()
         night_shift_files = get_night_shift_files()
@@ -27723,6 +27756,9 @@ def process_files():
         qcp_files = get_qcp_files()
         daily_consolidate_files = get_daily_consolidate_files()
         nh_files = get_nh_files()
+        _imagen_timing(
+            "process_unused_agent_file_lists", time.time() - lists_started
+        )
 
     if not data_file_data:
         processing_result = "❌ Error: Please upload data file first"
@@ -27775,6 +27811,7 @@ def process_files():
 
         # Process the data file with selected dates and allocation data
         print(f"⚙️ [process_files] Calling process_allocation_files_with_dates...")
+        allocate_started = time.time()
         result_message, processed_df = process_allocation_files_with_dates(
             allocation_data,
             data_df,
@@ -27785,6 +27822,12 @@ def process_files():
             receive_dates,
             selected_shift,
             excluded_agents,
+        )
+        allocate_elapsed = time.time() - allocate_started
+        _imagen_timing(
+            "process_allocation_only",
+            allocate_elapsed,
+            f"rows={len(data_df)}",
         )
 
         process_elapsed = time.time() - process_start_time
@@ -27809,6 +27852,7 @@ def process_files():
         if current_submenu:
             redirect_url += f"&submenu={current_submenu}"
         flash(processing_result, "success" if processed_df is not None else "info")
+        _imagen_timing("process_request_total", time.time() - request_started)
         return redirect(redirect_url)
 
     except Exception as e:
@@ -27827,6 +27871,7 @@ def process_files():
         if current_submenu:
             redirect_url += f"&submenu={current_submenu}"
         flash(processing_result, "error")
+        _imagen_timing("process_request_total_error", time.time() - request_started)
         return redirect(redirect_url)
 
 

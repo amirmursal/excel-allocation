@@ -14,6 +14,7 @@ from flask import (
     session,
     url_for,
     flash,
+    has_request_context,
 )
 from flask_sqlalchemy import SQLAlchemy
 from flask_migrate import Migrate
@@ -1398,12 +1399,6 @@ class AllocationOutboundSend(db.Model):
     agent = db.relationship("User", backref="allocation_outbound_sends")
 
 
-def _imagen_timing(step, seconds, extra=""):
-    """Step 0 measurement only. Search Railway logs for [ImagenTiming]."""
-    extra_txt = f" | {extra}" if extra else ""
-    print(f"[ImagenTiming] {step}: {seconds:.2f}s{extra_txt}", flush=True)
-
-
 _imagen_job_lock = threading.Lock()
 
 
@@ -1523,9 +1518,6 @@ def _run_imagen_allocation_job(job):
         try:
             data_sheets = job["data_sheets"]
             data_df = list(data_sheets.values())[0]
-            print(
-                f"⚙️ [ImagenJob] Calling process_allocation_files_with_dates for {len(data_df)} rows"
-            )
             result_message, processed_df = process_allocation_files_with_dates(
                 job["allocation_data"],
                 data_df,
@@ -1538,11 +1530,7 @@ def _run_imagen_allocation_job(job):
                 job["excluded_agents"],
             )
             elapsed = time.time() - started
-            _imagen_timing(
-                "process_allocation_only", elapsed, f"rows={len(data_df)}"
-            )
             if not _imagen_job_still_current(job.get("job_id")):
-                print("⚠️ [ImagenJob] Job superseded; skipping write")
                 return
 
             if processed_df is None:
@@ -1576,13 +1564,13 @@ def _run_imagen_allocation_job(job):
                     "rows": int(len(processed_df)),
                 }
             )
-            print(f"✅ [ImagenJob] Result saved to {dest} in {elapsed:.2f}s")
         except Exception as exc:
-            import traceback
-
-            error_details = traceback.format_exc()
-            print(f"❌ [ImagenJob] {exc}\n{error_details}")
             processing_result = f"❌ Error processing data file: {exc}"
+            _log_app_crash(
+                exc,
+                action="POST /process_files (background Imagen allocation)",
+                actor=job.get("actor"),
+            )
             if _imagen_job_still_current(job.get("job_id")):
                 _write_imagen_job_status(
                     {
@@ -2654,6 +2642,87 @@ def normal_agent_required(f):
     return decorated_function
 
 
+def _current_logged_in_user():
+    """Login id, display name, email, and role for the current request."""
+    info = {
+        "user_id": None,
+        "user_name": "unknown (not logged in)",
+        "user_role": None,
+        "user_email": None,
+    }
+    try:
+        if not has_request_context():
+            return info
+        info["user_id"] = session.get("user_id")
+        info["user_name"] = session.get("user_name")
+        info["user_role"] = session.get("user_role")
+        info["user_email"] = session.get("user_email")
+        if info["user_name"] and info["user_id"]:
+            return info
+        ident = info["user_id"] or info["user_email"]
+        if not ident:
+            return info
+        user = User.query.filter_by(email=ident, is_active=True).first()
+        if user is None:
+            user = User.query.filter_by(username=ident, is_active=True).first()
+        if user:
+            info["user_name"] = user.name or info["user_name"]
+            info["user_role"] = info["user_role"] or user.role
+            info["user_email"] = info["user_email"] or user.email
+            info["user_id"] = info["user_id"] or user.username or user.email
+    except Exception:
+        pass
+    if not info["user_name"]:
+        info["user_name"] = "unknown (not logged in)"
+    return info
+
+
+def _log_app_crash(exc, action=None, actor=None):
+    """One Railway-visible line for the request/job that crashed, plus who did it."""
+    import traceback
+    from werkzeug.exceptions import HTTPException
+
+    if isinstance(exc, HTTPException) and (exc.code or 500) < 500:
+        return
+    try:
+        actor = actor or _current_logged_in_user()
+        if action is None and has_request_context():
+            endpoint = request.endpoint or "-"
+            action = f"{request.method} {request.path}"
+            if request.query_string:
+                action += "?{}".format(
+                    request.query_string.decode("utf-8", "replace")
+                )
+            action += " endpoint={}".format(endpoint)
+            skip = {"password", "password2", "csrf_token", "file"}
+            keys = [key for key in request.form.keys() if str(key).lower() not in skip]
+            if keys:
+                action += " form_fields={}".format(",".join(keys))
+        elif action is None:
+            action = "unknown action (no request context)"
+        print(
+            "[AppCrash] last_action={} | user_name={} | login={} | email={} | role={} | error={}: {}\n{}".format(
+                action,
+                actor.get("user_name") or "unknown (not logged in)",
+                actor.get("user_id") or "-",
+                actor.get("user_email") or "-",
+                actor.get("user_role") or "-",
+                type(exc).__name__,
+                exc,
+                traceback.format_exc(),
+            ),
+            flush=True,
+        )
+    except Exception:
+        pass
+
+
+@app.teardown_request
+def _log_request_crash(exc):
+    if exc is not None:
+        _log_app_crash(exc)
+
+
 # Email helper function using Resend
 def send_email_with_resend(
     to_email,
@@ -2994,10 +3063,9 @@ def maybe_send_management_outbound_upload_digest():
             text_content="See HTML part for the pending-upload table.",
         )
         if ok:
-            print(f"✅ Pending-upload digest sent to {to_email} ({len(rows)} row(s))")
+            pass
         else:
             failures.append(f"{to_email}: {msg}")
-            print(f"❌ Pending-upload digest failed for {to_email}: {msg}")
 
     if failures:
         return False, "; ".join(failures)
@@ -11382,8 +11450,6 @@ def load_insurance_name_mapping():
                         count += 1
 
             total_mappings += count
-        else:
-            pass
     except Exception as e:
         pass
 
@@ -11406,10 +11472,6 @@ def load_insurance_name_mapping():
     except Exception as e:
         pass
 
-    if total_mappings > 0:
-        pass
-    else:
-        pass
 
     _insurance_name_mapping_loaded = True
     return _insurance_name_mapping
@@ -11978,26 +12040,6 @@ def format_insurance_company_name(insurance_text):
     _format_insurance_cache[cache_key] = result
 
     return result
-
-
-def print_formatted_insurance_companies():
-    """Print list of all formatted insurance companies to console"""
-    global _formatted_insurance_details
-
-    if not _formatted_insurance_details:
-        return
-
-    # Group by source (mapping vs fallback)
-    from_mapping = [d for d in _formatted_insurance_details if d["from_mapping"]]
-    from_fallback = [d for d in _formatted_insurance_details if not d["from_mapping"]]
-
-    if from_mapping:
-        for i, detail in enumerate(from_mapping, 1):
-            pass
-
-    if from_fallback:
-        for i, detail in enumerate(from_fallback, 1):
-            pass
 
 
 # DD INS group mapping - these companies should be treated as part of "DD INS" or "INS" group
@@ -12898,29 +12940,6 @@ def allocate_first_priority_rows_fair(
             fp_assigned_count[id(best)] = fp_assigned_count.get(id(best), 0) + 1
             n_assigned += 1
 
-    if emit_summary_log and n_assigned > 0:
-        cap_note = (
-            f" soft_cap≈{soft_cap_new_per_agent}/agent on this batch (T={T_for_cap}, N={n_pool})"
-            if n_pool >= 2
-            else ""
-        )
-        print(
-            f"⚖️ {log_label} Assigned {n_assigned} First Priority row(s) using balanced selection among First agents{cap_note}"
-        )
-        first_agents = [
-            a
-            for a in agent_allocations
-            if not a.get("has_pb_preference", False)
-            and str(a.get("priority_status", "Second")).strip().upper() == "FIRST"
-        ]
-        first_agents.sort(key=lambda x: str(x.get("name", "")).lower())
-        breakdown = ", ".join(
-            f"{a.get('name', '?')}={fp_assigned_count.get(id(a), 0)}"
-            for a in first_agents
-        )
-        print(
-            f"⚖️ {log_label} Rows per First agent (total First Priority count per agent after pass): {breakdown}"
-        )
     return n_assigned
 
 
@@ -14189,10 +14208,6 @@ def _fill_below_capacity_agents_from_matching_leftovers(
             insurance_col=insurance_col,
             priority_col=priority_col,
         )
-        if got:
-            print(
-                f"✅ [Leftover Fill] {name} received {got} leftover row(s) matching insurance + priority."
-            )
         assigned += got
     return assigned
 
@@ -14268,16 +14283,6 @@ def detect_and_assign_new_insurance_companies(
                 companies_str = str(row[insurance_working_col])
                 if "senior" in companies_str.lower():
                     senior_agents.append(idx)
-
-        # Console log senior agents found
-        if senior_agents:
-            for idx in senior_agents:
-                if agent_name_col and agent_name_col in agent_data.columns:
-                    agent_name = agent_data.iloc[idx][agent_name_col]
-                else:
-                    agent_name = f"Agent {idx}"
-        else:
-            pass
 
         # Assign new insurance companies to senior agents
         updated_agents = []
@@ -14592,19 +14597,13 @@ def process_allocation_files(allocation_df, data_df):
 💾 Ready to download the processed result file!"""
 
         elapsed_time = time.time() - start_time
-        print(
-            f"✅ Processing completed in {elapsed_time:.2f} seconds at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-        )
         return result_message, processed_df
 
     except Exception as e:
         try:
             elapsed_time = time.time() - start_time
-            print(
-                f"❌ Error during processing after {elapsed_time:.2f} seconds: {str(e)}"
-            )
         except:
-            print(f"❌ Error during processing: {str(e)}")
+            pass
         return f"❌ Error during processing: {str(e)}", None
 
 
@@ -14647,13 +14646,9 @@ def process_allocation_files_with_dates(
     try:
         import pandas as pd
 
-        print(
-            f"🔄 Starting file processing at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}..."
-        )
 
         # Use data_df as the main file to process
         processed_df = data_df.copy()
-        print(f"📊 Processing {len(processed_df)} rows...")
 
         # Find the appointment date column, receive date column, insurance carrier column,
         # remark column, secondary insurance column, and OON 20% column
@@ -14713,8 +14708,8 @@ def process_allocation_files_with_dates(
                     parse_excel_date
                 )
             except Exception as e:
+                pass
                 # If receive date parsing fails, log but don't fail the whole process
-                print(f"Warning: Error parsing receive dates: {str(e)}")
 
         # Check if Priority Status column exists, if not create it
         if "Priority Status" not in processed_df.columns:
@@ -14800,15 +14795,6 @@ def process_allocation_files_with_dates(
                 return calendar_date
 
         # Convert priority dates to YYYY-MM-DD format for comparison (ONCE BEFORE LOOP)
-        print(
-            f"⏱️ [Performance] Converting priority dates at {time.time() - start_time:.2f}s"
-        )
-        print(
-            f"📅 [Performance] First priority dates count: {len(first_priority_dates)}"
-        )
-        print(
-            f"📅 [Performance] Second priority dates count: {len(second_priority_dates)}"
-        )
 
         first_priority_dates_yyyy_mm_dd = set()
         for calendar_date in first_priority_dates:
@@ -14817,9 +14803,7 @@ def process_allocation_files_with_dates(
                 if converted_date:
                     first_priority_dates_yyyy_mm_dd.add(converted_date)
             except Exception as e:
-                print(
-                    f"⚠️ [Performance] Error converting first priority date {calendar_date}: {e}"
-                )
+                pass
 
         second_priority_dates_yyyy_mm_dd = set()
         for calendar_date in second_priority_dates:
@@ -14828,13 +14812,8 @@ def process_allocation_files_with_dates(
                 if converted_date:
                     second_priority_dates_yyyy_mm_dd.add(converted_date)
             except Exception as e:
-                print(
-                    f"⚠️ [Performance] Error converting second priority date {calendar_date}: {e}"
-                )
+                pass
 
-        print(
-            f"✅ [Performance] Converted dates - First: {len(first_priority_dates_yyyy_mm_dd)}, Second: {len(second_priority_dates_yyyy_mm_dd)}"
-        )
 
         # Convert receive dates to YYYY-MM-DD format for comparison (ONCE BEFORE LOOP)
         receive_dates_yyyy_mm_dd = set()
@@ -14855,7 +14834,6 @@ def process_allocation_files_with_dates(
 
         # Convert appointment dates to YYYY-MM-DD format using vectorized operations
         # OPTIMIZED: Use vectorized operations instead of apply() for better performance
-        print(f"⏱️ [Performance] Formatting dates at {time.time() - start_time:.2f}s")
 
         def format_date_for_comparison(date_val):
             """Convert date to YYYY-MM-DD string format"""
@@ -14872,9 +14850,6 @@ def process_allocation_files_with_dates(
                         date_str = date_str.split(" ")[0]
                     return date_str
             except Exception as e:
-                print(
-                    f"⚠️ [Performance] Date formatting error: {e} for value: {date_val}"
-                )
                 return None
 
         # Vectorized date formatting - optimized for large datasets
@@ -14882,11 +14857,7 @@ def process_allocation_files_with_dates(
             appointment_dates_formatted = processed_df[appointment_date_col].apply(
                 format_date_for_comparison
             )
-            print(
-                f"⏱️ [Performance] Date formatting completed at {time.time() - start_time:.2f}s"
-            )
         except Exception as e:
-            print(f"❌ [Performance] Error formatting dates: {e}")
             return f"❌ Error formatting appointment dates: {str(e)}", None
 
         # Handle invalid dates
@@ -14914,12 +14885,6 @@ def process_allocation_files_with_dates(
                 and receive_date_col
                 and receive_date_col in processed_df.columns
             ):
-                print(
-                    f"⏱️ [Performance] Processing receive dates at {time.time() - start_time:.2f}s"
-                )
-                print(
-                    f"📅 [Performance] Receive dates set size: {len(receive_dates_yyyy_mm_dd)}"
-                )
 
                 # Format receive dates for comparison (only for first priority rows)
                 try:
@@ -14927,7 +14892,6 @@ def process_allocation_files_with_dates(
                         first_priority_indices_valid, receive_date_col
                     ].apply(format_date_for_comparison)
                 except Exception as e:
-                    print(f"❌ [Performance] Error formatting receive dates: {e}")
                     # Fallback: assign all as First Priority
                     processed_df.loc[
                         first_priority_indices_valid, "Priority Status"
@@ -14966,12 +14930,6 @@ def process_allocation_files_with_dates(
                 second_priority_count = 0
 
         # Vectorized priority assignment for Second Priority (excluding rows already assigned)
-        print(
-            f"⏱️ [Performance] Processing second priority dates at {time.time() - start_time:.2f}s"
-        )
-        print(
-            f"📅 [Performance] Second priority dates set size: {len(second_priority_dates_yyyy_mm_dd)}"
-        )
 
         remaining_mask = valid_mask & (processed_df["Priority Status"] == "")
         if remaining_mask.any() and len(second_priority_dates_yyyy_mm_dd) > 0:
@@ -14987,21 +14945,8 @@ def process_allocation_files_with_dates(
                     "Second Priority"
                 )
                 second_priority_count += len(second_priority_indices)
-                print(
-                    f"✅ [Performance] Assigned {second_priority_count} rows to Second Priority"
-                )
-            else:
-                print(f"⚠️ [Performance] No rows matched second priority dates")
-        else:
-            if not remaining_mask.any():
-                print(f"⚠️ [Performance] No remaining rows for second priority")
-            if len(second_priority_dates_yyyy_mm_dd) == 0:
-                print(f"⚠️ [Performance] No second priority dates selected")
 
         # Vectorized priority assignment for Third Priority (all remaining rows)
-        print(
-            f"⏱️ [Performance] Processing third priority at {time.time() - start_time:.2f}s"
-        )
 
         third_priority_mask = valid_mask & (processed_df["Priority Status"] == "")
         if third_priority_mask.any():
@@ -15010,20 +14955,13 @@ def process_allocation_files_with_dates(
                 "Third Priority"
             )
             third_priority_count = len(third_priority_indices)
-            print(
-                f"✅ [Performance] Assigned {third_priority_count} rows to Third Priority"
-            )
 
             # Collect Third Priority dates
             third_priority_dates = appointment_dates_formatted[
                 third_priority_mask
             ].unique()
             third_priority_dates_set = set(third_priority_dates)
-            print(
-                f"📅 [Performance] Third priority dates count: {len(third_priority_dates_set)}"
-            )
         else:
-            print(f"⚠️ [Performance] No rows for third priority")
             third_priority_count = 0
 
         # Filter out "Not to work" rows from priority counts
@@ -15531,13 +15469,9 @@ def process_allocation_files_with_dates(
 
                                                     # Use Shift Group to help determine AM/PM (1=day, 2=afternoon, 3=night)
                                                     if shift_group == 1:
+                                                        pass
                                                         # Day shift: typically starts in AM (morning, e.g., 8-5pm, 10-7pm)
                                                         # If hour >= end_hour_12, it's likely AM (day shift starts morning)
-                                                        if hour >= end_hour_12:
-                                                            pass  # Keep as AM
-                                                        else:
-                                                            # If start < end, could still be AM for day shift
-                                                            pass  # Keep as AM
                                                     elif shift_group == 2:
                                                         # Afternoon shift: typically starts in PM (afternoon, e.g., 1-10pm, 3-6pm)
                                                         # But can also start in late AM and extend into evening (e.g., 11-8pm = 11 AM to 8 PM)
@@ -15567,8 +15501,7 @@ def process_allocation_files_with_dates(
                                                                 if hour != 12:
                                                                     hour += 12  # Late PM start
                                                             else:
-                                                                # Hour >= end, might be early AM (unusual but possible)
-                                                                pass  # Keep as AM
+                                                                pass
 
                                                     # If no shift group, use original logic
                                                     if shift_group is None:
@@ -15737,7 +15670,6 @@ def process_allocation_files_with_dates(
                     # Filter agents by selected shift and exclude specified agents
                     if selected_shift:
                         selected_shift_int = int(selected_shift)
-                        print(f"👥 Filtering agents for shift {selected_shift_int}...")
 
                         # Filter by shift group
                         shift_filtered_agents = [
@@ -15746,9 +15678,6 @@ def process_allocation_files_with_dates(
                             if agent.get("shift_group") == selected_shift_int
                         ]
 
-                        print(
-                            f"   Found {len(shift_filtered_agents)} agents in shift {selected_shift_int} (from {len(agent_allocations)} total agents)"
-                        )
 
                         # Exclude specified agents
                         if excluded_agents:
@@ -15757,9 +15686,6 @@ def process_allocation_files_with_dates(
                                 for agent in shift_filtered_agents
                                 if agent.get("id") not in excluded_agents
                             ]
-                            print(
-                                f"   After excluding {len(excluded_agents)} agents: {len(agent_allocations)} agents remaining"
-                            )
                         else:
                             agent_allocations = shift_filtered_agents
 
@@ -15769,20 +15695,6 @@ def process_allocation_files_with_dates(
                             for a in agent_allocations
                             if (a["capacity"] - a["allocated"]) > 0
                         ]
-                        print(
-                            f"   Shift {selected_shift_int} has {len(agents_with_available_capacity)} agents with available capacity"
-                        )
-                        if not agents_with_available_capacity:
-                            print(
-                                f"⚠️ WARNING: Shift {selected_shift_int} has NO agents with available capacity!"
-                            )
-                            print(
-                                f"   Agent allocations will skip for this shift. Unallocated rows will remain unassigned."
-                            )
-                    else:
-                        print(
-                            f"👥 No shift filter applied - using all {len(agent_allocations)} agents"
-                        )
 
                     # Retroactive check: Determine assigned insurance company for "Single" preference agents
                     # based on their existing allocations (if any)
@@ -15838,9 +15750,6 @@ def process_allocation_files_with_dates(
                                                     first_insurance
                                                 )
                                                 or first_insurance
-                                            )
-                                            print(
-                                                f"📋 Retroactively assigned insurance '{agent['assigned_insurance']}' to Single preference agent '{agent_name}' based on existing allocations"
                                             )
 
                     # Now allocate rows based on insurance company matching and priority
@@ -16032,8 +15941,6 @@ def process_allocation_files_with_dates(
                                 )
 
                                 # Debug: Show first few agents' insurance companies
-                                if len(agents_with_ins) + len(agents_with_toolkit) < 5:
-                                    pass
 
                                 # Check if agent has any DD_INS_GROUP companies
                                 has_ins_group = bool(
@@ -16051,8 +15958,7 @@ def process_allocation_files_with_dates(
                                     agents_with_toolkit.append(agent_name)
                                     toolkit_group_allocations[agent_id] = 0
                             else:
-                                if len(agents_with_ins) + len(agents_with_toolkit) < 5:
-                                    pass
+                                pass
 
                         # Initialize Agent Name column if it doesn't exist
                         if "Agent Name" not in processed_df.columns:
@@ -16064,12 +15970,6 @@ def process_allocation_files_with_dates(
 
                         # CRITICAL SAFETY CHECK: If no agents available, skip allocation entirely
                         if not agent_allocations:
-                            print(
-                                f"⚠️ CRITICAL: No agents available for allocation (shift filtering may have removed all agents)"
-                            )
-                            print(
-                                f"   Rows will remain unallocated in 'Agent Name' column"
-                            )
                             # Return early with unallocated data
                             elapsed_time = time.time() - start_time
                             return (
@@ -16304,9 +16204,6 @@ def process_allocation_files_with_dates(
                         allocated_indices_set = set()
                         for ag in agent_allocations:
                             allocated_indices_set.update(ag.get("row_indices", []))
-                        print(
-                            f"⚡ [Performance] Created allocated_indices_set with {len(allocated_indices_set)} indices"
-                        )
 
                         # Step 2.5: Global NTBP Allocation - Allocate all NTBP remark rows globally
                         # Allocate NTBP rows to agents with PB in Allocation Preference column
@@ -16355,9 +16252,6 @@ def process_allocation_files_with_dates(
 
                             all_ntbp_rows = processed_df.index[ntbp_mask].tolist()
 
-                            print(
-                                f"⚡ [Performance] Found {len(all_ntbp_rows)} NTBP rows using vectorized operations"
-                            )
 
                         # Find agents with PB in Allocation Preference column (NOT domain)
                         # Only agents with "PB" in their Allocation Preference column should get NTBP work
@@ -16410,9 +16304,6 @@ def process_allocation_files_with_dates(
 
                                 if available_pb_agents:
                                     # PERFORMANCE FIX: Optimize round-robin allocation
-                                    print(
-                                        f"⚡ [Performance] Starting NTBP allocation for {len(all_ntbp_rows)} rows to {len(available_pb_agents)} agents"
-                                    )
                                     allocation_start = time.time()
 
                                     agent_idx = 0
@@ -16477,9 +16368,6 @@ def process_allocation_files_with_dates(
                                             if not agent.get(
                                                 "has_pb_preference", False
                                             ):
-                                                print(
-                                                    f"⚠️ [Step 2.5] ERROR: Attempted to allocate NTBP row to non-PB agent '{agent.get('name', 'Unknown')}' - skipping"
-                                                )
                                                 attempts += 1
                                                 continue
 
@@ -16511,9 +16399,6 @@ def process_allocation_files_with_dates(
                                                 agents_with_pb_preference
                                             )
 
-                                    print(
-                                        f"⚡ [Performance] NTBP allocation completed: {rows_allocated}/{len(all_ntbp_rows)} rows in {time.time() - allocation_start:.2f}s"
-                                    )
                             else:
                                 # If NTBP rows are fewer than total capacity, allocate to agents
                                 # Limit: No agent can receive more than 15 NTBP rows
@@ -16634,9 +16519,6 @@ def process_allocation_files_with_dates(
 
                         # Step 3.5: Global NTC Allocation - Allocate all NTC remark rows globally
                         step_3_5_start = time.time()
-                        print(
-                            f"🧭 [Step 3.5] Starting Global NTC Allocation at {time.time() - start_time:.2f}s"
-                        )
                         # Allocate NTC rows to agents with NTC in Allocation Preference column
                         # Valid Allocation Preference values: "Sec+NTC", "Sec+Mix+NTC", "Mix+NTC", "NTC"
                         # Use CC column for current capacity
@@ -16689,9 +16571,6 @@ def process_allocation_files_with_dates(
 
                             all_ntc_rows = processed_df.index[ntc_mask].tolist()
 
-                            print(
-                                f"⚡ [Performance] Found {len(all_ntc_rows)} NTC rows using vectorized operations"
-                            )
 
                         # Find agents with NTC in Allocation Preference column
                         # STRICT: Only "Sec+NTC", "Sec+Mix+NTC", "Mix+NTC", or "NTC"
@@ -16785,9 +16664,6 @@ def process_allocation_files_with_dates(
 
                                 if available_ntc_agents:
                                     # PERFORMANCE FIX: Optimize round-robin allocation (same as NTBP)
-                                    print(
-                                        f"⚡ [Performance] Starting NTC allocation for {len(all_ntc_rows)} rows to {len(available_ntc_agents)} agents"
-                                    )
                                     allocation_start = time.time()
 
                                     agent_idx = 0
@@ -16895,9 +16771,6 @@ def process_allocation_files_with_dates(
                                                     is_valid_ntc_agent = True
 
                                             if not is_valid_ntc_agent:
-                                                print(
-                                                    f"⚠️ [Step 3.5] ERROR: Attempted to allocate NTC row to invalid agent '{agent.get('name', 'Unknown')}' with preference '{allocation_pref_raw}' - skipping"
-                                                )
                                                 attempts += 1
                                                 continue
 
@@ -16927,9 +16800,6 @@ def process_allocation_files_with_dates(
                                                 agents_with_ntc_preference
                                             )
 
-                                    print(
-                                        f"⚡ [Performance] NTC allocation completed: {rows_allocated}/{len(all_ntc_rows)} rows in {time.time() - allocation_start:.2f}s"
-                                    )
                             else:
                                 # If NTC rows are fewer than total capacity, allocate ALL to a single agent
                                 # Limit: No agent can receive more than 15 NTC rows
@@ -17175,15 +17045,9 @@ def process_allocation_files_with_dates(
                                             break
 
                         step_3_5_time = time.time() - step_3_5_start
-                        print(
-                            f"✅ [Step 3.5] Finished Global NTC Allocation at {time.time() - start_time:.2f}s (took {step_3_5_time:.2f}s)"
-                        )
 
                         # Step 3.6: Global Secondary Insurance Allocation - Allocate rows with secondary insurance to "Sec + X" agents
                         step_3_6_start = time.time()
-                        print(
-                            f"🧭 [Step 3.6] Starting Global Secondary Insurance Allocation at {time.time() - start_time:.2f}s"
-                        )
                         # This should happen before other allocations so "Sec + X" agents get secondary insurance rows first
                         if (
                             secondary_insurance_col
@@ -18761,15 +18625,9 @@ def process_allocation_files_with_dates(
                                             break
 
                         step_3_6_time = time.time() - step_3_6_start
-                        print(
-                            f"✅ [Step 3.6] Finished Global Secondary Insurance Allocation at {time.time() - start_time:.2f}s (took {step_3_6_time:.2f}s)"
-                        )
 
                         # Step 3.7: Global Single Allocation - Allocate same insurance company rows to "Single" preference agents
                         step_3_7_start = time.time()
-                        print(
-                            f"🧭 [Step 3.7] Starting Global Single Allocation at {time.time() - start_time:.2f}s"
-                        )
                         # This ensures agents with "Single" preference (not "Sec + Single") get same insurance company rows to fill their capacity
                         # Exclude PB preference agents (should only get NTBP rows in Step 2.5)
                         single_preference_agents = [
@@ -19221,15 +19079,9 @@ def process_allocation_files_with_dates(
                                                 break
 
                         step_3_7_time = time.time() - step_3_7_start
-                        print(
-                            f"✅ [Step 3.7] Finished Global Single Allocation at {time.time() - start_time:.2f}s (took {step_3_7_time:.2f}s)"
-                        )
 
                         # Step 3.8: Global Mix Allocation - Allocate multiple insurance company rows to "Mix" preference agents
                         step_3_8_start = time.time()
-                        print(
-                            f"🧭 [Step 3.8] Starting Global Mix Allocation at {time.time() - start_time:.2f}s"
-                        )
                         # Agents with "Mix" preference should get rows from multiple insurance companies (unlike "Single" which gets only one)
                         # Exclude "Sec + Mix" agents (handled in Step 3.6), "Mix + NTC" agents (handled in Step 3.5.5), and "PB" preference agents (should only get NTBP rows)
                         mix_preference_agents = [
@@ -19381,9 +19233,6 @@ def process_allocation_files_with_dates(
                                         else:
                                             break
 
-                        print(
-                            f"✅ [Step 3.8] Finished Global Mix Allocation at {time.time() - start_time:.2f}s (took {time.time() - step_3_8_start:.2f}s)"
-                        )
 
                         # Step 3: REMOVED - First Priority allocation to senior agents
                         # Senior agents will ONLY get unmatched insurance companies (handled in Step 4)
@@ -19393,9 +19242,6 @@ def process_allocation_files_with_dates(
 
                         # Step 4: Allocate unmatched insurance companies to senior agents (after First Priority matched work)
                         step_4_start = time.time()
-                        print(
-                            f"🧭 [Step 4] Starting unmatched insurance allocation at {time.time() - start_time:.2f}s"
-                        )
                         # Also include "Afreen Ansari" even if not marked as senior
                         # Check if we have unmatched insurance and (senior agents OR Afreen Ansari)
                         # SAFETY: Only proceed if we have agents with available capacity
@@ -19404,10 +19250,6 @@ def process_allocation_files_with_dates(
                             for a in agent_allocations
                             if (a["capacity"] - a["allocated"]) > 0
                         ]
-                        if not agents_with_capacity:
-                            print(
-                                f"⚠️ [Step 4] No agents with available capacity - skipping unmatched insurance allocation"
-                            )
 
                         has_afreen_ansari = any(
                             a["name"] == "Afreen Ansari" for a in agent_allocations
@@ -19840,8 +19682,6 @@ def process_allocation_files_with_dates(
 
                                             # If there are remaining unmatched rows that couldn't fit in senior capacity
                                             # they will be handled later or logged
-                                            if row_idx < len(row_indices):
-                                                pass
 
                         # Step 4.5: Reshuffle logic - Reallocate senior rows to junior/trainee to free up capacity for unmatched insurance
                         # If there are unmatched insurance rows that couldn't be allocated (seniors at capacity),
@@ -20334,9 +20174,6 @@ def process_allocation_files_with_dates(
                                     if not agents_with_remaining_capacity:
                                         # All agents are at capacity - skip remaining rows for this insurance carrier
                                         # Continue to next insurance carrier for this priority
-                                        print(
-                                            f"⚠️ [Step 5] No agents with remaining capacity - skipping remaining {len(unallocated_row_indices)} {priority} rows for {insurance_carrier}"
-                                        )
                                         continue  # Continue to next insurance carrier for this priority
 
                                     # For First Priority: ONLY consider "First" agents (priority_status="First")
@@ -20884,9 +20721,6 @@ def process_allocation_files_with_dates(
                                             while row_pos < len(rows) and phase1_agents:
                                                 iteration_count += 1
                                                 if iteration_count > max_iterations:
-                                                    print(
-                                                        f"⚠️ [Performance] Breaking potential infinite loop at row_pos={row_pos}, rows={len(rows)}"
-                                                    )
                                                     break
 
                                                 for agent in phase1_agents:
@@ -21012,10 +20846,8 @@ def process_allocation_files_with_dates(
                                                     > 0
                                                 ]
                                                 if not agents_still_available:
+                                                    pass
                                                     # All agents exhausted - exit Phase 2
-                                                    print(
-                                                        f"⚠️ [Phase 2] No agents with remaining capacity - skipping remaining {len(rows) - row_pos} rows"
-                                                    )
                                                 else:
                                                     phase2_agents = [
                                                         a
@@ -21158,9 +20990,6 @@ def process_allocation_files_with_dates(
                                     f"{a.get('name', '?')}={shared_first_priority_balance.get(id(a), 0)}"
                                     for a in first_agents
                                 )
-                                print(
-                                    f"⚖️ [First Priority Fair Step 5] Assigned {step5_fp_delta} row(s) this step; cumulative FP per First agent: {breakdown}"
-                                )
                     else:
                         # Fallback: if no insurance carrier column, use simple capacity-based allocation
                         # IMPORTANT: NTBP rows should ONLY be allocated in Step 2.5 to PB preference agents
@@ -21196,9 +21025,6 @@ def process_allocation_files_with_dates(
                             non_special_rows = processed_df.index[
                                 non_special_mask
                             ].tolist()
-                            print(
-                                f"⚡ [Performance] Found {len(non_special_rows)} non-special rows using vectorized operations"
-                            )
                         else:
                             # If no remark column, all rows are non-special (except already allocated)
                             non_special_rows = [
@@ -21206,9 +21032,6 @@ def process_allocation_files_with_dates(
                                 for idx in processed_df.index
                                 if idx not in allocated_indices_set
                             ]
-                            print(
-                                f"⚡ [Performance] Found {len(non_special_rows)} non-special rows (no remark column)"
-                            )
 
                         # Allocate non-NTBP, non-NTC rows to all available agents (capacity-based)
                         row_idx = 0
@@ -21238,9 +21061,6 @@ def process_allocation_files_with_dates(
                     # Step 5.5: Reshuffle First Priority rows to First agents
                     # If "First" agents have Second/Third Priority rows and unallocated First Priority rows exist,
                     # replace Second/Third Priority rows with First Priority rows
-                    print(
-                        f"🔄 [Step 5.5] Starting First Priority reshuffling at {time.time() - start_time:.2f}s"
-                    )
 
                     # Find all First agents
                     first_agents = [
@@ -21286,9 +21106,6 @@ def process_allocation_files_with_dates(
                                             break
 
                         if unallocated_first_priority_rows:
-                            print(
-                                f"📋 [Step 5.5] Found {len(unallocated_first_priority_rows)} unallocated First Priority rows"
-                            )
 
                             # For each First agent, check if they have Second/Third Priority rows
                             for agent in first_agents:
@@ -21408,19 +21225,9 @@ def process_allocation_files_with_dates(
                                                 agent["name"]
                                             )
 
-                                        print(
-                                            f"✅ [Step 5.5] Replaced {len(matching_first_rows)} Second/Third Priority rows with First Priority rows for agent '{agent['name']}'"
-                                        )
-
-                    print(
-                        f"✅ [Step 5.5] Finished First Priority reshuffling at {time.time() - start_time:.2f}s"
-                    )
 
                     # Step 6: Final Fallback - Allocate ANY remaining unallocated rows to agents with matching capabilities
                     step_6_start = time.time()
-                    print(
-                        f"🧭 [Step 6] Starting final fallback allocation at {time.time() - start_time:.2f}s"
-                    )
                     # This ensures that unallocated work matching agent capabilities gets allocated, regardless of allocation preference
                     if insurance_carrier_col:
                         # Find all unallocated rows
@@ -21512,9 +21319,6 @@ def process_allocation_files_with_dates(
                                 ]
                                 if not agents_with_remaining_capacity:
                                     # All agents are at capacity - skip remaining unallocated rows
-                                    print(
-                                        f"⚠️ [Step 6] No agents with remaining capacity - skipping remaining {len(unallocated_by_insurance)} insurance groups"
-                                    )
                                     break
 
                                 # Find agents with matching insurance capabilities (except PB agents)
@@ -21720,9 +21524,6 @@ def process_allocation_files_with_dates(
                     # CRITICAL VALIDATION: Ensure NTBP rows are ONLY allocated to PB preference agents
                     # Remove any NTBP rows from non-PB agents
                     if remark_col and remark_col in processed_df.columns:
-                        print(
-                            f"🔍 [Validation] Checking NTBP row allocations at {time.time() - start_time:.2f}s"
-                        )
                         ntbp_rows_fixed = 0
                         for agent in agent_allocations:
                             # Check if agent has PB preference
@@ -21757,24 +21558,10 @@ def process_allocation_files_with_dates(
                                             )
                                             processed_df.at[row_idx, "Agent Name"] = ""
                                             ntbp_rows_fixed += 1
-                                    print(
-                                        f"⚠️ [Validation] Removed {len(rows_to_remove)} NTBP row(s) from non-PB agent '{agent['name']}'"
-                                    )
 
-                        if ntbp_rows_fixed > 0:
-                            print(
-                                f"✅ [Validation] Fixed {ntbp_rows_fixed} NTBP row allocation(s) - removed from non-PB agents"
-                            )
-                        else:
-                            print(
-                                f"✅ [Validation] All NTBP rows are correctly allocated to PB preference agents"
-                            )
 
                         # CRITICAL VALIDATION: Ensure NTC rows are ONLY allocated to valid NTC preference agents
                         # Only allow "Sec+NTC", "Sec+Mix+NTC", "Mix+NTC", or "NTC"
-                        print(
-                            f"🔍 [Validation] Checking NTC row allocations at {time.time() - start_time:.2f}s"
-                        )
                         ntc_rows_fixed = 0
                         for agent in agent_allocations:
                             # Check if agent has valid NTC preference
@@ -21844,18 +21631,7 @@ def process_allocation_files_with_dates(
                                             )
                                             processed_df.at[row_idx, "Agent Name"] = ""
                                             ntc_rows_fixed += 1
-                                    print(
-                                        f"⚠️ [Validation] Removed {len(rows_to_remove)} NTC row(s) from invalid agent '{agent['name']}' (preference: '{allocation_pref_raw}')"
-                                    )
 
-                        if ntc_rows_fixed > 0:
-                            print(
-                                f"✅ [Validation] Fixed {ntc_rows_fixed} NTC row allocation(s) - removed from invalid agents"
-                            )
-                        else:
-                            print(
-                                f"✅ [Validation] All NTC rows are correctly allocated to valid NTC preference agents (Sec+NTC, Sec+Mix+NTC, Mix+NTC, or NTC)"
-                            )
 
                     # Hard validation gate:
                     # Enforce insurance compatibility on all already-assigned rows before any top-up.
@@ -21894,9 +21670,6 @@ def process_allocation_files_with_dates(
                                     processed_df.at[idx, "Supervisor"] = ""
                                 if "Team Leader" in processed_df.columns:
                                     processed_df.at[idx, "Team Leader"] = ""
-                            print(
-                                f"🛡️ [Validation] Removed {len(invalid_assigned_indices)} invalid insurance assignment(s): {invalid_counts_by_agent}"
-                            )
 
                     # Step 5.9: Deterministic top-up pass
                     # Goal: For each agent, keep allocating eligible unassigned rows until target
@@ -21969,9 +21742,6 @@ def process_allocation_files_with_dates(
 
                             if not has_remaining_for_lock:
                                 _ag["assigned_insurance"] = None
-                                print(
-                                    f"🔓 [Single Lock] Released '{_lock_val}' for {_ag.get('name','Unknown')} due to shortfall and no remaining eligible rows for current lock."
-                                )
 
                     def _row_is_currently_assigned(row_idx):
                         if (
@@ -22158,10 +21928,6 @@ def process_allocation_files_with_dates(
                                     shortfall -= 1
                                     topup_total_assigned += ac
 
-                    if topup_total_assigned > 0:
-                        print(
-                            f"✅ [TopUp] Deterministic top-up assigned {topup_total_assigned} additional row(s)."
-                        )
 
                     # Exhaustive row-centric sweep:
                     # Ensure every currently unallocated row is checked against every agent.
@@ -22241,10 +22007,6 @@ def process_allocation_files_with_dates(
                         if not progress:
                             break
 
-                    if exhaustive_assigned > 0:
-                        print(
-                            f"✅ [TopUp] Exhaustive row-agent sweep assigned {exhaustive_assigned} additional row(s)."
-                        )
 
                     # Reconciliation diagnostics for below-target agents.
                     reconciliation_rows = []
@@ -22494,9 +22256,6 @@ def process_allocation_files_with_dates(
 
                     # Sort agents by name for display
                     dedup_start_time = time.time()
-                    print(
-                        f"⏱️ [Performance] Starting deduplication at {time.time() - start_time:.2f}s"
-                    )
                     agent_allocations.sort(key=lambda x: x["name"])
 
                     # CRITICAL: Deduplicate row_indices for each agent and recalculate allocated counts
@@ -22613,45 +22372,6 @@ def process_allocation_files_with_dates(
                     for agent in agent_allocations:
                         all_allocated_indices.update(agent.get("row_indices", []))
                     total_allocated = len(all_allocated_indices)
-
-                    # Print INS and Toolkit group allocation summary
-                    # Ensure dictionaries exist (they should be initialized earlier)
-                    if "ins_group_allocations" not in locals():
-                        ins_group_allocations = {}
-                    if "toolkit_group_allocations" not in locals():
-                        toolkit_group_allocations = {}
-
-                    if ins_group_allocations:
-                        total_ins = sum(ins_group_allocations.values())
-                        # Create mapping from agent_id to agent_name for display
-                        agent_id_to_name = {
-                            a.get("id", a.get("name")): a.get("name")
-                            for a in agent_allocations
-                        }
-                        for agent_id, count in sorted(ins_group_allocations.items()):
-                            agent_name = agent_id_to_name.get(agent_id, agent_id)
-                            pass
-                        if total_ins == 0:
-                            pass
-                    else:
-                        pass
-
-                    if toolkit_group_allocations:
-                        total_toolkit = sum(toolkit_group_allocations.values())
-                        # Create mapping from agent_id to agent_name for display
-                        agent_id_to_name = {
-                            a.get("id", a.get("name")): a.get("name")
-                            for a in agent_allocations
-                        }
-                        for agent_id, count in sorted(
-                            toolkit_group_allocations.items()
-                        ):
-                            agent_name = agent_id_to_name.get(agent_id, agent_id)
-                            pass
-                        if total_toolkit == 0:
-                            pass
-                    else:
-                        pass
 
                     # Add Agent Name column to processed_df based on allocation
                     # Initialize Agent Name column if it doesn't exist
@@ -23104,10 +22824,6 @@ def process_allocation_files_with_dates(
                                 donor_agent["allocated"] = len(donor_agent["row_indices"])
                                 swap_count += 1
 
-                            if swap_count > 0:
-                                print(
-                                    f"✅ [Validation] OON priority preemption swapped {swap_count} lower-priority OON row(s) to First Priority OON."
-                                )
 
                         # Final strict cleanup: remove any remaining OON->non-OON assignment.
                         assigned_agent_norm = (
@@ -23139,10 +22855,6 @@ def process_allocation_files_with_dates(
                                 processed_df.loc[invalid_indices, "Team Leader"] = ""
 
                         oon20_validation_fixed_count = len(oon_indices_to_fix)
-                        if oon20_validation_fixed_count > 0:
-                            print(
-                                f"✅ [Validation] Enforced OON 20% rule on {oon20_validation_fixed_count} row(s) with OON-only reallocation."
-                            )
 
                     # Calculate allocation statistics FIRST
                     # CRITICAL: Calculate total_allocated based on unique row indices to avoid duplicates
@@ -23186,10 +22898,6 @@ def process_allocation_files_with_dates(
                             if "Team Leader" in processed_df.columns:
                                 processed_df.at[idx, "Team Leader"] = ""
 
-                        if invalid_final_assignments:
-                            print(
-                                f"🛡️ [Final Validation] Removed {len(invalid_final_assignments)} invalid insurance assignment(s): {invalid_by_agent}"
-                            )
 
                     # Final OON refill pass:
                     # After hard validation cleanup, refill OON agents from remaining unassigned OON rows
@@ -23248,10 +22956,6 @@ def process_allocation_files_with_dates(
                             if not progress:
                                 break
 
-                        if oon_refill_assigned > 0:
-                            print(
-                                f"✅ [OON Refill] Assigned {oon_refill_assigned} additional OON row(s) after validation cleanup."
-                            )
 
                         # Final OON first-priority enforcement:
                         # Ensure First Priority OON rows are assigned ahead of lower-priority OON rows.
@@ -23377,10 +23081,6 @@ def process_allocation_files_with_dates(
                             if not progress:
                                 break
 
-                        if oon_first_priority_swaps > 0:
-                            print(
-                                f"✅ [OON Priority] Promoted {oon_first_priority_swaps} First Priority OON row(s) via lower-priority swaps."
-                            )
 
                         # Final OON capacity-closure pass:
                         # Goal: fill each OON agent to capacity from currently unallocated OON rows.
@@ -23489,10 +23189,6 @@ def process_allocation_files_with_dates(
 
                                 oon_unassigned_pool = remaining_pool
 
-                        if oon_closure_assigned > 0:
-                            print(
-                                f"✅ [OON Closure] Assigned {oon_closure_assigned} OON row(s) to close OON agent capacity."
-                            )
 
                     # Final global First Priority enforcement (must run before final counts).
                     final_first_priority_unassigned_total_count = 0
@@ -23827,9 +23523,6 @@ def process_allocation_files_with_dates(
                                     overcap_progress = True
 
                                 if overcap_progress:
-                                    print(
-                                        f"🚀 [First Priority Over-Capacity] Assigned {overcap_assigned} First Priority row(s) beyond capacity (balanced distribution)."
-                                    )
                                     progress = True
 
                             if not progress:
@@ -23866,9 +23559,6 @@ def process_allocation_files_with_dates(
                                     fp_swaps += 1
 
                                 if force_assigned > 0:
-                                    print(
-                                        f"🧱 [First Priority Force Assign] Assigned {force_assigned} remaining First Priority row(s) after all other passes."
-                                    )
                                     progress = True
 
                             if not progress:
@@ -23886,10 +23576,6 @@ def process_allocation_files_with_dates(
                                 final_first_priority_blockers = blockers
                                 break
 
-                        if fp_direct > 0 or fp_swaps > 0:
-                            print(
-                                f"✅ [Final First Priority] Direct={fp_direct}, Swaps={fp_swaps}, RemainingActionable={final_first_priority_unassigned_actionable_count}"
-                            )
 
                     # Also filter out "Not to work" rows from the count
                     all_allocated_indices = set()
@@ -23929,13 +23615,6 @@ def process_allocation_files_with_dates(
                                 agent, processed_df, appointment_date_col
                             )
                             if violations:
-                                print(
-                                    f"⚠️ WARNING: Agent '{agent.get('name', 'Unknown')}' has exceeded appointment date limits:"
-                                )
-                                for violation in violations:
-                                    print(
-                                        f"   Date {violation['date']}: {violation['count']} rows (limit: {violation['limit']})"
-                                    )
                                 # Fix violations by removing excess rows
                                 agent_name = agent.get("name", "")
                                 if agent_name and "Agent Name" in processed_df.columns:
@@ -24060,9 +23739,6 @@ def process_allocation_files_with_dates(
                                         agent["allocated"] = len(
                                             agent.get("row_indices", [])
                                         )
-                                        print(
-                                            f"   ✅ Removed {len(rows_to_remove)} excess rows from agent '{agent_name}'"
-                                        )
 
                     # ABSOLUTE FINAL GUARANTEE:
                     # Force-assign all remaining unassigned First Priority rows so output has zero pending First rows.
@@ -24095,9 +23771,6 @@ def process_allocation_files_with_dates(
                                 )
                             )
                         ]
-                        print(
-                            f"ℹ️ [Final First Guarantee] Initial remaining first-priority rows: {len(remaining_first_unassigned)}"
-                        )
                         forced_first_final_assigned = 0
                         if remaining_first_unassigned:
                             all_agents = list(agent_allocations)
@@ -24130,10 +23803,6 @@ def process_allocation_files_with_dates(
                                     )
                                 forced_first_final_assigned += 1
 
-                        if forced_first_final_assigned > 0:
-                            print(
-                                f"✅ [Final First Guarantee] Force-assigned {forced_first_final_assigned} remaining First Priority row(s)."
-                            )
 
                         # One more verification + brute-force pass to guarantee beyond-capacity assignment.
                         still_unassigned_first = [
@@ -24176,10 +23845,6 @@ def process_allocation_files_with_dates(
                                     )
                                 brute_force_assigned += 1
 
-                        if brute_force_assigned > 0:
-                            print(
-                                f"✅ [Final First Guarantee - Brute Force] Assigned {brute_force_assigned} additional First Priority row(s)."
-                            )
                         # Always print final residual after guarantee stages.
                         _residual_first_after_guarantee = [
                             idx
@@ -24191,9 +23856,6 @@ def process_allocation_files_with_dates(
                                 )
                             )
                         ]
-                        print(
-                            f"ℹ️ [Final First Guarantee] Residual first-priority rows after guarantee: {len(_residual_first_after_guarantee)}"
-                        )
 
                     # LAST PASS (First Priority only):
                     # Assign remaining First Priority rows to capable agents only.
@@ -24256,10 +23918,6 @@ def process_allocation_files_with_dates(
                                     )
                                 global_force_assigned += 1
 
-                        if global_force_assigned > 0:
-                            print(
-                                f"✅ [Global Force Assign - First Priority] Assigned {global_force_assigned} previously unallocated First Priority row(s) to insurance-capable agents."
-                            )
 
                     # Last-mile First Priority assignment on the same dataframe the
                     # download uses, then recount every agent from Agent Name.
@@ -24273,24 +23931,12 @@ def process_allocation_files_with_dates(
                         if "insurance_carrier_col" in locals()
                         else None,
                     )
-                    if _removed_bad_ins:
-                        print(
-                            f"🛡️ [Final Insurance Guard] Unassigned {_removed_bad_ins} row(s) given to agents without that insurance capability."
-                        )
                     _removed_bad_fp = _strip_invalid_first_priority_assignments(
                         processed_df, agent_allocations
                     )
-                    if _removed_bad_fp:
-                        print(
-                            f"🛡️ [Final First Priority Guard] Unassigned {_removed_bad_fp} First Priority row(s) given to non-First agents."
-                        )
                     _removed_bad_oon = _strip_invalid_oon_assignments(
                         processed_df, agent_allocations
                     )
-                    if _removed_bad_oon:
-                        print(
-                            f"🛡️ [Final OON Guard] Unassigned {_removed_bad_oon} OON row(s) given to non-OON agents (or non-OON rows given to OON agents)."
-                        )
                     _filled = _fill_agents_to_capacity(
                         processed_df,
                         agent_allocations,
@@ -24299,10 +23945,6 @@ def process_allocation_files_with_dates(
                         if "insurance_carrier_col" in locals()
                         else None,
                     )
-                    if _filled:
-                        print(
-                            f"✅ [Capacity Fill] Assigned {_filled} matching unassigned row(s) to agents still below capacity."
-                        )
                     _leftover_priority_col = (
                         priority_status_col_name
                         if "priority_status_col_name" in locals()
@@ -24332,10 +23974,6 @@ def process_allocation_files_with_dates(
                     _removed_after_fill += _strip_invalid_oon_assignments(
                         processed_df, agent_allocations
                     )
-                    if _removed_after_fill:
-                        print(
-                            f"🛡️ [Capacity Fill Guard] Unassigned {_removed_after_fill} row(s) that failed insurance, First Priority, or OON rules."
-                        )
                     _fill_below_capacity_agents_from_matching_leftovers(
                         processed_df,
                         agent_allocations,
@@ -24863,9 +24501,6 @@ def process_allocation_files_with_dates(
             processed_df = pd.concat(
                 [processed_df, need_to_allocate_rows], ignore_index=True
             )
-            print(
-                f"📋 Added {len(need_to_allocate_rows)} 'Need to allocate' rows back to final file"
-            )
 
         result_message = f"""<h3 style="margin-bottom:15px;">✅ Imagen Allocation Complete</h3>
 <div style="display:flex;gap:15px;margin-bottom:15px;flex-wrap:wrap;">
@@ -24895,42 +24530,6 @@ def process_allocation_files_with_dates(
 <div style="margin-top:15px;padding:10px;background:#d4edda;border-radius:6px;border:1px solid #c3e6cb;">
     <strong>💾 Ready to download the processed result file!</strong>
 </div>"""
-
-        # Performance summary
-        total_processing_time = time.time() - start_time
-        print(f"\n{'='*60}")
-        print(f"📊 PERFORMANCE SUMMARY")
-        print(f"{'='*60}")
-        print(f"Total processing time: {total_processing_time:.2f}s")
-        if "step_3_5_time" in locals():
-            print(
-                f"  - Step 3.5 (NTC Allocation): {step_3_5_time:.2f}s ({step_3_5_time/total_processing_time*100:.1f}%)"
-            )
-        if "step_3_6_time" in locals():
-            print(
-                f"  - Step 3.6 (Secondary Insurance): {step_3_6_time:.2f}s ({step_3_6_time/total_processing_time*100:.1f}%)"
-            )
-        if "step_3_7_time" in locals():
-            print(
-                f"  - Step 3.7 (Single Allocation): {step_3_7_time:.2f}s ({step_3_7_time/total_processing_time*100:.1f}%)"
-            )
-        if "step_3_8_time" in locals():
-            print(
-                f"  - Step 3.8 (Mix Allocation): {step_3_8_time:.2f}s ({step_3_8_time/total_processing_time*100:.1f}%)"
-            )
-        if "step_4_time" in locals():
-            print(
-                f"  - Step 4 (Unmatched Insurance): {step_4_time:.2f}s ({step_4_time/total_processing_time*100:.1f}%)"
-            )
-        if "step_5_time" in locals():
-            print(
-                f"  - Step 5 (Matched Insurance): {step_5_time:.2f}s ({step_5_time/total_processing_time*100:.1f}%)"
-            )
-        if "step_6_time" in locals():
-            print(
-                f"  - Step 6 (Final Fallback): {step_6_time:.2f}s ({step_6_time/total_processing_time*100:.1f}%)"
-            )
-        print(f"{'='*60}\n")
 
         return result_message, processed_df
 
@@ -25065,7 +24664,6 @@ def _get_imagen_qc_dates():
 @app.route("/")
 @login_required
 def index():
-    index_started = time.time()
     global allocation_data, data_file_data, allocation_filename, data_filename, processing_result
     global agent_processing_result, agent_allocations_data
     global email_staff_details, email_staff_filename
@@ -25129,7 +24727,6 @@ def index():
     )
 
     if user and user.role == "admin":
-        lists_started = time.time()
         all_agent_work_files = get_all_agent_work_files()
         day_shift_files = get_day_shift_files()
         night_shift_files = get_night_shift_files()
@@ -25150,11 +24747,6 @@ def index():
             shift_type=DENTAL_BV_SHIFT_NIGHT
         )
         mis_checklist_files = get_mis_checklist_files()
-        _imagen_timing(
-            "homepage_agent_file_lists",
-            time.time() - lists_started,
-            f"menu={current_menu} submenu={current_submenu}",
-        )
 
     ar_ticker_preview_html = None
     if (
@@ -25176,7 +24768,6 @@ def index():
     if not imagen_processing_result and imagen_job_status.get("message"):
         imagen_processing_result = imagen_job_status.get("message")
 
-    render_started = time.time()
     rendered = render_template_string(
         HTML_TEMPLATE,
         allocation_data=allocation_data,
@@ -25266,12 +24857,6 @@ def index():
         nh_processing_result=nh_processing_result,
         current_menu=current_menu,
         current_submenu=current_submenu,
-    )
-    _imagen_timing("homepage_render_template", time.time() - render_started)
-    _imagen_timing(
-        "homepage_total",
-        time.time() - index_started,
-        f"menu={current_menu} submenu={current_submenu}",
     )
     return rendered
 
@@ -25775,7 +25360,7 @@ def apply_nh_style_priority_row_red_highlights_openpyxl(wb, sheet_name):
                 for col_idx in range(1, ws.max_column + 1):
                     ws.cell(row=row_idx, column=col_idx).font = red_font
     except Exception as e:
-        print(f"Error applying NH-style priority row highlights: {str(e)}", flush=True)
+        pass
 
 
 def is_nh_priority_style_row(row):
@@ -25855,7 +25440,7 @@ def apply_first_priority_full_row_red_openpyxl(wb, sheet_name):
             for col_idx in range(1, ws.max_column + 1):
                 ws.cell(row=row_idx, column=col_idx).font = red_font
     except Exception as e:
-        print(f"Error applying First Priority row red font: {str(e)}", flush=True)
+        pass
 
 
 def _apply_imagen_openpyxl_worksheet(ws, column_headers):
@@ -26017,7 +25602,7 @@ def apply_last_uploaded_time_staleness_highlight_openpyxl(wb, stale_hours=2):
                 except Exception:
                     continue
     except Exception as e:
-        print(f"apply_last_uploaded_time_staleness_highlight_openpyxl: {e}", flush=True)
+        pass
 
 
 def apply_comparison_styling_to_excel_buffer(excel_buffer):
@@ -26038,7 +25623,6 @@ def apply_comparison_styling_to_excel_buffer(excel_buffer):
         out.seek(0)
         return out
     except Exception as e:
-        print(f"apply_comparison_styling_to_excel_buffer: {e}", flush=True)
         excel_buffer.seek(0)
         return excel_buffer
 
@@ -26072,7 +25656,7 @@ def format_excel_with_priority_status(excel_path, sheet_name, nh_email_style=Fal
         wb.save(excel_path)
         wb.close()
     except Exception as e:
-        print(f"Error formatting Excel file: {str(e)}")
+        pass
         # Continue even if formatting fails
 
 
@@ -26622,7 +26206,6 @@ def send_pending_verification_email():
     if not email_id:
         email_id = lookup_agent_email(pending_agent_staff, agent_name) or ""
     if not email_id:
-        print(f"[Pending Verification] Send blocked, no email for {agent_name}")
         return jsonify(
             {
                 "success": False,
@@ -26663,7 +26246,6 @@ def send_pending_verification_email():
             attachment_data=excel_bytes,
             attachment_filename=f"{safe_name}_pending_verification_{datetime.now().strftime('%Y%m%d')}.xlsx",
         )
-        print(f"[Pending Verification] Send to {agent_name} <{email_id}>: {success} {message}")
         if success:
             pending_verification_sent.add(agent_name)
             return jsonify(
@@ -27373,13 +26955,11 @@ def upload_allocation_file():
         # Save uploaded file temporarily
         filename = secure_filename(file.filename)
         file.save(filename)
-        print(f"⏱️ [Upload] File saved in {time.time() - upload_start_time:.2f}s")
 
         # Load Excel file
         # Use parse_dates=False to prevent automatic date parsing that differs between Windows and Mac
         load_start = time.time()
         allocation_data = pd.read_excel(filename, sheet_name=None, parse_dates=False)
-        print(f"⏱️ [Upload] Excel file loaded in {time.time() - load_start:.2f}s")
 
         # Focus on "main" sheet if it exists, otherwise use all sheets
         sheets_to_process = {}
@@ -27390,7 +26970,6 @@ def upload_allocation_file():
 
         # Format insurance company names in "Insurance List" column for better allocation matching
         for sheet_name, df in sheets_to_process.items():
-            print(f"⏱️ [Upload] Processing sheet '{sheet_name}' with {len(df)} rows")
             # Find the Insurance List column (case-insensitive)
             insurance_working_col = None
             for col in df.columns:
@@ -27406,9 +26985,6 @@ def upload_allocation_file():
 
                 # Count non-null values for performance tracking
                 non_null_count = df[insurance_working_col].notna().sum()
-                print(
-                    f"⏱️ [Upload] Found {non_null_count} rows with insurance data in column '{insurance_working_col}'"
-                )
 
                 # Format each value in Insurance List column (which may contain multiple companies separated by ; or ,)
                 def format_insurance_list(value):
@@ -27449,9 +27025,6 @@ def upload_allocation_file():
                     format_insurance_list
                 )
                 format_time = time.time() - format_start
-                print(
-                    f"⏱️ [Upload] Formatting insurance names completed in {format_time:.2f}s (cache hits: {len(_format_insurance_cache)} unique names)"
-                )
 
                 # Then expand insurance groups (DD INS/INS and DD Toolkit/Toolkits/DD)
                 expand_start = time.time()
@@ -27459,9 +27032,6 @@ def upload_allocation_file():
                     expand_insurance_groups
                 )
                 expand_time = time.time() - expand_start
-                print(
-                    f"⏱️ [Upload] Expanding insurance groups completed in {expand_time:.2f}s"
-                )
 
                 if "main" in allocation_data:
                     allocation_data["main"] = df
@@ -27475,8 +27045,6 @@ def upload_allocation_file():
             allocation_data = {"main": allocation_data["main"]}
 
         total_upload_time = time.time() - upload_start_time
-        print(f"✅ [Upload] Total upload time: {total_upload_time:.2f}s")
-        _imagen_timing("upload_staff_total", total_upload_time)
 
         processing_result = f"✅ Allocation file uploaded successfully! Loaded {len(allocation_data)} sheet(s): {', '.join(list(allocation_data.keys()))}"
         flash(
@@ -27519,20 +27087,13 @@ def upload_data_file():
         _formatted_insurance_names = set()
         _formatted_insurance_details = []
 
-        upload_started = time.time()
         # Save uploaded file temporarily
         filename = secure_filename(file.filename)
         file.save(filename)
 
         # Load Excel file
         # Use parse_dates=False to prevent automatic date parsing that differs between Windows and Mac
-        load_started = time.time()
         data_file_data = pd.read_excel(filename, sheet_name=None, parse_dates=False)
-        _imagen_timing(
-            "upload_insurance_excel_load",
-            time.time() - load_started,
-            f"sheets={len(data_file_data)}",
-        )
 
         # Format insurance company names in "Dental Primary Ins Carr" column for better allocation
         for sheet_name, df in data_file_data.items():
@@ -27561,14 +27122,10 @@ def upload_data_file():
             "success",
         )
 
-        # Print formatted insurance companies list
-        print_formatted_insurance_companies()
-
         # Clean up uploaded file
         if os.path.exists(filename):
             os.remove(filename)
 
-        _imagen_timing("upload_insurance_total", time.time() - upload_started)
         return redirect("/")
 
     except Exception as e:
@@ -27982,7 +27539,6 @@ def process_ev_allocation():
             f"❌ Error processing EV Allocation: {str(e)}\n\n{error_trace}"
         )
         flash(f"Error processing EV Allocation: {str(e)}", "error")
-        print(f"EV Allocation Processing Error: {error_trace}")
         return redirect(f"/?menu={current_menu}&submenu={current_submenu}")
 
 
@@ -27991,7 +27547,6 @@ def process_ev_allocation():
 def process_files():
     global allocation_data, data_file_data, processing_result
 
-    request_started = time.time()
     current_menu = request.form.get("current_menu", "allocations")
     current_submenu = request.form.get("current_submenu", "image-allocation")
     wants_json = "application/json" in (request.headers.get("Accept") or "")
@@ -28031,13 +27586,6 @@ def process_files():
     selected_shift = request.form.get("selected_shift")
     excluded_agents = request.form.getlist("excluded_agents")
 
-    print(
-        f"📅 [process_files] Selected dates - First: {len(appointment_dates)}, Second: {len(appointment_dates_second)}, Receive: {len(receive_dates)}"
-    )
-    if selected_shift:
-        print(
-            f"👥 [process_files] Selected shift: {selected_shift}, Excluded agents: {len(excluded_agents)}"
-        )
 
     with _imagen_job_lock:
         existing = _read_imagen_job_status()
@@ -28076,6 +27624,7 @@ def process_files():
             "receive_dates": list(receive_dates),
             "selected_shift": selected_shift,
             "excluded_agents": list(excluded_agents),
+            "actor": _current_logged_in_user(),
         }
         thread = threading.Thread(
             target=_run_imagen_allocation_job,
@@ -28085,8 +27634,6 @@ def process_files():
         )
         thread.start()
 
-    _imagen_timing("process_request_accepted", time.time() - request_started)
-    print(f"🔄 [process_files] Started background job {job_id} for {len(data_df)} rows")
     return _redirect_or_json(
         {
             "status": "running",
@@ -31173,7 +30720,6 @@ def upload_tracker_data():
         import traceback
 
         error_msg = f"❌ Error processing tracker file: {str(e)}"
-        print(f"Tracker upload error: {traceback.format_exc()}")
         flash(error_msg, "error")
         # Clean up uploaded file on error (if it exists)
         if "filename" in locals() and os.path.exists(filename):
@@ -31342,7 +30888,6 @@ def upload_imagen_qc_tracker_allocation():
         import traceback
 
         error_msg = f"❌ [Imagen QC Tracker] Error: {str(e)}"
-        print(f"Imagen QC Tracker upload: {traceback.format_exc()}")
         flash(error_msg, "error")
         imagen_qc_tracker_data = None
         imagen_qc_tracker_file_ready = False
@@ -31399,16 +30944,12 @@ def download_ev_allocation():
         finally:
             # Clean up temp file after sending
             os.close(temp_fd)
-            if os.path.exists(temp_path):
-                # File will be deleted after send_file completes
-                pass
 
     except Exception as e:
         import traceback
 
         error_trace = traceback.format_exc()
         flash(f"Error downloading EV Allocation file: {str(e)}", "error")
-        print(f"EV Allocation Download Error: {error_trace}")
         return redirect("/?menu=allocations&submenu=ev-allocation")
 
 
@@ -31636,12 +31177,6 @@ def match_dental_bv_allocation(allocation_df, staff_df):
             f"Allocation file columns found: [{alloc_cols_str}]"
         )
 
-    print(
-        f"[Dental BV] Staff columns mapped: Doctor Office='{staff_doctor_office_col}', Software='{staff_software_col}', Insurance List='{staff_insurance_col}', Count='{staff_count_col}', Agent Name='{staff_agent_col}'"
-    )
-    print(
-        f"[Dental BV] Allocation columns mapped: Office Name='{alloc_office_col}', Software='{alloc_software_col}', Insurance='{alloc_insurance_col}', Remark='{alloc_remark_col}'"
-    )
 
     # Build agent tracking: {index: {"name": ..., "count_limit": ..., "current_count": 0, ...}}
     agent_tracker = []
@@ -31874,7 +31409,6 @@ def process_dental_bv_allocation():
             f"❌ Error processing Dental BV Allocation: {str(e)}\n\n{error_trace}"
         )
         flash(f"Error processing Dental BV Allocation: {str(e)}", "error")
-        print(f"Dental BV Allocation Processing Error: {error_trace}")
         return redirect(f"/?menu={current_menu}&submenu={current_submenu}")
 
 
@@ -31915,15 +31449,12 @@ def download_dental_bv_allocation():
             )
         finally:
             os.close(temp_fd)
-            if os.path.exists(temp_path):
-                pass
 
     except Exception as e:
         import traceback
 
         error_trace = traceback.format_exc()
         flash(f"Error downloading Dental BV Allocation file: {str(e)}", "error")
-        print(f"Dental BV Allocation Download Error: {error_trace}")
         return redirect("/?menu=allocations&submenu=dental-bv-allocation")
 
 
@@ -32022,9 +31553,6 @@ def load_imagen_qc_allocation_from_excel_path(filepath):
                     header=i + 1,
                     parse_dates=False,
                 )
-                print(
-                    f"[Imagen QC] Auto-detected header at row {i + 2} in sheet '{sheet_name_to_read}', columns: {list(reread_df.columns)}"
-                )
                 return reread_df
         return None
 
@@ -32037,9 +31565,6 @@ def load_imagen_qc_allocation_from_excel_path(filepath):
         if sheet_has_expected_columns(sheet_df):
             df = sheet_df
             matched_sheet = sheet_name
-            print(
-                f"[Imagen QC] Found matching sheet: '{sheet_name}' (direct column match)"
-            )
             break
 
     if df is None:
@@ -32206,12 +31731,6 @@ def match_imagen_qc_allocation(
 
     staff_status_col = find_col(staff_df, ["Status"])
 
-    print(
-        f"[Imagen QC] Staff columns mapped: Auditors='{staff_auditor_col}', Pref1='{staff_pref1_col}', Pref2='{staff_pref2_col}', CC='{staff_cc_col}', Status='{staff_status_col}'"
-    )
-    print(
-        f"[Imagen QC] Allocation columns mapped: Agent Name='{alloc_agent_col}', Appointment Date='{alloc_date_col}'"
-    )
 
     # Parse appointment dates and split into priority vs non-priority
     parsed_dates = pd.to_datetime(allocation_df[alloc_date_col], errors="coerce")
@@ -32248,9 +31767,6 @@ def match_imagen_qc_allocation(
         reverse=True,
     )
 
-    print(
-        f"[Imagen QC] Date split: {len(priority_indices)} priority rows, {len(nonpriority_indices)} non-priority rows ({len(priority_date_set)} priority dates selected)"
-    )
 
     # Build auditor tracker
     auditor_tracker = []
@@ -32367,9 +31883,6 @@ def match_imagen_qc_allocation(
                     target_auditor = a
                     break
             if not target_auditor:
-                print(
-                    f"[Imagen QC] Override: auditor '{override_auditor_name}' not found in tracker, skipping"
-                )
                 continue
 
             override_agents_lower = set(
@@ -32404,18 +31917,6 @@ def match_imagen_qc_allocation(
                     override_indices.append(idx)
 
             override_indices.sort(key=lambda i: parsed_dates.get(i, pd.NaT))
-            print(
-                f"[Imagen QC] Override: {len(override_indices)} candidate rows for auditor '{override_auditor_name}' (agents: {override_agent_list}, dates: {override_date_list})",
-                flush=True,
-            )
-            print(
-                f"[Imagen QC] Override: date_set={auditor_date_set}, agents_lower={override_agents_lower}",
-                flush=True,
-            )
-            print(
-                f"[Imagen QC] Override: rows matching dates only={date_match_count}, rows matching agents only={agent_match_count}",
-                flush=True,
-            )
 
             for idx in override_indices:
                 if result_df.at[idx, "Auditor"] != "":
@@ -32440,7 +31941,6 @@ def match_imagen_qc_allocation(
                         matched_pref2 += 1
                     override_matched += 1
 
-        print(f"[Imagen QC] Override total matched: {override_matched}", flush=True)
 
     # Pass 1: Priority rows → Preference 1
     assign_rows(priority_indices, "pref1_list", True)
@@ -32496,7 +31996,6 @@ def process_imagen_qc_allocation():
         priority_dates_str = request.form.get("priority_dates", "")
         priority_dates = [d.strip() for d in priority_dates_str.split(",") if d.strip()]
         imagen_qc_selected_dates = priority_dates
-        print(f"[Imagen QC] Priority dates received: {priority_dates}")
 
         # Get per-auditor situational override data (JSON: {"AuditorName": ["date1","date2"], ...})
         import json as json_module
@@ -32510,10 +32009,6 @@ def process_imagen_qc_allocation():
                 override_map = {}
         import sys
 
-        print(f"[Imagen QC] Override map: {override_map}", flush=True)
-        print(
-            f"[Imagen QC] Override data raw string: '{override_data_str}'", flush=True
-        )
 
         (
             result_df,
@@ -32628,7 +32123,6 @@ def process_imagen_qc_allocation():
             f"❌ Error processing Imagen QC Allocation: {str(e)}\n\n{error_trace}"
         )
         flash(f"Error processing Imagen QC Allocation: {str(e)}", "error")
-        print(f"Imagen QC Allocation Processing Error: {error_trace}")
         return redirect(f"/?menu={current_menu}&submenu={current_submenu}")
 
 
@@ -32714,15 +32208,12 @@ def download_imagen_qc_allocation():
             )
         finally:
             os.close(temp_fd)
-            if os.path.exists(temp_path):
-                pass
 
     except Exception as e:
         import traceback
 
         error_trace = traceback.format_exc()
         flash(f"Error downloading Imagen QC Allocation file: {str(e)}", "error")
-        print(f"Imagen QC Allocation Download Error: {error_trace}")
         return redirect("/?menu=allocations&submenu=imagen-qc-allocation")
 
 
@@ -36754,7 +36245,6 @@ def consolidate_files_helper_to_buffer(
         filename = f"Consolidated {file_type_name} {datetime.now().strftime('%m_%d_%Y')}.xlsx"
         return excel_buffer, filename, len(work_files)
     except Exception as e:
-        print(f"Error consolidating {file_type_name} files: {str(e)}")
         return None, None, 0
 
 
@@ -39041,12 +38531,8 @@ def cleanup_all_agent_files():
 
             db.session.commit()
 
-            print(
-                f"✅ Daily cleanup completed: Deleted {file_count} agent work file(s) at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-            )
             return True, file_count
     except Exception as e:
-        print(f"❌ Error during daily cleanup: {str(e)}")
         db.session.rollback()
         return False, str(e)
 
@@ -39057,9 +38543,6 @@ def daily_consolidate_all_subtabs_and_email():
     NH, EV, Dental BV, MIS Checklist), email one message with attachments, then delete
     those uploads from the DB only after the email succeeds.
     """
-    print(
-        f"🔔 Daily consolidation job triggered at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-    )
 
     # Safeguard: Track last execution date to prevent duplicate emails on the same day
     if not hasattr(app, "_last_subtab_consolidation_date"):
@@ -39069,9 +38552,6 @@ def daily_consolidate_all_subtabs_and_email():
 
     # If we already ran today, skip to prevent duplicate emails
     if app._last_subtab_consolidation_date == today:
-        print(
-            f"⚠️ Daily sub-tab consolidation already executed today ({today}). Skipping to prevent duplicate email."
-        )
         return False, "Already executed today"
 
     try:
@@ -39094,9 +38574,7 @@ def daily_consolidate_all_subtabs_and_email():
             try:
                 maybe_send_management_outbound_upload_digest()
             except Exception as digest_exc:
-                print(
-                    f"⚠️ Management upload digest failed (non-fatal): {digest_exc}"
-                )
+                pass
 
             consolidation_email = os.environ.get(
                 "CONSOLIDATION_EMAIL", "amirmursal@gmail.com"
@@ -39247,14 +38725,6 @@ def daily_consolidate_all_subtabs_and_email():
                         text_content=text_main,
                         attachments=main_attachments,
                     )
-                    if main_ok:
-                        print(
-                            f"✅ Daily sub-tab consolidation email sent to {consolidation_email} with {len(main_attachments)} attachment(s)"
-                        )
-                    else:
-                        print(
-                            f"❌ Failed to send main consolidation email to {consolidation_email}: {main_msg}"
-                        )
 
                 ev_ok = True
                 if ev_attachment:
@@ -39271,14 +38741,6 @@ def daily_consolidate_all_subtabs_and_email():
                         text_content=text_ev,
                         attachments=[ev_attachment],
                     )
-                    if ev_ok:
-                        print(
-                            f"✅ Daily EV consolidation email sent to {ev_consolidation_email}"
-                        )
-                    else:
-                        print(
-                            f"❌ Failed to send EV consolidation email to {ev_consolidation_email}: {ev_msg}"
-                        )
 
                 dbv_ok = True
                 if dbv_attachment:
@@ -39295,14 +38757,6 @@ def daily_consolidate_all_subtabs_and_email():
                         text_content=text_dbv,
                         attachments=[dbv_attachment],
                     )
-                    if dbv_ok:
-                        print(
-                            f"✅ Daily Dental BV consolidation email sent to {dental_bv_consolidation_email}"
-                        )
-                    else:
-                        print(
-                            f"❌ Failed to send Dental BV consolidation email to {dental_bv_consolidation_email}: {dbv_msg}"
-                        )
 
                 nh_ok = True
                 if nh_attachment:
@@ -39319,14 +38773,6 @@ def daily_consolidate_all_subtabs_and_email():
                         text_content=text_nh,
                         attachments=[nh_attachment],
                     )
-                    if nh_ok:
-                        print(
-                            f"✅ Daily NH consolidation email sent to {nh_consolidation_email}"
-                        )
-                    else:
-                        print(
-                            f"❌ Failed to send NH consolidation email to {nh_consolidation_email}: {nh_msg}"
-                        )
 
                 ar_ok = True
                 if ar_attachments:
@@ -39343,14 +38789,6 @@ def daily_consolidate_all_subtabs_and_email():
                         text_content=text_ar,
                         attachments=ar_attachments,
                     )
-                    if ar_ok:
-                        print(
-                            f"✅ Daily Ortho AR/Dental AR consolidation email sent to {ar_consolidation_email}"
-                        )
-                    else:
-                        print(
-                            f"❌ Failed to send Ortho AR/Dental AR consolidation email to {ar_consolidation_email}: {ar_msg}"
-                        )
 
                 web_ar_payment_pp_ok = True
                 if web_ar_payment_pp_attachments:
@@ -39372,16 +38810,6 @@ def daily_consolidate_all_subtabs_and_email():
                         text_content=text_web_ar_payment_pp,
                         attachments=web_ar_payment_pp_attachments,
                     )
-                    if web_ar_payment_pp_ok:
-                        print(
-                            "✅ Daily Web AR/Payment List (PP) consolidation email sent to "
-                            f"{web_ar_payment_pp_consolidation_email}"
-                        )
-                    else:
-                        print(
-                            "❌ Failed to send Web AR/Payment List (PP) consolidation email to "
-                            f"{web_ar_payment_pp_consolidation_email}: {web_ar_payment_pp_msg}"
-                        )
 
                 ar_production_daily_ok = True
                 if ar_production_daily_attachments:
@@ -39403,16 +38831,6 @@ def daily_consolidate_all_subtabs_and_email():
                         text_content=text_ar_production_daily,
                         attachments=ar_production_daily_attachments,
                     )
-                    if ar_production_daily_ok:
-                        print(
-                            "✅ Daily AR Production Daily consolidation email sent to "
-                            f"{ar_production_daily_consolidation_email}"
-                        )
-                    else:
-                        print(
-                            "❌ Failed to send AR Production Daily consolidation email to "
-                            f"{ar_production_daily_consolidation_email}: {ar_production_daily_msg}"
-                        )
 
                 success = (
                     main_ok
@@ -39427,14 +38845,6 @@ def daily_consolidate_all_subtabs_and_email():
                 # Mark as executed today once consolidation attempt has run (prevents repeated same-day retries).
                 app._last_subtab_consolidation_date = today
 
-                if success:
-                    print(
-                        f"✅ Daily sub-tab consolidation emails completed (main→{consolidation_email}, NH→{nh_consolidation_email}, EV→{ev_consolidation_email}, Dental BV→{dental_bv_consolidation_email}, Ortho AR/Dental AR→{ar_consolidation_email}, Web AR/Payment List (PP)→{web_ar_payment_pp_consolidation_email}, AR Production Daily→{ar_production_daily_consolidation_email})"
-                    )
-                else:
-                    print(
-                        "⚠️ One or more daily consolidation emails failed; proceeding with cleanup to ensure daily reset."
-                    )
 
                 # Always cleanup after a consolidation attempt with data.
                 cleanup_configs = [
@@ -39461,25 +38871,16 @@ def daily_consolidate_all_subtabs_and_email():
                     for work_file in files_to_delete:
                         db.session.delete(work_file)
                     total_deleted += deleted_count
-                    if deleted_count > 0:
-                        print(
-                            f"✅ Cleanup: Deleted {deleted_count} {file_type_name} file(s)"
-                        )
 
                 db.session.commit()
-                print(
-                    f"✅ Daily sub-tab consolidation + cleanup complete. Deleted {total_deleted} total file(s)."
-                )
 
                 if success:
                     return True, total_deleted
                 return False, f"Email send failed; cleanup completed ({total_deleted} files deleted)"
             else:
-                print(f"⚠️ No files found in any sub-tab to consolidate")
                 return False, "No files to consolidate"
 
     except Exception as e:
-        print(f"❌ Error in daily sub-tab consolidation + cleanup: {str(e)}")
         db.session.rollback()
         return False, str(e)
 
@@ -39494,9 +38895,6 @@ def daily_consolidate_and_cleanup():
 
     # If we already ran today, skip to prevent duplicate emails
     if app._last_consolidation_date == today:
-        print(
-            f"⚠️ Daily consolidation already executed today ({today}). Skipping to prevent duplicate email."
-        )
         return False, "Already executed today"
 
     try:
@@ -39518,13 +38916,6 @@ def daily_consolidate_and_cleanup():
                 if success:
                     # Mark as executed today
                     app._last_consolidation_date = today
-                    print(
-                        f"✅ Daily consolidation email sent to {to_email}: {filename_or_message}"
-                    )
-                else:
-                    print(f"❌ Failed to send consolidation email: {message}")
-            else:
-                print(f"⚠️ Skipping email - {filename_or_message}")
 
             # Perform cleanup after emailing
             all_files = AgentWorkFile.query.all()
@@ -39532,12 +38923,8 @@ def daily_consolidate_and_cleanup():
             for work_file in all_files:
                 db.session.delete(work_file)
             db.session.commit()
-            print(
-                f"✅ Daily consolidation + cleanup complete. Deleted {file_count} file(s)."
-            )
             return True, file_count
     except Exception as e:
-        print(f"❌ Error in daily consolidation + cleanup: {str(e)}")
         db.session.rollback()
         return False, str(e)
 
@@ -39721,7 +39108,6 @@ def apply_priority_styling_to_excel_buffer(excel_buffer, nh_email_style=False):
         out.seek(0)
         return out
     except Exception as e:
-        print(f"apply_priority_styling_to_excel_buffer: {e}", flush=True)
         excel_buffer.seek(0)
         return excel_buffer
 
@@ -42382,7 +41768,6 @@ def process_nh_allocation():
     except Exception as e:
         import traceback
         flash(f"❌ Error processing NH Allocation: {str(e)}", "error")
-        print(f"NH Allocation Error: {traceback.format_exc()}", flush=True)
 
     return redirect("/?menu=allocations&submenu=nh-allocation")
 
@@ -44236,12 +43621,7 @@ def upload_dental_bv():
             else:
                 shift_type = DENTAL_BV_SHIFT_DAY
         try:
-            print(
-                "🔎 DEBUG Dental BV upload shift resolution: "
-                f"raw_shift_type={repr(raw_shift_type)} "
-                f"referrer={repr(request.referrer)} "
-                f"resolved_shift_type={shift_type}"
-            )
+            pass
         except Exception:
             pass
 
@@ -45008,6 +44388,20 @@ def upload_daily_consolidate():
         )
 
 
+def _flask_debug_enabled():
+    """Debug/reloader stay on for local `run-dev.sh`. Off on Railway/production."""
+    if os.environ.get("DISABLE_DEBUG") == "1":
+        return False
+    if os.environ.get("FLASK_ENV", "").lower() == "production":
+        return False
+    if os.environ.get("RAILWAY_ENVIRONMENT"):
+        return False
+    flask_debug = os.environ.get("FLASK_DEBUG", "").strip().lower()
+    if flask_debug in ("0", "false", "no"):
+        return False
+    return True
+
+
 if __name__ == "__main__":
     import os
     import threading
@@ -45039,7 +44433,7 @@ if __name__ == "__main__":
     # In production (no reloader) or when reloader is disabled, WERKZEUG_RUN_MAIN is not set
     # So we run scheduler ONLY when: WERKZEUG_RUN_MAIN is 'true' (reloader child) OR when reloader is disabled
     # Check if reloader is enabled by checking debug mode
-    debug_mode = True if os.environ.get("DISABLE_DEBUG") != "1" else False
+    debug_mode = _flask_debug_enabled()
     werkzeug_main = os.environ.get("WERKZEUG_RUN_MAIN")
 
     # Only start scheduler if:
@@ -45089,12 +44483,6 @@ if __name__ == "__main__":
             datetime(2025, 1, 1, cleanup_hour, cleanup_minute)
         )
         utc_time = local_time.astimezone(pytz.UTC)
-        print(
-            f"✅ Sub-tab consolidation scheduler started - runs every day at {cleanup_hour:02d}:{cleanup_minute:02d} {cleanup_timezone_str} (UTC: {utc_time.strftime('%H:%M')})"
-        )
-        print(
-            f"✅ Old consolidation scheduler started - runs every day at {cleanup_hour:02d}:{cleanup_minute:02d} {cleanup_timezone_str} (UTC: {utc_time.strftime('%H:%M')})"
-        )
 
         # Catch-up run:
         # If app starts after scheduled time and today's run hasn't executed yet,
@@ -45116,23 +44504,24 @@ if __name__ == "__main__":
                 and getattr(app, "_last_subtab_consolidation_date", None)
                 != now_local.date()
             ):
-                print(
-                    "🕒 Missed scheduled consolidation window; running immediate catch-up now."
-                )
                 daily_consolidate_all_subtabs_and_email()
         except Exception as catchup_exc:
-            print(f"⚠️ Consolidation catch-up check failed: {catchup_exc}")
+            pass
     else:
         # In reloader process, don't start scheduler
         scheduler = None
-        print("⚠️ Skipping scheduler initialization in Flask reloader process")
 
     port = int(os.environ.get("PORT", 5003))
-    # Always enable debug + auto-reload for local dev unless explicitly disabled
-    debug = True if os.environ.get("DISABLE_DEBUG") != "1" else False
+    debug = _flask_debug_enabled()
 
     try:
-        app.run(debug=debug, host="0.0.0.0", port=port, use_reloader=debug)
+        app.run(
+            debug=debug,
+            use_debugger=debug,
+            use_reloader=debug,
+            host="0.0.0.0",
+            port=port,
+        )
     finally:
         # Shutdown scheduler when app stops (only if scheduler was created)
         if "scheduler" in locals() and scheduler is not None and scheduler.running:

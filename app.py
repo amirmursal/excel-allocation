@@ -17,6 +17,7 @@ from flask import (
 )
 from flask_sqlalchemy import SQLAlchemy
 from flask_migrate import Migrate
+from sqlalchemy.orm import defer, joinedload
 import pandas as pd
 import os
 import re
@@ -1636,21 +1637,57 @@ def save_agent_work_file(agent_id, filename, file_data, notes=None):
     return work_file
 
 
+def _list_uploaded_files(model, agent_id=None):
+    """List uploaded files without pulling Excel JSON blobs.
+
+    Imagen Allocation upload/process redirects back to `/`, and that page
+    used to SELECT file_data for every agent-menu workbook. On Railway those
+    TEXT columns are megabytes each, so one homepage load took minutes.
+    """
+    query = model.query.options(defer(model.file_data))
+    if hasattr(model, "agent"):
+        query = query.options(joinedload(model.agent))
+    if agent_id:
+        query = query.filter_by(agent_id=agent_id)
+    return query.order_by(model.upload_date.desc()).all()
+
+
+def _wants_json_response():
+    """True when the browser fetch asked for JSON instead of a full page."""
+    best = request.accept_mimetypes.best_match(["application/json", "text/html"])
+    return best == "application/json"
+
+
+def _save_upload_to_temp(file):
+    """Write an upload outside the app directory so the debug reloader
+    does not restart the process (that restart is what made Railway uploads
+    look like they hung for minutes).
+    """
+    original_name = secure_filename(file.filename or "upload.xlsx")
+    suffix = os.path.splitext(original_name)[1] or ".xlsx"
+    fd, path = tempfile.mkstemp(suffix=suffix)
+    os.close(fd)
+    file.save(path)
+    return original_name, path
+
+
+def _json_or_redirect(ok, message, redirect_url="/?menu=allocations&submenu=image-allocation"):
+    if _wants_json_response():
+        return jsonify({"success": bool(ok), "message": message}), (
+            200 if ok else 400
+        )
+    return redirect(redirect_url)
+
+
 def get_agent_work_files(agent_id=None):
     """Get agent work files, optionally filtered by agent"""
-    if agent_id:
-        return (
-            AgentWorkFile.query.filter_by(agent_id=agent_id)
-            .order_by(AgentWorkFile.upload_date.desc())
-            .all()
-        )
-    return AgentWorkFile.query.order_by(AgentWorkFile.upload_date.desc()).all()
+    return _list_uploaded_files(AgentWorkFile, agent_id)
 
 
 def get_all_agent_work_files():
     """Get all agent work files for consolidation (admin view)"""
     # Return all files regardless of status so admin can see all uploaded files
-    return AgentWorkFile.query.order_by(AgentWorkFile.upload_date.desc()).all()
+    return _list_uploaded_files(AgentWorkFile)
 
 
 def save_ntbp_file(agent_id, filename, file_data, notes=None):
@@ -1664,13 +1701,7 @@ def save_ntbp_file(agent_id, filename, file_data, notes=None):
 
 def get_ntbp_files(agent_id=None):
     """Get NTBP files, optionally filtered by agent"""
-    if agent_id:
-        return (
-            NTBPFile.query.filter_by(agent_id=agent_id)
-            .order_by(NTBPFile.upload_date.desc())
-            .all()
-        )
-    return NTBPFile.query.order_by(NTBPFile.upload_date.desc()).all()
+    return _list_uploaded_files(NTBPFile, agent_id)
 
 
 def save_qcp_file(agent_id, filename, file_data, notes=None):
@@ -1684,13 +1715,7 @@ def save_qcp_file(agent_id, filename, file_data, notes=None):
 
 def get_qcp_files(agent_id=None):
     """Get QCP files, optionally filtered by agent"""
-    if agent_id:
-        return (
-            QCPFile.query.filter_by(agent_id=agent_id)
-            .order_by(QCPFile.upload_date.desc())
-            .all()
-        )
-    return QCPFile.query.order_by(QCPFile.upload_date.desc()).all()
+    return _list_uploaded_files(QCPFile, agent_id)
 
 
 def save_ev_file(agent_id, filename, file_data, notes=None):
@@ -1704,9 +1729,7 @@ def save_ev_file(agent_id, filename, file_data, notes=None):
 
 def get_ev_files(agent_id=None):
     """Get EV files, optionally filtered by agent"""
-    if agent_id:
-        return EVFile.query.filter_by(agent_id=agent_id).order_by(EVFile.upload_date.desc()).all()
-    return EVFile.query.order_by(EVFile.upload_date.desc()).all()
+    return _list_uploaded_files(EVFile, agent_id)
 
 
 def save_ev_agent_file(agent_id, filename, file_data, notes=None):
@@ -1720,9 +1743,7 @@ def save_ev_agent_file(agent_id, filename, file_data, notes=None):
 
 def get_ev_agent_files(agent_id=None):
     """Get EV agent files, optionally filtered by agent"""
-    if agent_id:
-        return EVAgentFile.query.filter_by(agent_id=agent_id).order_by(EVAgentFile.upload_date.desc()).all()
-    return EVAgentFile.query.order_by(EVAgentFile.upload_date.desc()).all()
+    return _list_uploaded_files(EVAgentFile, agent_id)
 
 
 def save_ev_agent_file(agent_id, filename, file_data, notes=None):
@@ -1736,9 +1757,7 @@ def save_ev_agent_file(agent_id, filename, file_data, notes=None):
 
 def get_ev_agent_files(agent_id=None):
     """Get EV agent files, optionally filtered by agent"""
-    if agent_id:
-        return EVAgentFile.query.filter_by(agent_id=agent_id).order_by(EVAgentFile.upload_date.desc()).all()
-    return EVAgentFile.query.order_by(EVAgentFile.upload_date.desc()).all()
+    return _list_uploaded_files(EVAgentFile, agent_id)
 
 
 def save_ev_agent_file(agent_id, filename, file_data, notes=None):
@@ -1750,9 +1769,7 @@ def save_ev_agent_file(agent_id, filename, file_data, notes=None):
 
 
 def get_ev_agent_files(agent_id=None):
-    if agent_id:
-        return EVAgentFile.query.filter_by(agent_id=agent_id).order_by(EVAgentFile.upload_date.desc()).all()
-    return EVAgentFile.query.order_by(EVAgentFile.upload_date.desc()).all()
+    return _list_uploaded_files(EVAgentFile, agent_id)
 
 
 def save_ev_agent_file(agent_id, filename, file_data, notes=None):
@@ -1766,9 +1783,7 @@ def save_ev_agent_file(agent_id, filename, file_data, notes=None):
 
 def get_ev_agent_files(agent_id=None):
     """Get EV agent files, optionally filtered by agent"""
-    if agent_id:
-        return EVAgentFile.query.filter_by(agent_id=agent_id).order_by(EVAgentFile.upload_date.desc()).all()
-    return EVAgentFile.query.order_by(EVAgentFile.upload_date.desc()).all()
+    return _list_uploaded_files(EVAgentFile, agent_id)
 
 
 def save_nh_file(agent_id, filename, file_data, notes=None):
@@ -1782,9 +1797,7 @@ def save_nh_file(agent_id, filename, file_data, notes=None):
 
 def get_nh_files(agent_id=None):
     """Get NH files, optionally filtered by agent"""
-    if agent_id:
-        return NHFile.query.filter_by(agent_id=agent_id).order_by(NHFile.upload_date.desc()).all()
-    return NHFile.query.order_by(NHFile.upload_date.desc()).all()
+    return _list_uploaded_files(NHFile, agent_id)
 
 
 def save_web_ar_file(agent_id, filename, file_data, notes=None):
@@ -1798,11 +1811,7 @@ def save_web_ar_file(agent_id, filename, file_data, notes=None):
 
 def get_web_ar_files(agent_id=None):
     """Get Web AR files, optionally filtered by agent"""
-    if agent_id:
-        return WebARFile.query.filter_by(agent_id=agent_id).order_by(
-            WebARFile.upload_date.desc()
-        ).all()
-    return WebARFile.query.order_by(WebARFile.upload_date.desc()).all()
+    return _list_uploaded_files(WebARFile, agent_id)
 
 
 def save_payment_list_pp_file(agent_id, filename, file_data, notes=None):
@@ -1818,11 +1827,7 @@ def save_payment_list_pp_file(agent_id, filename, file_data, notes=None):
 
 def get_payment_list_pp_files(agent_id=None):
     """Get Payment List (PP) files, optionally filtered by agent"""
-    if agent_id:
-        return PaymentListPPFile.query.filter_by(agent_id=agent_id).order_by(
-            PaymentListPPFile.upload_date.desc()
-        ).all()
-    return PaymentListPPFile.query.order_by(PaymentListPPFile.upload_date.desc()).all()
+    return _list_uploaded_files(PaymentListPPFile, agent_id)
 
 
 def save_ar_production_daily_file(agent_id, filename, file_data, notes=None):
@@ -1838,13 +1843,7 @@ def save_ar_production_daily_file(agent_id, filename, file_data, notes=None):
 
 def get_ar_production_daily_files(agent_id=None):
     """Get AR Production Daily files, optionally filtered by agent"""
-    if agent_id:
-        return ARProductionDailyFile.query.filter_by(agent_id=agent_id).order_by(
-            ARProductionDailyFile.upload_date.desc()
-        ).all()
-    return ARProductionDailyFile.query.order_by(
-        ARProductionDailyFile.upload_date.desc()
-    ).all()
+    return _list_uploaded_files(ARProductionDailyFile, agent_id)
 
 
 def save_ortho_file(agent_id, filename, file_data, notes=None):
@@ -1858,11 +1857,7 @@ def save_ortho_file(agent_id, filename, file_data, notes=None):
 
 def get_ortho_files(agent_id=None):
     """Get Ortho files, optionally filtered by agent"""
-    if agent_id:
-        return OrthoFile.query.filter_by(agent_id=agent_id).order_by(
-            OrthoFile.upload_date.desc()
-        ).all()
-    return OrthoFile.query.order_by(OrthoFile.upload_date.desc()).all()
+    return _list_uploaded_files(OrthoFile, agent_id)
 
 
 def save_dental_ar_file(agent_id, filename, file_data, notes=None):
@@ -1876,11 +1871,7 @@ def save_dental_ar_file(agent_id, filename, file_data, notes=None):
 
 def get_dental_ar_files(agent_id=None):
     """Get Dental AR files, optionally filtered by agent"""
-    if agent_id:
-        return DentalARFile.query.filter_by(agent_id=agent_id).order_by(
-            DentalARFile.upload_date.desc()
-        ).all()
-    return DentalARFile.query.order_by(DentalARFile.upload_date.desc()).all()
+    return _list_uploaded_files(DentalARFile, agent_id)
 
 
 def save_dental_bv_agent_file(
@@ -1917,10 +1908,7 @@ def _extract_dental_bv_shift_note(notes_value):
 
 def get_dental_bv_agent_files(agent_id=None, shift_type=None):
     """Get Dental BV agent files, optionally filtered by agent and shift."""
-    query = DentalBVAgentFile.query
-    if agent_id:
-        query = query.filter_by(agent_id=agent_id)
-    files = query.order_by(DentalBVAgentFile.upload_date.desc()).all()
+    files = _list_uploaded_files(DentalBVAgentFile, agent_id)
 
     if not shift_type:
         return files
@@ -1947,11 +1935,7 @@ def save_mis_checklist_file(agent_id, filename, file_data, notes=None):
 
 def get_mis_checklist_files(agent_id=None):
     """Get MIS Checklist files, optionally filtered by agent."""
-    if agent_id:
-        return MISChecklistFile.query.filter_by(agent_id=agent_id).order_by(
-            MISChecklistFile.upload_date.desc()
-        ).all()
-    return MISChecklistFile.query.order_by(MISChecklistFile.upload_date.desc()).all()
+    return _list_uploaded_files(MISChecklistFile, agent_id)
 
 
 def _norm_mis_header(s):
@@ -2177,15 +2161,7 @@ def save_daily_consolidate_file(
 
 def get_daily_consolidate_files(agent_id=None):
     """Get Daily Consolidate files, optionally filtered by agent"""
-    if agent_id:
-        return (
-            DailyConsolidateFile.query.filter_by(agent_id=agent_id)
-            .order_by(DailyConsolidateFile.upload_date.desc())
-            .all()
-        )
-    return DailyConsolidateFile.query.order_by(
-        DailyConsolidateFile.upload_date.desc()
-    ).all()
+    return _list_uploaded_files(DailyConsolidateFile, agent_id)
 
 
 def save_day_shift_file(agent_id, filename, file_data, notes=None):
@@ -2199,13 +2175,7 @@ def save_day_shift_file(agent_id, filename, file_data, notes=None):
 
 def get_day_shift_files(agent_id=None):
     """Get Day Shift files, optionally filtered by agent"""
-    if agent_id:
-        return (
-            DayShiftFile.query.filter_by(agent_id=agent_id)
-            .order_by(DayShiftFile.upload_date.desc())
-            .all()
-        )
-    return DayShiftFile.query.order_by(DayShiftFile.upload_date.desc()).all()
+    return _list_uploaded_files(DayShiftFile, agent_id)
 
 
 def save_night_shift_file(agent_id, filename, file_data, notes=None):
@@ -2219,13 +2189,7 @@ def save_night_shift_file(agent_id, filename, file_data, notes=None):
 
 def get_night_shift_files(agent_id=None):
     """Get Night Shift files, optionally filtered by agent"""
-    if agent_id:
-        return (
-            NightShiftFile.query.filter_by(agent_id=agent_id)
-            .order_by(NightShiftFile.upload_date.desc())
-            .all()
-        )
-    return NightShiftFile.query.order_by(NightShiftFile.upload_date.desc()).all()
+    return _list_uploaded_files(NightShiftFile, agent_id)
 
 
 # Template filter to convert datetime to IST
@@ -8267,13 +8231,14 @@ HTML_TEMPLATE = """
                 
                 fetch('/upload_allocation', {
                     method: 'POST',
-                    body: formData
+                    body: formData,
+                    headers: { 'Accept': 'application/json' }
                 })
                 .then(response => {
                     if (!response.ok) {
                         throw new Error(`HTTP error! status: ${response.status}`);
                     }
-                    return response.text();
+                    return response.json();
                 })
                 .then(() => {
                     showSuccessToast('Upload Successful', 'Allocation file uploaded successfully!');
@@ -8320,13 +8285,14 @@ HTML_TEMPLATE = """
                 
                 fetch('/upload_data', {
                     method: 'POST',
-                    body: formData
+                    body: formData,
+                    headers: { 'Accept': 'application/json' }
                 })
                 .then(response => {
                     if (!response.ok) {
                         throw new Error(`HTTP error! status: ${response.status}`);
                     }
-                    return response.text();
+                    return response.json();
                 })
                 .then(() => {
                     showSuccessToast('Upload Successful', 'Data file uploaded successfully!');
@@ -10416,6 +10382,7 @@ HTML_TEMPLATE = """
             fetch('/process_files', {
                 method: 'POST',
                 body: formData,
+                headers: { 'Accept': 'application/json' },
                 redirect: 'follow'
             })
             .then(response => {
@@ -27074,21 +27041,20 @@ def upload_allocation_file():
 
     if "file" not in request.files:
         flash("No file provided", "error")
-        return redirect("/")
+        return _json_or_redirect(False, "No file provided")
 
     file = request.files["file"]
     if file.filename == "":
         flash("No file selected", "error")
-        return redirect("/")
+        return _json_or_redirect(False, "No file selected")
 
     try:
         import time
 
         upload_start_time = time.time()
 
-        # Save uploaded file temporarily
-        filename = secure_filename(file.filename)
-        file.save(filename)
+        # Save outside the app directory so Flask's reloader does not restart.
+        original_name, filename = _save_upload_to_temp(file)
         print(f"⏱️ [Upload] File saved in {time.time() - upload_start_time:.2f}s")
 
         # Load Excel file
@@ -27184,7 +27150,7 @@ def upload_allocation_file():
                 else:
                     allocation_data[sheet_name] = df
 
-        allocation_filename = filename
+        allocation_filename = original_name
 
         # Update allocation_data to only include processed sheets
         if "main" in allocation_data:
@@ -27194,16 +27160,16 @@ def upload_allocation_file():
         print(f"✅ [Upload] Total upload time: {total_upload_time:.2f}s")
 
         processing_result = f"✅ Allocation file uploaded successfully! Loaded {len(allocation_data)} sheet(s): {', '.join(list(allocation_data.keys()))}"
-        flash(
-            f'Allocation file uploaded successfully! Loaded {len(allocation_data)} sheet(s): {", ".join(list(allocation_data.keys()))}',
-            "success",
+        success_message = (
+            f'Allocation file uploaded successfully! Loaded {len(allocation_data)} sheet(s): {", ".join(list(allocation_data.keys()))}'
         )
+        flash(success_message, "success")
 
         # Clean up uploaded file
         if os.path.exists(filename):
             os.remove(filename)
 
-        return redirect("/")
+        return _json_or_redirect(True, success_message)
 
     except Exception as e:
         processing_result = f"❌ Error uploading allocation file: {str(e)}"
@@ -27211,7 +27177,7 @@ def upload_allocation_file():
         # Clean up uploaded file on error
         if "filename" in locals() and os.path.exists(filename):
             os.remove(filename)
-        return redirect("/")
+        return _json_or_redirect(False, f"Error uploading allocation file: {str(e)}")
 
 
 @app.route("/upload_data", methods=["POST"])
@@ -27221,12 +27187,12 @@ def upload_data_file():
 
     if "file" not in request.files:
         flash("No file provided", "error")
-        return redirect("/")
+        return _json_or_redirect(False, "No file provided")
 
     file = request.files["file"]
     if file.filename == "":
         flash("No file selected", "error")
-        return redirect("/")
+        return _json_or_redirect(False, "No file selected")
 
     try:
         # Reset tracking for new file
@@ -27234,9 +27200,7 @@ def upload_data_file():
         _formatted_insurance_names = set()
         _formatted_insurance_details = []
 
-        # Save uploaded file temporarily
-        filename = secure_filename(file.filename)
-        file.save(filename)
+        original_name, filename = _save_upload_to_temp(file)
 
         # Load Excel file
         # Use parse_dates=False to prevent automatic date parsing that differs between Windows and Mac
@@ -27261,13 +27225,13 @@ def upload_data_file():
                     df.copy(), insurance_col
                 )
 
-        data_filename = filename
+        data_filename = original_name
 
         processing_result = f"✅ Data file uploaded successfully! Loaded {len(data_file_data)} sheets: {', '.join(list(data_file_data.keys()))}"
-        flash(
-            f'Data file uploaded successfully! Loaded {len(data_file_data)} sheets: {", ".join(list(data_file_data.keys()))}',
-            "success",
+        success_message = (
+            f'Data file uploaded successfully! Loaded {len(data_file_data)} sheets: {", ".join(list(data_file_data.keys()))}'
         )
+        flash(success_message, "success")
 
         # Print formatted insurance companies list
         print_formatted_insurance_companies()
@@ -27276,7 +27240,7 @@ def upload_data_file():
         if os.path.exists(filename):
             os.remove(filename)
 
-        return redirect("/")
+        return _json_or_redirect(True, success_message)
 
     except Exception as e:
         processing_result = f"❌ Error uploading data file: {str(e)}"
@@ -27284,7 +27248,7 @@ def upload_data_file():
         # Clean up uploaded file on error
         if "filename" in locals() and os.path.exists(filename):
             os.remove(filename)
-        return redirect("/")
+        return _json_or_redirect(False, f"Error uploading data file: {str(e)}")
 
 
 @app.route("/upload_ev_staff", methods=["POST"])
@@ -27701,37 +27665,17 @@ def process_files():
     global email_allocation_data, email_allocation_filename, email_allocation_agents_list
     global tracker_data, tracker_filename, tracker_file_ready
 
-    # Get current user
-    user = get_user_by_username(session.get("user_id"))
-
     # Preserve menu and submenu parameters to stay on Imagen Allocation view
     current_menu = request.form.get("current_menu", "allocations")
     current_submenu = request.form.get("current_submenu", "image-allocation")
-
-    # Load all agent work files for admin view
-    all_agent_work_files = None
-    day_shift_files = None
-    night_shift_files = None
-    ntbp_files = None
-    qcp_files = None
-    daily_consolidate_files = None
-    if user and user.role == "admin":
-        all_agent_work_files = get_all_agent_work_files()
-        day_shift_files = get_day_shift_files()
-        night_shift_files = get_night_shift_files()
-        ntbp_files = get_ntbp_files()
-        qcp_files = get_qcp_files()
-        daily_consolidate_files = get_daily_consolidate_files()
-        nh_files = get_nh_files()
+    redirect_url = f"/?menu={current_menu}"
+    if current_submenu:
+        redirect_url += f"&submenu={current_submenu}"
 
     if not data_file_data:
         processing_result = "❌ Error: Please upload data file first"
-        # Redirect back to the same view with menu parameters preserved
-        redirect_url = f"/?menu={current_menu}"
-        if current_submenu:
-            redirect_url += f"&submenu={current_submenu}"
         flash(processing_result, "error")
-        return redirect(redirect_url)
+        return _json_or_redirect(False, processing_result, redirect_url)
 
     try:
         import time
@@ -27804,12 +27748,8 @@ def process_files():
                 f"⚠️ [process_files] Processing returned None - {result_message[:100]}"
             )
 
-        # Redirect back to the same view with menu parameters preserved
-        redirect_url = f"/?menu={current_menu}"
-        if current_submenu:
-            redirect_url += f"&submenu={current_submenu}"
         flash(processing_result, "success" if processed_df is not None else "info")
-        return redirect(redirect_url)
+        return _json_or_redirect(True, result_message, redirect_url)
 
     except Exception as e:
         import traceback
@@ -27822,12 +27762,8 @@ def process_files():
         print(f"❌ [process_files] Error occurred: {str(e)}")
         print(f"📋 [process_files] Traceback:\n{error_details}")
 
-        # Redirect back to the same view with menu parameters preserved
-        redirect_url = f"/?menu={current_menu}"
-        if current_submenu:
-            redirect_url += f"&submenu={current_submenu}"
         flash(processing_result, "error")
-        return redirect(redirect_url)
+        return _json_or_redirect(False, error_message, redirect_url)
 
 
 @app.route("/download_result", methods=["POST"])
@@ -36965,6 +36901,17 @@ def consolidate_dental_bv_agent_files():
         else "Dental BV Day Shift"
     )
     scoped_files = get_dental_bv_agent_files(shift_type=shift_type)
+    # List queries defer file_data. Reload full rows before building the workbook
+    # so consolidation never depends on a lazy-load.
+    scoped_ids = [f.id for f in scoped_files]
+    if scoped_ids:
+        loaded = {
+            f.id: f
+            for f in DentalBVAgentFile.query.filter(
+                DentalBVAgentFile.id.in_(scoped_ids)
+            ).all()
+        }
+        scoped_files = [loaded[i] for i in scoped_ids if i in loaded]
     excel_buffer, filename, file_count = consolidate_files_helper_to_buffer(
         DentalBVAgentFile,
         display,
@@ -44745,7 +44692,10 @@ if __name__ == "__main__":
     # In production (no reloader) or when reloader is disabled, WERKZEUG_RUN_MAIN is not set
     # So we run scheduler ONLY when: WERKZEUG_RUN_MAIN is 'true' (reloader child) OR when reloader is disabled
     # Check if reloader is enabled by checking debug mode
-    debug_mode = True if os.environ.get("DISABLE_DEBUG") != "1" else False
+    is_hosted = bool(
+        os.environ.get("RAILWAY_ENVIRONMENT") or os.environ.get("DATABASE_URL")
+    )
+    debug_mode = (not is_hosted) and os.environ.get("DISABLE_DEBUG") != "1"
     werkzeug_main = os.environ.get("WERKZEUG_RUN_MAIN")
 
     # Only start scheduler if:
@@ -44834,8 +44784,12 @@ if __name__ == "__main__":
         print("⚠️ Skipping scheduler initialization in Flask reloader process")
 
     port = int(os.environ.get("PORT", 5003))
-    # Always enable debug + auto-reload for local dev unless explicitly disabled
-    debug = True if os.environ.get("DISABLE_DEBUG") != "1" else False
+    # Debug reloader must stay off on Railway: saving uploads into the app
+    # directory was restarting the process and making Imagen look hung.
+    is_hosted = bool(
+        os.environ.get("RAILWAY_ENVIRONMENT") or os.environ.get("DATABASE_URL")
+    )
+    debug = (not is_hosted) and os.environ.get("DISABLE_DEBUG") != "1"
 
     try:
         app.run(debug=debug, host="0.0.0.0", port=port, use_reloader=debug)

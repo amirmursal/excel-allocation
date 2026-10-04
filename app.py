@@ -1439,16 +1439,23 @@ def _imagen_result_user_key():
     return str(session.get("user_id") or session.get("db_session_id") or "anon")
 
 
-def _imagen_result_path(user_key=None):
-    safe = re.sub(r"[^a-zA-Z0-9_.-]", "_", user_key or _imagen_result_user_key())
+def _imagen_result_dir():
     folder = os.path.join(tempfile.gettempdir(), "imagen_allocation_results")
     os.makedirs(folder, exist_ok=True)
-    return os.path.join(folder, f"{safe}.pkl")
+    return folder
 
 
-def _persist_imagen_result():
-    """Keep the processed Imagen workbook available after Railway reloads the page."""
-    payload = {
+def _imagen_result_path(user_key=None):
+    safe = re.sub(r"[^a-zA-Z0-9_.-]", "_", user_key or _imagen_result_user_key())
+    return os.path.join(_imagen_result_dir(), f"{safe}.pkl")
+
+
+def _imagen_last_result_path():
+    return os.path.join(_imagen_result_dir(), "last_result.pkl")
+
+
+def _imagen_payload():
+    return {
         "allocation_data": allocation_data,
         "data_file_data": data_file_data,
         "allocation_filename": allocation_filename,
@@ -1456,28 +1463,36 @@ def _persist_imagen_result():
         "processing_result": processing_result,
         "agent_allocations_data": agent_allocations_data,
     }
-    with open(_imagen_result_path(), "wb") as handle:
+
+
+def _write_imagen_payload(path, payload):
+    with open(path, "wb") as handle:
         pickle.dump(payload, handle, protocol=pickle.HIGHEST_PROTOCOL)
-    session["imagen_result_ready"] = True
 
 
-def _restore_imagen_result_if_needed():
-    """Reload processed Imagen data when in-memory globals were wiped."""
+def _persist_imagen_result():
+    """Keep the processed Imagen workbook on disk.
+
+    Railway often drops in-memory globals and the session cookie after a long
+    Process request, so restore must not depend on session['imagen_result_ready'].
+    """
+    payload = _imagen_payload()
+    _write_imagen_payload(_imagen_result_path(), payload)
+    _write_imagen_payload(_imagen_last_result_path(), payload)
+    try:
+        session["imagen_result_ready"] = True
+    except Exception:
+        pass
+
+
+def _load_imagen_payload(path):
+    with open(path, "rb") as handle:
+        return pickle.load(handle)
+
+
+def _apply_imagen_payload(payload):
     global allocation_data, data_file_data, allocation_filename, data_filename
     global processing_result, agent_allocations_data
-    if data_file_data is not None and processing_result:
-        return True
-    if not session.get("imagen_result_ready"):
-        return False
-    path = _imagen_result_path()
-    if not os.path.exists(path):
-        return False
-    try:
-        with open(path, "rb") as handle:
-            payload = pickle.load(handle)
-    except Exception as exc:
-        print(f"⚠️ [Imagen] Could not restore persisted result: {exc}")
-        return False
     if payload.get("allocation_data") is not None:
         allocation_data = payload.get("allocation_data")
     if payload.get("data_file_data") is not None:
@@ -1490,27 +1505,77 @@ def _restore_imagen_result_if_needed():
         processing_result = payload.get("processing_result")
     if payload.get("agent_allocations_data") is not None:
         agent_allocations_data = payload.get("agent_allocations_data")
-    return data_file_data is not None and bool(processing_result)
+
+
+def _restore_imagen_result_if_needed():
+    """Reload processed Imagen data when in-memory globals were wiped."""
+    global data_file_data, processing_result
+    if data_file_data is not None and processing_result:
+        return True
+    candidates = []
+    try:
+        candidates.append(_imagen_result_path())
+    except Exception:
+        pass
+    candidates.append(_imagen_last_result_path())
+    for path in candidates:
+        if not path or not os.path.exists(path):
+            continue
+        try:
+            payload = _load_imagen_payload(path)
+        except Exception as exc:
+            print(f"⚠️ [Imagen] Could not restore {path}: {exc}")
+            continue
+        _apply_imagen_payload(payload)
+        if data_file_data is not None:
+            return True
+    return False
 
 
 def _clear_persisted_imagen_result():
-    session.pop("imagen_result_ready", None)
-    path = _imagen_result_path()
-    if os.path.exists(path):
-        try:
-            os.remove(path)
-        except OSError:
-            pass
+    try:
+        session.pop("imagen_result_ready", None)
+    except Exception:
+        pass
+    for path in (_imagen_result_path(), _imagen_last_result_path()):
+        if os.path.exists(path):
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+
+
+def _imagen_has_processed_rows():
+    if not data_file_data:
+        return False
+    frames = (
+        data_file_data.values()
+        if isinstance(data_file_data, dict)
+        else [data_file_data]
+    )
+    for frame in frames:
+        if not hasattr(frame, "columns"):
+            continue
+        for col in frame.columns:
+            if "agent" in str(col).lower() and "name" in str(col).lower():
+                assigned = frame[col].fillna("").astype(str).str.strip()
+                if assigned.ne("").any():
+                    return True
+    return False
 
 
 def _imagen_download_is_ready():
+    _restore_imagen_result_if_needed()
     result_text = str(processing_result or "")
-    if data_file_data and (
-        "Imagen Allocation Complete" in result_text
-        or "Priority processing completed successfully" in result_text
-    ):
+    if "Imagen Allocation Complete" in result_text:
         return True
-    return bool(session.get("imagen_result_ready") and data_file_data)
+    if "Priority processing completed successfully" in result_text:
+        return True
+    if _imagen_has_processed_rows():
+        return True
+    return os.path.exists(_imagen_last_result_path()) or os.path.exists(
+        _imagen_result_path()
+    )
 
 
 # EV Allocation data storage
@@ -4675,14 +4740,18 @@ HTML_TEMPLATE = """
                 </div>
                 {% endif %}
 
-                <!-- Download Section -->
-                {% if imagen_download_ready %}
+                <!-- Download Section: always visible on Imagen Allocation -->
                 <div class="section">
-                    <h3>💾 Download your Excel file with updated Priority Status assignments.</h3>
+                    <h3>💾 Download Processed File</h3>
+                    {% if imagen_download_ready %}
+                    <p>Your allocation is ready. Download the Excel file with Priority Status assignments.</p>
+                    {% else %}
+                    <p>This download becomes active after you click Process Data File.</p>
+                    {% endif %}
                     <form action="/download_result" method="post" id="imagen-download-form">
                         <input type="hidden" name="current_menu" value="allocations">
                         <input type="hidden" name="current_submenu" value="image-allocation">
-                        <button type="submit" class="process-btn" id="imagen-download-btn" style="background: linear-gradient(135deg, #3498db, #2980b9);">
+                        <button type="submit" class="process-btn" id="imagen-download-btn" style="background: linear-gradient(135deg, #3498db, #2980b9);{% if not imagen_download_ready %} opacity: 0.7;{% endif %}">
                             <i class="fas fa-download"></i> Download Processed File
                         </button>
                     </form>
@@ -4697,7 +4766,6 @@ HTML_TEMPLATE = """
                         <div class="progress-text" id="imagen-download-processing-text">Building your processed Excel file…</div>
                     </div>
                 </div>
-                {% endif %}
 
                 <!-- Reset Imagen Allocation -->
                 <div class="section" style="margin-top: 40px; border-top: 2px solid #e9ecef; padding-top: 20px; text-align: left;">
@@ -27903,7 +27971,14 @@ def download_result():
     _restore_imagen_result_if_needed()
 
     if not data_file_data:
-        return jsonify({"error": "No data to download"}), 400
+        return (
+            jsonify(
+                {
+                    "error": "No processed Imagen Allocation file is available yet. Upload both files and click Process Data File first."
+                }
+            ),
+            400,
+        )
 
     filename = request.form.get("filename", "").strip()
     if not filename:

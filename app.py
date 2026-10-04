@@ -29,6 +29,7 @@ import tempfile
 import io
 import uuid
 import json
+import pickle
 from collections import Counter
 from functools import wraps
 from urllib.parse import quote
@@ -1432,6 +1433,85 @@ agent_allocations_data = None
 agent_insurance_agent_names = (
     None  # Store agent names for Agent Insurance sheet formatting
 )
+
+
+def _imagen_result_user_key():
+    return str(session.get("user_id") or session.get("db_session_id") or "anon")
+
+
+def _imagen_result_path(user_key=None):
+    safe = re.sub(r"[^a-zA-Z0-9_.-]", "_", user_key or _imagen_result_user_key())
+    folder = os.path.join(tempfile.gettempdir(), "imagen_allocation_results")
+    os.makedirs(folder, exist_ok=True)
+    return os.path.join(folder, f"{safe}.pkl")
+
+
+def _persist_imagen_result():
+    """Keep the processed Imagen workbook available after Railway reloads the page."""
+    payload = {
+        "allocation_data": allocation_data,
+        "data_file_data": data_file_data,
+        "allocation_filename": allocation_filename,
+        "data_filename": data_filename,
+        "processing_result": processing_result,
+        "agent_allocations_data": agent_allocations_data,
+    }
+    with open(_imagen_result_path(), "wb") as handle:
+        pickle.dump(payload, handle, protocol=pickle.HIGHEST_PROTOCOL)
+    session["imagen_result_ready"] = True
+
+
+def _restore_imagen_result_if_needed():
+    """Reload processed Imagen data when in-memory globals were wiped."""
+    global allocation_data, data_file_data, allocation_filename, data_filename
+    global processing_result, agent_allocations_data
+    if data_file_data is not None and processing_result:
+        return True
+    if not session.get("imagen_result_ready"):
+        return False
+    path = _imagen_result_path()
+    if not os.path.exists(path):
+        return False
+    try:
+        with open(path, "rb") as handle:
+            payload = pickle.load(handle)
+    except Exception as exc:
+        print(f"⚠️ [Imagen] Could not restore persisted result: {exc}")
+        return False
+    if payload.get("allocation_data") is not None:
+        allocation_data = payload.get("allocation_data")
+    if payload.get("data_file_data") is not None:
+        data_file_data = payload.get("data_file_data")
+    if payload.get("allocation_filename") is not None:
+        allocation_filename = payload.get("allocation_filename")
+    if payload.get("data_filename") is not None:
+        data_filename = payload.get("data_filename")
+    if payload.get("processing_result") is not None:
+        processing_result = payload.get("processing_result")
+    if payload.get("agent_allocations_data") is not None:
+        agent_allocations_data = payload.get("agent_allocations_data")
+    return data_file_data is not None and bool(processing_result)
+
+
+def _clear_persisted_imagen_result():
+    session.pop("imagen_result_ready", None)
+    path = _imagen_result_path()
+    if os.path.exists(path):
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+
+
+def _imagen_download_is_ready():
+    result_text = str(processing_result or "")
+    if data_file_data and (
+        "Imagen Allocation Complete" in result_text
+        or "Priority processing completed successfully" in result_text
+    ):
+        return True
+    return bool(session.get("imagen_result_ready") and data_file_data)
+
 
 # EV Allocation data storage
 ev_staff_data = None
@@ -4596,7 +4676,7 @@ HTML_TEMPLATE = """
                 {% endif %}
 
                 <!-- Download Section -->
-                {% if processing_result and ('Priority processing completed successfully' in processing_result or 'Imagen Allocation Complete' in processing_result) %}
+                {% if imagen_download_ready %}
                 <div class="section">
                     <h3>💾 Download your Excel file with updated Priority Status assignments.</h3>
                     <form action="/download_result" method="post" id="imagen-download-form">
@@ -10386,27 +10466,26 @@ HTML_TEMPLATE = """
             const progressBar = document.getElementById('progress-bar');
             const progressText = document.getElementById('progress-text');
             
-            if (!progressBar || !progressText) {
-                return;
+            let progressInterval = null;
+            if (progressBar && progressText) {
+                progressInterval = setInterval(() => {
+                    progress += Math.random() * 15;
+                    if (progress > 90) progress = 90;
+
+                    progressBar.style.width = progress + '%';
+                    progressBar.textContent = Math.round(progress) + '%';
+
+                    if (progress < 30) {
+                        progressText.textContent = 'Reading files...';
+                    } else if (progress < 60) {
+                        progressText.textContent = 'Analyzing appointment dates...';
+                    } else if (progress < 90) {
+                        progressText.textContent = 'Assigning priorities...';
+                    } else {
+                        progressText.textContent = 'Finalizing results...';
+                    }
+                }, 200);
             }
-            
-            const progressInterval = setInterval(() => {
-                progress += Math.random() * 15;
-                if (progress > 90) progress = 90;
-                
-                progressBar.style.width = progress + '%';
-                progressBar.textContent = Math.round(progress) + '%';
-                
-                if (progress < 30) {
-                    progressText.textContent = 'Reading files...';
-                } else if (progress < 60) {
-                    progressText.textContent = 'Analyzing appointment dates...';
-                } else if (progress < 90) {
-                    progressText.textContent = 'Assigning priorities...';
-                } else {
-                    progressText.textContent = 'Finalizing results...';
-                }
-            }, 200);
             
             // Make AJAX request with form body
             const formData = new FormData(form);
@@ -10419,7 +10498,7 @@ HTML_TEMPLATE = """
                 redirect: 'follow'
             })
             .then(response => {
-                clearInterval(progressInterval);
+                if (progressInterval) clearInterval(progressInterval);
                 if (progressBar) {
                     progressBar.style.width = '100%';
                     progressBar.textContent = '100%';
@@ -10435,7 +10514,7 @@ HTML_TEMPLATE = """
                 }, 1000);
             })
             .catch(error => {
-                clearInterval(progressInterval);
+                if (progressInterval) clearInterval(progressInterval);
                 if (progressText) {
                     progressText.textContent = 'Error: ' + error.message;
                 }
@@ -24805,6 +24884,7 @@ def _get_imagen_qc_dates():
 def index():
     global allocation_data, data_file_data, allocation_filename, data_filename, processing_result
     global agent_processing_result, agent_allocations_data
+    _restore_imagen_result_if_needed()
     global email_staff_details, email_staff_filename
     global email_allocation_data, email_allocation_filename, email_allocation_agents_list
     global auditor_email_staff_data, auditor_email_staff_filename
@@ -24989,6 +25069,7 @@ def index():
         nh_processing_result=nh_processing_result,
         current_menu=current_menu,
         current_submenu=current_submenu,
+        imagen_download_ready=_imagen_download_is_ready(),
     )
 
 
@@ -27701,28 +27782,9 @@ def process_files():
     global email_allocation_data, email_allocation_filename, email_allocation_agents_list
     global tracker_data, tracker_filename, tracker_file_ready
 
-    # Get current user
-    user = get_user_by_username(session.get("user_id"))
-
     # Preserve menu and submenu parameters to stay on Imagen Allocation view
     current_menu = request.form.get("current_menu", "allocations")
     current_submenu = request.form.get("current_submenu", "image-allocation")
-
-    # Load all agent work files for admin view
-    all_agent_work_files = None
-    day_shift_files = None
-    night_shift_files = None
-    ntbp_files = None
-    qcp_files = None
-    daily_consolidate_files = None
-    if user and user.role == "admin":
-        all_agent_work_files = get_all_agent_work_files()
-        day_shift_files = get_day_shift_files()
-        night_shift_files = get_night_shift_files()
-        ntbp_files = get_ntbp_files()
-        qcp_files = get_qcp_files()
-        daily_consolidate_files = get_daily_consolidate_files()
-        nh_files = get_nh_files()
 
     if not data_file_data:
         processing_result = "❌ Error: Please upload data file first"
@@ -27798,6 +27860,10 @@ def process_files():
             # Update the data_file_data with the processed result
             data_file_data[list(data_file_data.keys())[0]] = processed_df
             print(f"✅ [process_files] Successfully processed {len(processed_df)} rows")
+            try:
+                _persist_imagen_result()
+            except Exception as persist_exc:
+                print(f"⚠️ [Imagen] Could not persist result for download: {persist_exc}")
         else:
             processing_result = result_message
             print(
@@ -27834,6 +27900,7 @@ def process_files():
 @admin_required
 def download_result():
     global data_file_data, data_filename, agent_allocations_data, agent_insurance_agent_names
+    _restore_imagen_result_if_needed()
 
     if not data_file_data:
         return jsonify({"error": "No data to download"}), 400
@@ -39513,6 +39580,7 @@ def reset_imagen_allocation():
         data_filename = None
         processing_result = None
         agent_allocations_data = None
+        _clear_persisted_imagen_result()
         db.session.commit()
         flash("✅ Imagen Allocation has been reset successfully!", "success")
     except Exception as e:

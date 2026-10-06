@@ -1479,8 +1479,9 @@ def _build_and_save_imagen_xlsx(sheets, agent_allocs, dest_path):
             df_copy = df.copy()
             df_copy = enforce_first_priority_assignment_on_df(df_copy, agent_allocs)
             for col in df_copy.columns:
-                if ("appointment" in col.lower() and "date" in col.lower()) or (
-                    "receive" in col.lower() and "date" in col.lower()
+                col_name = str(col).lower()
+                if ("appointment" in col_name and "date" in col_name) or (
+                    "receive" in col_name and "date" in col_name
                 ):
                     df_copy[col] = pd.to_datetime(df_copy[col], errors="coerce").dt.strftime(
                         "%m/%d/%Y"
@@ -27698,8 +27699,9 @@ def download_result():
 
                     # Find appointment date and received date columns and format them as MM/DD/YYYY
                     for col in df_copy.columns:
-                        if ("appointment" in col.lower() and "date" in col.lower()) or (
-                            "receive" in col.lower() and "date" in col.lower()
+                        col_name = str(col).lower()
+                        if ("appointment" in col_name and "date" in col_name) or (
+                            "receive" in col_name and "date" in col_name
                         ):
                             # Convert to datetime and then format as MM/DD/YYYY (no time)
                             df_copy[col] = pd.to_datetime(

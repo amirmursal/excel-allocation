@@ -7005,7 +7005,7 @@ HTML_TEMPLATE = """
                 <div id="ar-ticker-content" class="admin-menu-content" style="display: {% if current_menu == 'trackers' and current_submenu == 'ar-ticker' %}block{% else %}none{% endif %};">
                     <div class="section">
                         <h3>📊 AR Ticker</h3>
-                        <p>Upload multiple AR workbooks to build one combined board summary by priority. Current logic removes first two rows, normalizes repeated headers, computes Pending/Completed, and adds separate columns for each other OC Status value with Average = Completed / 2.</p>
+                        <p>Upload multiple AR workbooks to build one combined board summary by priority. The file must include <strong>OC Status</strong> plus <strong>Priority Work</strong> or <strong>OSI Priority</strong>. Repeated header blocks are stitched together. Pending/Completed are counted, other OC Status values get their own columns, and Average = Completed / 2.</p>
 
                         <div class="upload-card" style="max-width: 600px; margin: 20px auto;">
                             <form action="/upload_ar_ticker_file" method="post" enctype="multipart/form-data" id="ar-ticker-upload-form">
@@ -29776,29 +29776,86 @@ def _extract_ar_board_name(filename):
     return None
 
 
+def _ar_ticker_cell_text(value):
+    """Readable cell text for AR ticker headers/values."""
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return ""
+    text = str(value).replace("\xa0", " ").replace("\n", " ").replace("\r", " ").strip()
+    if text.lower() == "nan":
+        return ""
+    return re.sub(r"\s+", " ", text)
+
+
+def _ar_ticker_header_token(value):
+    """Compare header labels without spaces, punctuation, or case."""
+    return re.sub(r"[^a-z0-9]+", "", _ar_ticker_cell_text(value).lower())
+
+
+def _ar_ticker_token_matches(token, wanted):
+    return token == wanted or token.endswith(wanted)
+
+
+def _is_ar_ticker_header_row(values):
+    tokens = {_ar_ticker_header_token(value) for value in values}
+    tokens.discard("")
+    has_oc_status = any(
+        _ar_ticker_token_matches(token, "ocstatus") for token in tokens
+    )
+    has_priority = any(
+        _ar_ticker_token_matches(token, "prioritywork")
+        or _ar_ticker_token_matches(token, "osipriority")
+        for token in tokens
+    )
+    return has_oc_status and has_priority
+
+
+def _ar_ticker_find_column(columns, *wanted_tokens):
+    for col in columns:
+        token = _ar_ticker_header_token(col)
+        if any(_ar_ticker_token_matches(token, wanted) for wanted in wanted_tokens):
+            return col
+    return None
+
+
+def _map_ar_ticker_priority_value(value):
+    """Accept 'Priority 1' or OSI Priority 1/2/3."""
+    text = _ar_ticker_cell_text(value)
+    if not text:
+        return ""
+    lowered = text.lower()
+    if lowered.startswith("priority"):
+        return re.sub(r"\s+", " ", text)
+    try:
+        number = int(float(text))
+    except ValueError:
+        return ""
+    if number in (1, 2, 3):
+        return f"Priority {number}"
+    return ""
+
+
+def _ar_ticker_header_labels(values):
+    return [_ar_ticker_cell_text(value) for value in values]
+
+
 def _normalize_ar_ticker_dataframe(raw_df):
     """
-    Normalize AR sheet by removing first 2 rows and stitching repeated header blocks.
-    Header rows are detected when both `OC Status` and `Priority Work` are present.
+    Normalize an AR sheet by stitching repeated header blocks.
+    A header row is any row that contains OC Status plus Priority Work or OSI Priority.
     """
     if raw_df is None or raw_df.empty:
         return pd.DataFrame()
 
-    working_df = raw_df.iloc[2:].reset_index(drop=True)
     normalized_rows = []
     current_headers = None
 
-    for _, row in working_df.iterrows():
+    for _, row in raw_df.iterrows():
         values = row.tolist()
-        text_values = [str(v).strip() for v in values if str(v).strip().lower() != "nan"]
-
-        if not text_values:
+        if not any(_ar_ticker_cell_text(value) for value in values):
             continue
 
-        lower_values = [v.lower() for v in text_values]
-        is_header_row = ("oc status" in lower_values) and ("priority work" in lower_values)
-        if is_header_row:
-            current_headers = [str(v).strip() for v in values]
+        if _is_ar_ticker_header_row(values):
+            current_headers = _ar_ticker_header_labels(values)
             continue
 
         if not current_headers:
@@ -29806,11 +29863,10 @@ def _normalize_ar_ticker_dataframe(raw_df):
 
         row_map = {}
         for col_idx, header in enumerate(current_headers):
-            header_text = str(header).strip()
-            if not header_text or header_text.lower() == "nan":
+            if not header:
                 continue
             cell_value = values[col_idx] if col_idx < len(values) else None
-            row_map[header_text] = cell_value
+            row_map[header] = cell_value
 
         if row_map:
             normalized_rows.append(row_map)
@@ -29818,9 +29874,16 @@ def _normalize_ar_ticker_dataframe(raw_df):
     if not normalized_rows:
         return pd.DataFrame()
 
-    normalized_df = pd.DataFrame(normalized_rows)
-    normalized_df = normalized_df.dropna(how="all")
-    return normalized_df
+    return pd.DataFrame(normalized_rows).dropna(how="all")
+
+
+def _find_ar_ticker_worksheet(wb):
+    """Use the first sheet that has an AR header row; fall back to the active sheet."""
+    for ws in wb.worksheets:
+        for row in ws.iter_rows(min_row=1, max_row=40):
+            if _is_ar_ticker_header_row([cell.value for cell in row]):
+                return ws
+    return wb.active
 
 
 def _normalize_ar_ticker_workbook_with_styles(file_path):
@@ -29838,29 +29901,22 @@ def _normalize_ar_ticker_workbook_with_styles(file_path):
 
     wb = load_workbook(file_path, data_only=True)
     try:
-        ws = wb.active
+        ws = _find_ar_ticker_worksheet(wb)
         normalized_rows = []
         style_rows = []
         row_heights = []
         col_widths_by_header = {}
         current_headers = None
+        saw_header = False
 
-        # Match existing behavior: ignore first two rows.
-        for row in ws.iter_rows(min_row=3):
+        for row in ws.iter_rows(min_row=1):
             values = [cell.value for cell in row]
-            text_values = [
-                str(v).strip() for v in values if str(v).strip().lower() != "nan"
-            ]
-
-            if not text_values:
+            if not any(_ar_ticker_cell_text(value) for value in values):
                 continue
 
-            lower_values = [v.lower() for v in text_values]
-            is_header_row = ("oc status" in lower_values) and (
-                "priority work" in lower_values
-            )
-            if is_header_row:
-                current_headers = [str(v).strip() for v in values]
+            if _is_ar_ticker_header_row(values):
+                current_headers = _ar_ticker_header_labels(values)
+                saw_header = True
                 continue
 
             if not current_headers:
@@ -29869,8 +29925,8 @@ def _normalize_ar_ticker_workbook_with_styles(file_path):
             row_map = {}
             row_style_map = {}
             for col_idx, header in enumerate(current_headers):
-                header_text = str(header).strip()
-                if not header_text or header_text.lower() == "nan":
+                header_text = header
+                if not header_text:
                     continue
 
                 cell = row[col_idx] if col_idx < len(row) else None
@@ -29902,8 +29958,8 @@ def _normalize_ar_ticker_workbook_with_styles(file_path):
                 row_heights.append(ws.row_dimensions[row[0].row].height if row else None)
 
                 for col_idx, header in enumerate(current_headers):
-                    header_text = str(header).strip()
-                    if not header_text or header_text.lower() == "nan":
+                    header_text = header
+                    if not header_text:
                         continue
                     col_letter = get_column_letter(col_idx + 1)
                     width = ws.column_dimensions[col_letter].width
@@ -29912,8 +29968,12 @@ def _normalize_ar_ticker_workbook_with_styles(file_path):
                         if prev_width is None or width > prev_width:
                             col_widths_by_header[header_text] = width
 
+        if not saw_header:
+            raise ValueError(
+                "Header row with 'OC Status' and 'Priority Work' (or 'OSI Priority') was not found."
+            )
         if not normalized_rows:
-            return pd.DataFrame(), [], [], {}
+            raise ValueError("No data rows found after header normalization.")
 
         normalized_df = pd.DataFrame(normalized_rows).dropna(how="all")
         return normalized_df, style_rows, row_heights, col_widths_by_header
@@ -29926,19 +29986,25 @@ def _compute_ar_ticker_counts(normalized_df):
     if normalized_df is None or normalized_df.empty:
         raise ValueError("No data rows found after header normalization.")
 
-    columns_lower = {str(col).strip().lower(): col for col in normalized_df.columns}
-    priority_col = columns_lower.get("priority work")
-    status_col = columns_lower.get("oc status")
+    priority_col = _ar_ticker_find_column(
+        normalized_df.columns, "prioritywork", "osipriority"
+    )
+    status_col = _ar_ticker_find_column(normalized_df.columns, "ocstatus")
 
     missing_cols = []
     if not priority_col:
-        missing_cols.append("Priority Work")
+        missing_cols.append("Priority Work or OSI Priority")
     if not status_col:
         missing_cols.append("OC Status")
     if missing_cols:
         raise ValueError(f"Missing required columns: {', '.join(missing_cols)}")
 
-    status_series = normalized_df[status_col].fillna("").astype(str).str.strip()
+    working_df = normalized_df.copy()
+    working_df["_ar_ticker_priority"] = working_df[priority_col].map(
+        _map_ar_ticker_priority_value
+    )
+
+    status_series = working_df[status_col].fillna("").astype(str).str.strip()
     status_lower = status_series.str.lower()
     normalized_status = (
         status_lower.str.replace(r"\s+", "", regex=True)
@@ -29952,7 +30018,7 @@ def _compute_ar_ticker_counts(normalized_df):
     counts = {}
     for priority_label in ["Priority 1", "Priority 2", "Priority 3"]:
         priority_mask = (
-            normalized_df[priority_col].fillna("").astype(str).str.strip().str.lower()
+            working_df["_ar_ticker_priority"].fillna("").astype(str).str.strip().str.lower()
             == priority_label.lower()
         )
 
@@ -32279,6 +32345,10 @@ def upload_ar_ticker_file():
                     prev_width = combined_formatted_col_widths.get(col_name)
                     if prev_width is None or (width is not None and width > prev_width):
                         combined_formatted_col_widths[col_name] = width
+            except Exception as file_exc:
+                raise ValueError(
+                    f"Error processing '{file.filename}': {file_exc}"
+                ) from file_exc
             finally:
                 if os.path.exists(temp_name):
                     os.remove(temp_name)

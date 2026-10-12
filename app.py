@@ -34288,30 +34288,182 @@ def generate_all_trackers_from_dataframe(
             )
 
 
+IMAGEN_SHIFT_REQUIRED_COLUMNS = [
+    "Location",
+    "Provider Name",
+    "Appointment Date",
+    "(PMS) Patient ID",
+    "Patient Name",
+    "(PMS) Payer",
+    "Insurance Type",
+    "Status",
+    "AirPay Estimate",
+    "OON 20%",
+    "Received date",
+    "Status Code",
+    "Comment",
+    "Plan Name",
+    "Plan Number",
+    "Group Number",
+    "Category",
+    "Relationship",
+    "Agent Name",
+    "Supervisor",
+    "Work Date",
+    "Remark",
+    "Missing Info AP",
+    "PMS Update",
+    "Priority Status",
+    "Auditor",
+    "QC Agent",
+    "QC Status",
+    "QC Comments",
+    "QC Date",
+    "Agent 1",
+    "Remark 1",
+]
+
+
+def _normalize_imagen_shift_header(value):
+    return str(value).strip().lower()
+
+
+IMAGEN_SHIFT_DATE_COLUMNS = frozenset(
+    {
+        "appointment date",
+        "received date",
+        "work date",
+    }
+)
+
+
+def _format_imagen_shift_date_value(value):
+    parsed = parse_excel_date(value)
+    if parsed:
+        return parsed.strftime("%m/%d/%Y")
+    return value
+
+
+def format_imagen_shift_dates(file_data):
+    """
+    Coerce Appointment Date, Received date, and Work Date to MM/DD/YYYY.
+    Unparseable values are left unchanged so the upload can still proceed.
+    """
+    if not file_data:
+        return file_data
+
+    for sheet_name, df in list(file_data.items()):
+        if not isinstance(df, pd.DataFrame):
+            continue
+        if str(sheet_name).strip().lower() == "summary":
+            continue
+        if len(getattr(df, "columns", [])) == 0:
+            continue
+
+        out = df.copy()
+        for col in out.columns:
+            if _normalize_imagen_shift_header(col) in IMAGEN_SHIFT_DATE_COLUMNS:
+                out[col] = out[col].apply(_format_imagen_shift_date_value)
+        file_data[sheet_name] = out
+
+    return file_data
+
+
+def reorder_imagen_shift_columns(df):
+    """
+    Put required Day/Night/NTBP columns in the specified order and use the
+    canonical header names. Extra columns stay at the end.
+    """
+    if not isinstance(df, pd.DataFrame) or len(getattr(df, "columns", [])) == 0:
+        return df
+
+    first_index_by_header = {}
+    for idx, col in enumerate(df.columns):
+        key = _normalize_imagen_shift_header(col)
+        if key not in first_index_by_header:
+            first_index_by_header[key] = idx
+
+    pieces = []
+    used_indexes = set()
+    for required in IMAGEN_SHIFT_REQUIRED_COLUMNS:
+        idx = first_index_by_header.get(_normalize_imagen_shift_header(required))
+        if idx is None:
+            continue
+        pieces.append(df.iloc[:, idx].rename(required))
+        used_indexes.add(idx)
+
+    for idx in range(len(df.columns)):
+        if idx not in used_indexes:
+            pieces.append(df.iloc[:, idx])
+
+    if not pieces:
+        return df
+    return pd.concat(pieces, axis=1)
+
+
+def prepare_imagen_shift_file_data(file_data):
+    """Format date columns and apply the required column order."""
+    file_data = format_imagen_shift_dates(file_data)
+    if not file_data:
+        return file_data
+
+    for sheet_name, df in list(file_data.items()):
+        if not isinstance(df, pd.DataFrame):
+            continue
+        if str(sheet_name).strip().lower() == "summary":
+            continue
+        file_data[sheet_name] = reorder_imagen_shift_columns(df)
+    return file_data
+
+
+def validate_imagen_shift_headers(file_data):
+    """
+    Require every IMAGEN_SHIFT_REQUIRED_COLUMNS header on one data sheet.
+    Extra columns are allowed. Matching is case-insensitive and ignores
+    leading/trailing spaces. Returns (is_valid, error_message).
+    """
+    if not file_data:
+        return False, "No data found in file"
+
+    required_display = list(IMAGEN_SHIFT_REQUIRED_COLUMNS)
+    required_normalized = [
+        _normalize_imagen_shift_header(col) for col in required_display
+    ]
+
+    last_missing = list(required_display)
+    found_data_sheet = False
+
+    for sheet_name, df in file_data.items():
+        if not isinstance(df, pd.DataFrame):
+            continue
+        if str(sheet_name).strip().lower() == "summary":
+            continue
+        if len(getattr(df, "columns", [])) == 0:
+            continue
+
+        found_data_sheet = True
+        found_cols = {
+            _normalize_imagen_shift_header(col) for col in df.columns
+        }
+        missing = [
+            required_display[idx]
+            for idx, normalized in enumerate(required_normalized)
+            if normalized not in found_cols
+        ]
+        if not missing:
+            return True, ""
+        last_missing = missing
+
+    if not found_data_sheet:
+        return False, "No data found in file"
+
+    return False, f"File validation failed. Missing columns: {', '.join(last_missing)}"
+
+
 def validate_agent_work_file_columns(file_data):
     """Validate that the uploaded file contains all required columns"""
     # Required columns list
-    required_columns = [
-        "Office Name",
-        "Appointment Date",
-        "Patient ID",
-        "Patient Name",
-        "Dental Primary Ins Carr",
-        "Dental Secondary Ins Carr",
-        "Received date",
-        "Status Code",
-        "Comment",
-        "Group Number",
-        "Category",
-        "Agent Name",
-        "Work Date",
-        "Remark",
-        "Priority Status",
-        "QC Agent",
-        "QC Status",
-        "QC Comments",
-        "QC Date",
-    ]
+    required_columns = list(IMAGEN_SHIFT_REQUIRED_COLUMNS)
 
     # Check each sheet in the file
     if not file_data:
@@ -36276,6 +36428,9 @@ def consolidate_files_helper_to_buffer(
                 # Internal metadata column used only for Summary calculations
                 if "__uploaded_at__" in combined_df.columns:
                     combined_df = combined_df.drop(columns=["__uploaded_at__"], errors="ignore")
+
+                if file_model in (DayShiftFile, NightShiftFile, NTBPFile):
+                    combined_df = reorder_imagen_shift_columns(combined_df)
 
                 combined_df.to_excel(writer, sheet_name="All Agent Data", index=False)
             else:
@@ -43905,67 +44060,12 @@ def upload_day_shift():
         try:
             file_data = pd.read_excel(filename, sheet_name=None, parse_dates=False)
 
-            # TODO: Re-enable column validation later.
-            # is_valid, error_msg = validate_office_name_not_blank(file_data)
-            # if not is_valid:
-            #     if os.path.exists(filename):
-            #         os.remove(filename)
-            #     return jsonify({"success": False, "message": error_msg}), 400
-            # is_valid, error_msg = validate_appointment_date_format(file_data)
-            # if not is_valid:
-            #     if os.path.exists(filename):
-            #         os.remove(filename)
-            #     return jsonify({"success": False, "message": error_msg}), 400
-            # is_valid, error_msg = validate_patient_id_numeric(file_data)
-            # if not is_valid:
-            #     if os.path.exists(filename):
-            #         os.remove(filename)
-            #     return jsonify({"success": False, "message": error_msg}), 400
-            # is_valid, error_msg = validate_patient_name_text(file_data)
-            # if not is_valid:
-            #     if os.path.exists(filename):
-            #         os.remove(filename)
-            #     return jsonify({"success": False, "message": error_msg}), 400
-            # is_valid, error_msg = validate_dental_primary_ins_carr(file_data)
-            # if not is_valid:
-            #     if os.path.exists(filename):
-            #         os.remove(filename)
-            #     return jsonify({"success": False, "message": error_msg}), 400
-            # is_valid, error_msg = validate_received_date_format(file_data)
-            # if not is_valid:
-            #     if os.path.exists(filename):
-            #         os.remove(filename)
-            #     return jsonify({"success": False, "message": error_msg}), 400
-            # is_valid, error_msg = validate_status_code_text(file_data)
-            # if not is_valid:
-            #     if os.path.exists(filename):
-            #         os.remove(filename)
-            #     return jsonify({"success": False, "message": error_msg}), 400
-            # is_valid, error_msg = validate_column_not_blank(file_data, "Comment")
-            # if not is_valid:
-            #     if os.path.exists(filename):
-            #         os.remove(filename)
-            #     return jsonify({"success": False, "message": error_msg}), 400
-            # is_valid, error_msg = validate_column_not_blank(file_data, "Plan Name")
-            # if not is_valid:
-            #     if os.path.exists(filename):
-            #         os.remove(filename)
-            #     return jsonify({"success": False, "message": error_msg}), 400
-            # is_valid, error_msg = validate_column_not_blank(file_data, "Group Number")
-            # if not is_valid:
-            #     if os.path.exists(filename):
-            #         os.remove(filename)
-            #     return jsonify({"success": False, "message": error_msg}), 400
-            # is_valid, error_msg = validate_plan_number_numeric_slash_only(file_data)
-            # if not is_valid:
-            #     if os.path.exists(filename):
-            #         os.remove(filename)
-            #     return jsonify({"success": False, "message": error_msg}), 400
-            # is_valid, error_msg = validate_column_not_blank(file_data, "Agent Name")
-            # if not is_valid:
-            #     if os.path.exists(filename):
-            #         os.remove(filename)
-            #     return jsonify({"success": False, "message": error_msg}), 400
+            is_valid, error_msg = validate_imagen_shift_headers(file_data)
+            if not is_valid:
+                if os.path.exists(filename):
+                    os.remove(filename)
+                return jsonify({"success": False, "message": error_msg}), 400
+            file_data = prepare_imagen_shift_file_data(file_data)
 
             # Get notes if provided
             notes = request.form.get("notes", "")
@@ -44035,67 +44135,12 @@ def upload_night_shift():
         try:
             file_data = pd.read_excel(filename, sheet_name=None, parse_dates=False)
 
-            # TODO: Re-enable column validation later.
-            # is_valid, error_msg = validate_office_name_not_blank(file_data)
-            # if not is_valid:
-            #     if os.path.exists(filename):
-            #         os.remove(filename)
-            #     return jsonify({"success": False, "message": error_msg}), 400
-            # is_valid, error_msg = validate_appointment_date_format(file_data)
-            # if not is_valid:
-            #     if os.path.exists(filename):
-            #         os.remove(filename)
-            #     return jsonify({"success": False, "message": error_msg}), 400
-            # is_valid, error_msg = validate_patient_id_numeric(file_data)
-            # if not is_valid:
-            #     if os.path.exists(filename):
-            #         os.remove(filename)
-            #     return jsonify({"success": False, "message": error_msg}), 400
-            # is_valid, error_msg = validate_patient_name_text(file_data)
-            # if not is_valid:
-            #     if os.path.exists(filename):
-            #         os.remove(filename)
-            #     return jsonify({"success": False, "message": error_msg}), 400
-            # is_valid, error_msg = validate_dental_primary_ins_carr(file_data)
-            # if not is_valid:
-            #     if os.path.exists(filename):
-            #         os.remove(filename)
-            #     return jsonify({"success": False, "message": error_msg}), 400
-            # is_valid, error_msg = validate_received_date_format(file_data)
-            # if not is_valid:
-            #     if os.path.exists(filename):
-            #         os.remove(filename)
-            #     return jsonify({"success": False, "message": error_msg}), 400
-            # is_valid, error_msg = validate_status_code_text(file_data)
-            # if not is_valid:
-            #     if os.path.exists(filename):
-            #         os.remove(filename)
-            #     return jsonify({"success": False, "message": error_msg}), 400
-            # is_valid, error_msg = validate_column_not_blank(file_data, "Comment")
-            # if not is_valid:
-            #     if os.path.exists(filename):
-            #         os.remove(filename)
-            #     return jsonify({"success": False, "message": error_msg}), 400
-            # is_valid, error_msg = validate_column_not_blank(file_data, "Plan Name")
-            # if not is_valid:
-            #     if os.path.exists(filename):
-            #         os.remove(filename)
-            #     return jsonify({"success": False, "message": error_msg}), 400
-            # is_valid, error_msg = validate_column_not_blank(file_data, "Group Number")
-            # if not is_valid:
-            #     if os.path.exists(filename):
-            #         os.remove(filename)
-            #     return jsonify({"success": False, "message": error_msg}), 400
-            # is_valid, error_msg = validate_plan_number_numeric_slash_only(file_data)
-            # if not is_valid:
-            #     if os.path.exists(filename):
-            #         os.remove(filename)
-            #     return jsonify({"success": False, "message": error_msg}), 400
-            # is_valid, error_msg = validate_column_not_blank(file_data, "Agent Name")
-            # if not is_valid:
-            #     if os.path.exists(filename):
-            #         os.remove(filename)
-            #     return jsonify({"success": False, "message": error_msg}), 400
+            is_valid, error_msg = validate_imagen_shift_headers(file_data)
+            if not is_valid:
+                if os.path.exists(filename):
+                    os.remove(filename)
+                return jsonify({"success": False, "message": error_msg}), 400
+            file_data = prepare_imagen_shift_file_data(file_data)
 
             # Get notes if provided
             notes = request.form.get("notes", "")
@@ -44164,67 +44209,12 @@ def upload_ntbp():
         try:
             file_data = pd.read_excel(filename, sheet_name=None, parse_dates=False)
 
-            # TODO: Re-enable column validation later.
-            # is_valid, error_msg = validate_office_name_not_blank(file_data)
-            # if not is_valid:
-            #     if os.path.exists(filename):
-            #         os.remove(filename)
-            #     return jsonify({"success": False, "message": error_msg}), 400
-            # is_valid, error_msg = validate_appointment_date_format(file_data)
-            # if not is_valid:
-            #     if os.path.exists(filename):
-            #         os.remove(filename)
-            #     return jsonify({"success": False, "message": error_msg}), 400
-            # is_valid, error_msg = validate_patient_id_numeric(file_data)
-            # if not is_valid:
-            #     if os.path.exists(filename):
-            #         os.remove(filename)
-            #     return jsonify({"success": False, "message": error_msg}), 400
-            # is_valid, error_msg = validate_patient_name_text(file_data)
-            # if not is_valid:
-            #     if os.path.exists(filename):
-            #         os.remove(filename)
-            #     return jsonify({"success": False, "message": error_msg}), 400
-            # is_valid, error_msg = validate_dental_primary_ins_carr(file_data)
-            # if not is_valid:
-            #     if os.path.exists(filename):
-            #         os.remove(filename)
-            #     return jsonify({"success": False, "message": error_msg}), 400
-            # is_valid, error_msg = validate_received_date_format(file_data)
-            # if not is_valid:
-            #     if os.path.exists(filename):
-            #         os.remove(filename)
-            #     return jsonify({"success": False, "message": error_msg}), 400
-            # is_valid, error_msg = validate_status_code_text(file_data)
-            # if not is_valid:
-            #     if os.path.exists(filename):
-            #         os.remove(filename)
-            #     return jsonify({"success": False, "message": error_msg}), 400
-            # is_valid, error_msg = validate_column_not_blank(file_data, "Comment")
-            # if not is_valid:
-            #     if os.path.exists(filename):
-            #         os.remove(filename)
-            #     return jsonify({"success": False, "message": error_msg}), 400
-            # is_valid, error_msg = validate_column_not_blank(file_data, "Plan Name")
-            # if not is_valid:
-            #     if os.path.exists(filename):
-            #         os.remove(filename)
-            #     return jsonify({"success": False, "message": error_msg}), 400
-            # is_valid, error_msg = validate_column_not_blank(file_data, "Group Number")
-            # if not is_valid:
-            #     if os.path.exists(filename):
-            #         os.remove(filename)
-            #     return jsonify({"success": False, "message": error_msg}), 400
-            # is_valid, error_msg = validate_plan_number_numeric_slash_only(file_data)
-            # if not is_valid:
-            #     if os.path.exists(filename):
-            #         os.remove(filename)
-            #     return jsonify({"success": False, "message": error_msg}), 400
-            # is_valid, error_msg = validate_column_not_blank(file_data, "Agent Name")
-            # if not is_valid:
-            #     if os.path.exists(filename):
-            #         os.remove(filename)
-            #     return jsonify({"success": False, "message": error_msg}), 400
+            is_valid, error_msg = validate_imagen_shift_headers(file_data)
+            if not is_valid:
+                if os.path.exists(filename):
+                    os.remove(filename)
+                return jsonify({"success": False, "message": error_msg}), 400
+            file_data = prepare_imagen_shift_file_data(file_data)
 
             # Clear all existing NTBP files for this agent before saving new one (override behavior)
             existing_files = NTBPFile.query.filter_by(agent_id=user.id).all()
